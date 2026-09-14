@@ -7,7 +7,7 @@ Avenic 是一个命令行工具，用于统一管理编码 Agent（Claude Code�
 要求 Node.js ≥ 18.17。
 
 ```bash
-npm install -g avenic
+npm install -g avenic@latest
 ```
 
 安装提供两个命令：`avenic` 与简写 `ave`，二者等价。
