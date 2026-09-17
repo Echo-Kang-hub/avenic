@@ -48,13 +48,11 @@ export function fromCanonical(events) {
 // layer; this is capture-only and uses the caller's existing CODEX_HOME.
 export async function readCanonical(projectRoot, nativeSessionId, options = {}) {
   const { nativeSessions } = locations(projectRoot, options.environment);
-  for (const relative of await listFiles(nativeSessions)) {
-    if (!relative.endsWith(".jsonl")) continue;
-    const content = await readFile(path.join(nativeSessions, relative), "utf8");
+  const match = (await matchingRollouts(nativeSessions, projectRoot)).find((item) => item.id === nativeSessionId);
+  if (match) {
+    const content = await readFile(path.join(nativeSessions, match.relative), "utf8");
     const parsed = toCanonical(content);
-    if (parsed.nativeSessionId === nativeSessionId) {
-      return { ...parsed, revision: createHash("sha256").update(content).digest("hex") };
-    }
+    return { ...parsed, revision: createHash("sha256").update(content).digest("hex") };
   }
   throw new Error(`Codex native session is unavailable: ${nativeSessionId}`);
 }

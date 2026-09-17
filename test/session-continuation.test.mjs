@@ -238,3 +238,24 @@ test("Codex v2 sub-agent mappings resolve to their resumable parent thread", asy
     }
   });
 });
+
+test("Codex capture never imports a mapped rollout from another project", async () => {
+  await withProject(async (projectRoot) => {
+    const codexHome = await mkdtemp(path.join(os.tmpdir(), "avenic-codex-cwd-"));
+    const otherProject = await mkdtemp(path.join(os.tmpdir(), "avenic-codex-other-"));
+    try {
+      const rollout = path.join(codexHome, "sessions", "2026", "09", "17", "rollout-foreign.jsonl");
+      await mkdir(path.dirname(rollout), { recursive: true });
+      await writeFile(rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "foreign", cwd: otherProject } })}\n`);
+      const { readCanonical } = await import("../packages/core/src/runtime/adapters/codex.mjs");
+      await assert.rejects(
+        readCanonical(projectRoot, "foreign", { environment: { CODEX_HOME: codexHome } }),
+        /Codex native session is unavailable/,
+      );
+    } finally {
+      const { rm } = await import("node:fs/promises");
+      await rm(codexHome, { recursive: true, force: true });
+      await rm(otherProject, { recursive: true, force: true });
+    }
+  });
+});

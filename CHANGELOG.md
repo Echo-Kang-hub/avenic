@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.4 - 2026-09-17
+
+- Restrict Codex native capture to rollouts belonging to the current project
+  directory, preventing cross-project history capture during rehydration.
+
 ## 1.4.3 - 2026-09-17
 
 - Safely rehydrate a canonical continuation into a new Codex native thread when

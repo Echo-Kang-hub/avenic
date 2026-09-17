@@ -45,7 +45,7 @@ test("Claude and Codex native readers select the mapped session without scanning
     await mkdir(path.dirname(claudeFile), { recursive: true });
     await mkdir(path.dirname(codexFile), { recursive: true });
     await writeFile(claudeFile, CLAUDE);
-    await writeFile(codexFile, CODEX);
+    await writeFile(codexFile, CODEX.replace('"/project"', JSON.stringify(projectRoot)));
 
     const claude = await getSessionAdapter("claude").readCanonical(projectRoot, "claude-1", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
     const codex = await getSessionAdapter("codex").readCanonical(projectRoot, "codex-1", { environment: { CODEX_HOME: codexHome } });
