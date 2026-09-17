@@ -61,6 +61,11 @@ function epoch(value) {
 export function fromCanonical(events, options = {}) {
   const canonicalSessionId = options.canonicalSessionId ?? "unknown";
   const sessionID = options.nativeSessionId ?? nativeId("ses", canonicalSessionId);
+  const sessionModel = options.model ?? { id: "big-pickle", providerID: "opencode", variant: "default" };
+  const messageModel = {
+    providerID: sessionModel.providerID ?? sessionModel.provider ?? "opencode",
+    modelID: sessionModel.modelID ?? sessionModel.id ?? "big-pickle",
+  };
   const diagnostics = [];
   const messages = [];
   const nativeMessageIds = new Map();
@@ -82,7 +87,10 @@ export function fromCanonical(events, options = {}) {
       diagnostics.push({ eventId: event.id, code: "missing_parent", message: "OpenCode assistant messages require a parent message" });
       continue;
     }
-    const model = { providerID: event.provider ?? "opencode", modelID: event.model ?? "big-pickle" };
+    const model = {
+      providerID: event.provider ?? messageModel.providerID,
+      modelID: event.model ?? messageModel.modelID,
+    };
     messages.push({
       info: {
         role: event.role,
@@ -125,7 +133,7 @@ export function fromCanonical(events, options = {}) {
         directory: options.directory ?? null,
         path: typeof options.directory === "string" ? options.directory.replace(/\\/g, "/").replace(/^([A-Z]):/i, "$1") : null,
         agent: options.agent ?? "build",
-        model: options.model ?? { id: "big-pickle", providerID: "opencode", variant: "default" },
+        model: sessionModel,
         version: options.version ?? "1.18.30",
         cost: 0,
         tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },

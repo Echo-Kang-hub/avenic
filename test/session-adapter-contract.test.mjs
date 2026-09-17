@@ -147,6 +147,19 @@ test("OpenCode projection emits the official export envelope with ordered portab
   assert.equal(projected.diagnostics.length, 0);
 });
 
+test("OpenCode projection keeps an explicitly selected session model on every projected message", () => {
+  const projected = getSessionAdapter("opencode").fromCanonical([
+    { id: "canon-a", role: "user", createdAt: "2026-09-14T00:00:00.000Z", content: [{ type: "text", text: "A" }] },
+    { id: "canon-b", role: "assistant", createdAt: "2026-09-14T00:00:01.000Z", content: [{ type: "text", text: "B" }] },
+  ], {
+    canonicalSessionId: "canonical-model",
+    model: { id: "nemotron-3.5-lightning-free", providerID: "opencode", variant: "default" },
+  });
+  assert.deepEqual(projected.data.info.model, { id: "nemotron-3.5-lightning-free", providerID: "opencode", variant: "default" });
+  assert.equal(projected.data.messages[0].info.model.modelID, "nemotron-3.5-lightning-free");
+  assert.equal(projected.data.messages[1].info.modelID, "nemotron-3.5-lightning-free");
+});
+
 test("OpenCode projection gives untitled canonical sessions an official string title", () => {
   const projected = getSessionAdapter("opencode").fromCanonical([], { canonicalSessionId: "untitled" });
   assert.equal(projected.data.info.title, "Avenic session untitled");
