@@ -19,7 +19,8 @@ import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, text
 export const agentId = "claude";
 
 export function toCanonical(content, options = {}) {
-  const records = parseJsonLines(content, agentId);
+  const parsed = parseJsonLines(content, agentId, { diagnostics: true });
+  const records = parsed.records;
   const nativeSessionId = options.nativeSessionId ?? records.find((record) => typeof record.sessionId === "string")?.sessionId ?? "unknown";
   const events = records.flatMap((record, index) => {
     const role = record.message?.role;
@@ -34,7 +35,7 @@ export function toCanonical(content, options = {}) {
       extensions: { claude: { record, message: record.message } },
     }];
   });
-  return { nativeSessionId, events, revision: options.revision ?? null };
+  return { nativeSessionId, events, diagnostics: parsed.diagnostics, revision: options.revision ?? null };
 }
 
 export function fromCanonical(events) {

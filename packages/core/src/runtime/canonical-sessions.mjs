@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimePaths } from "./config.mjs";
+import { deriveState } from "./handoff.mjs";
 
 export const CANONICAL_SESSION_SCHEMA_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -90,10 +91,22 @@ export async function createCanonicalSession(projectRoot, input = {}) {
     updatedAt: timestamp,
     metadata: filterSecrets(input.metadata ?? {}),
     provenance: filterSecrets(input.provenance ?? {}),
+    state: {
+      schemaVersion: 1,
+      goal: null,
+      currentTask: null,
+      completed: [],
+      pending: null,
+      decisions: [],
+      relevantFiles: [],
+      blockers: [],
+      warnings: [],
+    },
   };
   await mkdir(path.join(directory, "attachments"), { recursive: true });
   await writeAtomic(sessionFile, `${JSON.stringify(session, null, 2)}\n`);
   await writeAtomic(path.join(directory, "events.jsonl"), "");
+  await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(session.state, null, 2)}\n`);
   await writeAtomic(path.join(directory, "mappings.json"), `${JSON.stringify({ schemaVersion: 1, canonicalSessionId: id, projections: {} }, null, 2)}\n`);
   return { id, created: true };
 }
@@ -105,8 +118,8 @@ export async function readCanonicalSession(projectRoot, id) {
   if (session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) throw new Error(`Unsupported canonical session schema: ${session.schemaVersion}`);
   const eventsText = existsSync(path.join(directory, "events.jsonl")) ? await readFile(path.join(directory, "events.jsonl"), "utf8") : "";
   const events = eventsText.split(/\r?\n/).filter(Boolean).map((line) => normalizeEvent(JSON.parse(line)));
-  const mappings = await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} });
-  return { session, events, mappings };
+  const state = await readJson(path.join(directory, "state.json"), session.state ?? deriveState(events));
+  return { session: { ...session, state }, events, state, mappings: await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} }) };
 }
 
 export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
@@ -128,7 +141,9 @@ export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
   const directory = sessionDirectory(projectRoot, id);
   const allEvents = [...stored.events, ...additions];
   await writeAtomic(path.join(directory, "events.jsonl"), `${allEvents.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  const session = { ...stored.session, updatedAt: now(), revision: canonicalSessionRevision(allEvents) };
+  const state = deriveState(allEvents);
+  await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+  const session = { ...stored.session, state, updatedAt: now(), revision: canonicalSessionRevision(allEvents) };
   await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
   return { added: additions.length, duplicate };
 }

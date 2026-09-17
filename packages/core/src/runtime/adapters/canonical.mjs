@@ -6,18 +6,26 @@ function timestamp(value) {
   return new Date(0).toISOString();
 }
 
-export function parseJsonLines(content, agentId) {
+export function parseJsonLines(content, agentId, options = {}) {
   if (typeof content !== "string") throw new Error(`${agentId} native session must be text`);
   const records = [];
-  for (const [index, line] of content.split(/\r?\n/).entries()) {
+  const diagnostics = [];
+  const lines = content.split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     try {
       records.push(JSON.parse(line));
     } catch {
-      throw new Error(`Malformed ${agentId} JSONL record at line ${index + 1}`);
+      const hasLaterContent = lines.slice(index + 1).some((later) => later.trim());
+      diagnostics.push({
+        agentId,
+        line: index + 1,
+        kind: hasLaterContent ? "malformed-record" : "truncated-tail",
+        message: `Malformed ${agentId} JSONL record at line ${index + 1}`,
+      });
     }
   }
-  return records;
+  return options.diagnostics ? { records, diagnostics } : records;
 }
 
 export function nativeEventId(agentId, nativeSessionId, nativeId, index, record) {

@@ -26,6 +26,16 @@ test("Claude JSONL normalizes ordered messages and keeps unknown native fields",
   assert.equal(result.events[1].extensions.claude.message.future, "retained");
 });
 
+test("Claude JSONL skips malformed records without losing later history", () => {
+  const input = `${CLAUDE}{broken\n${JSON.stringify({ type: "assistant", uuid: "a2", sessionId: "claude-1", message: { role: "assistant", content: "C" } })}\n`;
+  const result = getSessionAdapter("claude").toCanonical(input, { nativeSessionId: "claude-1" });
+  assert.deepEqual(result.events.map((event) => event.content[0].text), ["A", "B", "C"]);
+  assert.equal(result.diagnostics.length, 1);
+  assert.equal(result.diagnostics[0].kind, "malformed-record");
+  const tail = getSessionAdapter("claude").toCanonical(`${CLAUDE}{truncated`, { nativeSessionId: "claude-1" });
+  assert.equal(tail.diagnostics[0].kind, "truncated-tail");
+});
+
 test("Codex JSONL normalizes response items and keeps native payload extensions", () => {
   const result = getSessionAdapter("codex").toCanonical(CODEX, { nativeSessionId: "codex-1" });
   assert.equal(result.nativeSessionId, "codex-1");

@@ -31,6 +31,17 @@ test("canonical store creates a versioned session and filters credential-like me
     assert.match(created.id, /^[0-9a-f-]{36}$/);
     const stored = await readCanonicalSession(projectRoot, created.id);
     assert.equal(stored.session.schemaVersion, 1);
+    assert.deepEqual(stored.state, {
+      schemaVersion: 1,
+      goal: null,
+      currentTask: null,
+      completed: [],
+      pending: null,
+      decisions: [],
+      relevantFiles: [],
+      blockers: [],
+      warnings: [],
+    });
     assert.equal(stored.session.title, "Interop fixture");
     assert.equal(stored.session.metadata.safe, "kept");
     assert.equal("apiKey" in stored.session.metadata, false);
@@ -111,7 +122,7 @@ test("project native import reports malformed native history instead of silently
     const result = await importProjectSessions(projectRoot, "claude", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
     assert.equal(result.discovered, 0);
     assert.equal(result.failed, 1);
-    assert.match(result.diagnostics.at(-1), /could not parse/i);
+    assert.match(result.diagnostics.at(-1), /could not (parse|identify)/i);
   });
 });
 

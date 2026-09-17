@@ -15,16 +15,19 @@ function compact(value) {
   return value.length > MAX_EVENT_TEXT ? `${value.slice(0, MAX_EVENT_TEXT)}\n[truncated]` : value;
 }
 
-function deriveState(events) {
+export function deriveState(events) {
   const users = events.filter((event) => event.role === "user").map(text).filter(Boolean);
   const assistants = events.filter((event) => event.role === "assistant").map(text).filter(Boolean);
   return {
+    schemaVersion: HANDOFF_SCHEMA_VERSION,
     goal: users[0] ?? null,
+    currentTask: users.at(-1) ?? null,
     completed: assistants.filter((value) => /\b(completed|done|implemented|fixed)\b/i.test(value)).slice(-10),
     pending: users.length > 1 ? users.at(-1) : null,
     decisions: [],
     relevantFiles: [],
     blockers: [],
+    warnings: [],
   };
 }
 
@@ -33,7 +36,9 @@ function deriveState(events) {
 export function buildHandoff({ session, events, targetAgent, lastCanonicalEventId = null }) {
   const start = lastCanonicalEventId ? events.findIndex((event) => event.id === lastCanonicalEventId) + 1 : 0;
   const delta = events.slice(Math.max(0, start));
-  const state = deriveState(events);
+  const state = session.state && typeof session.state === "object"
+    ? session.state
+    : deriveState(events);
   // Canonical history remains complete. A launcher receives only a bounded,
   // recent semantic transcript so legacy projects cannot exceed CLI/context
   // limits during first bootstrap.
@@ -43,7 +48,7 @@ export function buildHandoff({ session, events, targetAgent, lastCanonicalEventI
   const markdown = [
     `# Avenic continuation (${targetAgent})`,
     `Goal: ${state.goal ?? "Unknown"}`,
-    `Current task: ${state.pending ?? "Continue the shared session."}`,
+    `Current task: ${state.currentTask ?? state.pending ?? "Continue the shared session."}`,
     state.completed.length ? `Completed work:\n${state.completed.map((value) => `- ${value}`).join("\n")}` : "",
     `Project: ${session.project?.cwd ?? "Unknown"}`,
     `Source provenance: ${session.provenance?.source ?? session.source ?? "unknown"}`,

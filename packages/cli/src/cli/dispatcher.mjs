@@ -1,4 +1,5 @@
 import path from "node:path";
+import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { readFileSync } from "node:fs";
@@ -103,14 +104,21 @@ async function materializeResumeProjection(agentId, projectRoot, state, environm
   const argumentsList = agentId === "claude"
     ? ["--bg", "--session-id", sessionId, handoff.markdown]
     : ["exec", "--json", handoff.markdown];
-  const result = launchCaptured(runtime.executable, argumentsList, {
-    cwd: projectRoot,
-    environment: runtime.environment,
+  const launchStartedAt = Date.now() - 1000;
+  await new Promise((resolve, reject) => {
+    const child = spawnProcess(runtime.executable, argumentsList, {
+      cwd: projectRoot,
+      env: runtime.environment,
+      stdio: "ignore",
+      windowsHide: true,
+      shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(runtime.executable),
+    });
+    child.once("error", reject);
+    child.once("close", (status) => status === 0 ? resolve() : reject(new Error(`${getAgent(agentId).displayName} projection bootstrap exited with status ${status}`)));
   });
-  if (result.status !== 0) throw new Error(`${getAgent(agentId).displayName} projection bootstrap exited with status ${result.status}`);
   const nativeSessionId = agentId === "claude"
     ? sessionId
-    : await adapter.discoverNativeSession(projectRoot, { environment, notBefore: Date.now() - 120000 });
+    : await adapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
   if (!nativeSessionId) throw new Error(`${getAgent(agentId).displayName} projection bootstrap did not expose a native session id`);
   return { nativeSessionId, diagnostics: [] };
 }
@@ -363,11 +371,12 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   // select a canonical session here and deliberately do not synthesize native
   // history for unmapped sessions.
   if (!options.skipCanonical && portableSessions) {
+    const diagnosticsShown = new Set();
     const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
     if (activeCanonicalId) {
       try {
         const canonical = await readCanonicalSession(projectRoot, activeCanonicalId);
-        await ensureNativeProjection({
+        const preparation = ensureNativeProjection({
           projectRoot,
           canonicalId: activeCanonicalId,
           targetAgent: agentId,
@@ -375,13 +384,22 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
           intent: "resume-catalog",
           materialize: ({ session, events }) => materializeResumeProjection(agentId, projectRoot, state, environment, { session, events }),
         });
+        // A missing/stale projection may require a real agent bootstrap. Do
+        // not put that model/network latency on the plain TUI startup path.
+        const targetMapping = canonical.mappings.projections[agentId];
+        const canonicalTail = canonical.events.at(-1)?.id ?? null;
+        if (!targetMapping?.nativeSessionId || targetMapping.lastCanonicalEventId !== canonicalTail) {
+          void preparation.catch(() => {});
+        } else {
+          await preparation;
+        }
       } catch (error) {
         console.warn(`Avenic resume catalog preparation skipped: ${error.message}`);
       }
     }
     for (const session of await listCanonicalSessions(projectRoot)) {
       try {
-        await reconcileCanonicalSession(projectRoot, session.id, {
+        const reconciled = await reconcileCanonicalSession(projectRoot, session.id, {
           environmentForAgent: (sourceAgent) => {
             const sourceConfig = effectiveAgentConfig(state, sourceAgent);
             return sourceConfig?.auth === "project"
@@ -389,6 +407,12 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
               : process.env;
           },
         });
+        for (const diagnostic of reconciled.flatMap((item) => item.diagnostics ?? [])) {
+          const key = `${diagnostic.agentId ?? "agent"}:${diagnostic.line ?? ""}:${diagnostic.kind ?? ""}:${diagnostic.file ?? ""}`;
+          if (diagnosticsShown.has(key)) continue;
+          diagnosticsShown.add(key);
+          console.warn(`Avenic: recovered ${diagnostic.agentId ?? "agent"} history with malformed record skipped.`);
+        }
       } catch (error) {
         console.warn(`Avenic session reconciliation skipped: ${error.message}`);
       }
@@ -594,21 +618,16 @@ async function dispatchSessions(argumentsList, options = {}) {
     }
 
     const targetAdapter = getSessionAdapter(agentId);
-    const targetStored = await readCanonicalSession(projectRoot, mode);
-    const targetMapping = targetStored.mappings.projections[agentId];
-    // Codex's native history is an opaque rollout projection. If its cursor
-    // is behind the canonical tail, rehydrate a fresh official thread rather
-    // than reopening an old transcript (the old thread remains untouched).
-    const forceBootstrap = agentId === "codex"
-      && Boolean(targetMapping?.nativeSessionId)
-      && targetMapping.lastCanonicalEventId !== targetStored.events.at(-1)?.id;
+    // A stale cursor means the target needs a semantic delta, not a new native
+    // thread. Let the official resume command preserve the target's native
+    // context; only an unavailable mapping or a failed resume falls back to a
+    // fresh official thread below.
     let capturedDuringLaunch = null;
     const result = await continueCanonicalSession({
       projectRoot,
       canonicalId: mode,
       targetAgent: agentId,
       environment,
-      forceBootstrap,
       // Every call resolves the normal auth/runtime environment for that
       // agent. Sessions never manufacture or migrate credential directories.
       captureKnown: async () => {

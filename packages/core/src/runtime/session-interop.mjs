@@ -2,7 +2,7 @@ import { appendCanonicalEvents, canonicalSessionRevision, readCanonicalSession, 
 import { createCanonicalSession } from "./canonical-sessions.mjs";
 import { getSessionAdapter } from "./adapters/index.mjs";
 import { buildHandoff } from "./handoff.mjs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimePaths, setActiveCanonicalSession } from "./config.mjs";
 import { listFiles } from "./sessions.mjs";
@@ -51,6 +51,7 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       lastCanonicalEventId: native.events.at(-1)?.id ?? null,
     });
     await setActiveCanonicalSession(projectRoot, canonicalId);
+    if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
     if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
   }
   return { ...captured, discovered, imported, unchanged, failed, diagnostics };
@@ -133,7 +134,7 @@ export async function captureCanonicalSession(projectRoot, canonicalSessionId, a
     canonicalRevision: canonicalRevision(refreshed),
     diagnostics: [],
   });
-  return { ...append, nativeSessionId: native.nativeSessionId, nativeRevision: native.revision };
+  return { ...append, nativeSessionId: native.nativeSessionId, nativeRevision: native.revision, diagnostics: native.diagnostics ?? [] };
 }
 
 // Reconcile every known native projection before a new agent is launched.
@@ -151,8 +152,12 @@ export async function reconcileCanonicalSession(projectRoot, canonicalSessionId,
       const captured = await captureCanonicalSession(projectRoot, canonicalSessionId, agentId, { environment });
       results.push({ agentId, ...captured });
     } catch (error) {
-      if (!/native session is unavailable|session is unavailable|not found|does not exist/i.test(error?.message ?? "")) throw error;
-      results.push({ agentId, stale: true, nativeSessionId: mapping.nativeSessionId, diagnostic: error.message });
+      results.push({
+        agentId,
+        stale: /native session is unavailable|session is unavailable|not found|does not exist/i.test(error?.message ?? ""),
+        nativeSessionId: mapping.nativeSessionId,
+        diagnostic: error.message,
+      });
     }
   }
   return results;
@@ -176,6 +181,10 @@ export async function prepareCanonicalContinuation(projectRoot, canonicalSession
     targetAgent: agentId,
     lastCanonicalEventId: options.forceBootstrap ? null : mapping?.lastCanonicalEventId ?? null,
   });
+  const handoffRoot = path.join(runtimePaths(projectRoot).sessionsRoot, "canonical", canonicalSessionId);
+  await mkdir(handoffRoot, { recursive: true });
+  await writeFile(path.join(handoffRoot, "handoff.json"), `${JSON.stringify(handoff, null, 2)}\n`, "utf8");
+  await writeFile(path.join(handoffRoot, "handoff.md"), `${handoff.markdown}\n`, "utf8");
   return {
     canonicalSessionId,
     agentId,
