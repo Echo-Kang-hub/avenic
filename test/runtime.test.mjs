@@ -792,14 +792,17 @@ test("self update reinstalls the published npm package globally", async () => {
   const calls = [];
   const packageSpec = await avenicPackageSpec(cliPackageRoot);
   const result = await updateAvenic(cliPackageRoot, {
+    currentVersion: "1.4.4",
+    latestVersion: "1.4.5",
+    probeVersion: () => "1.4.5",
     spawn(executable, argumentsList) {
       calls.push({ executable, argumentsList });
-      return { status: 0 };
+      return { status: 0, stdout: "" };
     },
   });
 
-  assert.equal(result, "avenic@latest");
-  assert.equal(packageSpec, result);
+  assert.equal(result.packageSpec, "avenic@latest");
+  assert.equal(packageSpec, result.packageSpec);
   assert.deepEqual(calls, [
     {
       executable: "npm",

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
@@ -48,6 +49,7 @@ import { updateAvenic } from "./self-update.mjs";
 import { spawnSessionWatchdog } from "./watchdog.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")).version;
 
 function launchExecutable(executable, argumentsList, options = {}) {
   const result = spawnExecutableSync(executable, argumentsList, {
@@ -319,22 +321,10 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     : process.env);
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
-  // Project sessions always follow the active canonical session. This keeps
-  // the ordinary `avenic <agent>` path identical to `sessions continue` and
-  // prevents an older native/portable rollout from winning by mtime.
-  if (portableSessions && !options.skipCanonical && argumentsList.length === 0) {
-    let activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
-    if (!activeCanonicalId) {
-      // Legacy project sessions are imported once before the first unified
-      // launch. This is migration, not a second launch/recovery pipeline.
-      await importProjectSessions(projectRoot, agentId, { environment });
-      activeCanonicalId = (await listCanonicalSessions(projectRoot))[0]?.id ?? null;
-      if (activeCanonicalId) await setActiveCanonicalSession(projectRoot, activeCanonicalId);
-    }
-    if (activeCanonicalId) {
-      return dispatchSessions(["continue", activeCanonicalId, "--agent", agentId], { projectRootOverride: projectRoot });
-    }
-  }
+  // A plain agent launch is intentionally transparent: storage scope does not
+  // imply a launch target. Shared-session continuation is opt-in via
+  // `sessions continue`, while this path preserves the agent's native new/
+  // default-session UX (including its own /resume command).
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
@@ -417,6 +407,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     if (portableSessions) {
       try {
         await adapter.capture(projectRoot, { environment });
+        // Reconcile ordinary launches as well. This observes sessions created
+        // or selected inside the native TUI without choosing one beforehand.
+        if (!options.skipCanonical) {
+          await importProjectSessions(projectRoot, agentId, { environment });
+        }
         if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
       } finally {
         if (leaveLaunchGroup) {
@@ -661,6 +656,10 @@ export async function runCli(options = {}) {
     return dispatchAgent(forcedAgent, argumentsList);
   }
   const [command, ...remainingArguments] = argumentsList;
+  if (command === "--version" || command === "-v" || command === "version") {
+    console.log(packageVersion);
+    return 0;
+  }
   if (!command || command === "help" || command === "--help" || command === "-h") {
     printHelp();
     return 0;

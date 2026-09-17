@@ -398,9 +398,8 @@ test("skills doctor and update fall back to runtime meanings outside a catalog",
 
     await withFakeNpm(async (environment, logFile) => {
       const update = runAgent(projectRoot, ["skills", "update"], environment);
-      assert.equal(update.status, 0, update.stderr);
-      assert.match(update.stdout, /Avenic update complete/);
-      assert.match(await readFile(logFile, "utf8"), /install --global avenic@latest/);
+      assert.equal(update.status, 1);
+      assert.match(update.stderr, /registry|version/i);
     });
   });
 });
