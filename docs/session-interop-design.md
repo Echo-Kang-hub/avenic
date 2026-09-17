@@ -17,7 +17,11 @@ Project mode uses `.agents/sessions/canonical/<id>/`:
 
 - `session.json`: schema version, canonical id, project, title, timestamps, metadata and provenance.
 - `events.jsonl`: append-only canonical event DAG.
+- `state.json`: deterministic lightweight checkpoint for goal, current task,
+  completed/pending work, decisions, files, blockers, and warnings.
 - `mappings.json`: native identities, revision hashes, projection hashes and sync timestamps.
+- `handoff.json` / `handoff.md`: the latest versioned, hashed target handoff;
+  it contains only the target delta plus the compact checkpoint.
 - `attachments/`: optional content-addressed files with validated relative names.
 
 Legacy `.agents/sessions/{claude,codex,opencode}` remains unchanged and is retained as the native projection/cache layer.
@@ -46,11 +50,11 @@ Events are append-oriented. When two projections append from the same parent, bo
 
 ## Rehydration handoff
 
-`buildHandoff()` is a versioned, deterministic core-only builder. It derives a compact state checkpoint (goal, completed work and pending work) and a transcript delta after the target mapping's last canonical event. The handoff hash covers the target, checkpoint and delta. It is deliberately an L3a semantic context layer, not a native transcript writer: adapters submit it through documented agent prompt/history APIs only after their bootstrap/resume path has been verified.
+`buildHandoff()` is a versioned, deterministic core-only builder. It derives a compact state checkpoint (goal, current task, completed work, pending work, decisions, relevant files, blockers, warnings and provenance) and a transcript delta after the target mapping's last canonical event. The handoff hash covers the target, checkpoint and delta. It is deliberately an L3a semantic context layer, not a native transcript writer: adapters submit it through documented agent prompt APIs only after their bootstrap/resume path has been verified. A target with a stale cursor resumes its existing native session and receives only the delta; bootstrap is reserved for missing or failed native sessions.
 
 ## Native formats and capability policy
 
-- **Claude Code:** project JSONL at `~/.claude/projects/<encoded-cwd>/`; currently an undocumented/version-sensitive persistence format. Reader support is conservative; native writes require a versioned fixture and explicit resume evidence.
+- **Claude Code:** project JSONL at `~/.claude/projects/<encoded-cwd>/`; currently an undocumented/version-sensitive persistence format. Avenic uses official `--resume <session-id>` plus an explicit prompt for L3a and does not write Claude's private JSONL.
 - **Codex:** rollout JSONL under `~/.codex/sessions/` plus `session_index.jsonl`; `session_meta` carries id/cwd and transcripts contain response/event records. Native writing requires index/projection consistency and a real resume oracle.
 - **Codex 0.150.1 app-server research:** generated official protocol schema exposes `thread/start`, `thread/resume`, `thread/fork`, persisted history reads and an operation to append raw Responses API items to model-visible history without starting a user turn. The CLI protocol is marked experimental and has not yet been isolated-smoke-tested by Avenic, so no L3b claim is made.
 - **OpenCode 1.18.30:** Avenic uses official top-level `session list --format json`, `export <id>`, `import <file>`, and `run --session <id>`. The writer emits the version's validated export envelope; it does not write OpenCode's private database. Every projected text part carries `_avenic` provenance in official part metadata so re-capture retains canonical event identity. The isolated integration smoke proves `A/B → import → run --session → C/D → export → canonical`, including repeat import/capture idempotency. This is L3 for a single OpenCode projection; it is not yet L4 cross-agent sync.

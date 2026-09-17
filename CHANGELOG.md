@@ -6,6 +6,10 @@
   catalog without automatically selecting it in the foreground TUI.
 - Add idempotent native projection materialization with canonical cursor and
   provenance tracking.
+- Resume an existing Codex native session when only the canonical cursor is
+  stale, injecting the deterministic delta; bootstrap is now fallback-only.
+- Persist deterministic `state.json` and `handoff.json`/`handoff.md` artifacts
+  without writing Claude or Codex private session storage.
 
 ## 1.4.6 - 2026-09-17
 

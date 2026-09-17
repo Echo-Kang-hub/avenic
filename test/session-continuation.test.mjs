@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -117,6 +117,9 @@ test("prepare and complete continuation maintain an agent cursor without changin
     assert.equal(first.mode, "bootstrap");
     assert.deepEqual(first.handoff.delta.map((item) => item.id), ["a", "b"]);
     assert.equal("environment" in first, false, "auth/runtime environment belongs to the caller");
+    const persistedHandoff = JSON.parse(await readFile(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.json"), "utf8"));
+    assert.equal(persistedHandoff.hash, first.handoff.hash);
+    assert.match(await readFile(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.md"), "utf8"), /New shared events/);
 
     await completeCanonicalContinuation(projectRoot, "shared", "codex", {
       nativeSessionId: "thread-1",
