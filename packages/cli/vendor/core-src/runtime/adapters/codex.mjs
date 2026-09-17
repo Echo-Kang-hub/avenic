@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
@@ -14,6 +15,66 @@ import {
   snapshotInto,
   transformJsonLines,
 } from "../sessions.mjs";
+import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
+
+export const agentId = "codex";
+
+export function toCanonical(content, options = {}) {
+  const records = parseJsonLines(content, agentId);
+  const meta = records.find((record) => record.type === "session_meta");
+  const nativeSessionId = options.nativeSessionId ?? meta?.payload?.id ?? meta?.payload?.session_id ?? "unknown";
+  const events = records.flatMap((record, index) => {
+    if (record.type !== "response_item" || record.payload?.type !== "message") return [];
+    const role = record.payload.role;
+    if (!new Set(["user", "assistant", "system", "tool"]).has(role)) return [];
+    return [{
+      id: nativeEventId(agentId, nativeSessionId, record.payload.id, index, record),
+      role,
+      createdAt: eventTimestamp(record.timestamp),
+      content: textBlocks(record.payload.content),
+      model: record.payload.model,
+      provider: meta?.payload?.model_provider,
+      extensions: { codex: { record, payload: record.payload } },
+    }];
+  });
+  return { nativeSessionId, events, revision: options.revision ?? null };
+}
+
+export function fromCanonical(events) {
+  return readonlyProjection(events);
+}
+
+// Reads one mapped rollout. No private files are written by the continuation
+// layer; this is capture-only and uses the caller's existing CODEX_HOME.
+export async function readCanonical(projectRoot, nativeSessionId, options = {}) {
+  const { nativeSessions } = locations(projectRoot, options.environment);
+  for (const relative of await listFiles(nativeSessions)) {
+    if (!relative.endsWith(".jsonl")) continue;
+    const content = await readFile(path.join(nativeSessions, relative), "utf8");
+    const parsed = toCanonical(content);
+    if (parsed.nativeSessionId === nativeSessionId) {
+      return { ...parsed, revision: createHash("sha256").update(content).digest("hex") };
+    }
+  }
+  throw new Error(`Codex native session is unavailable: ${nativeSessionId}`);
+}
+
+// Bootstrap discovery is capture-only: the official Codex CLI created the
+// rollout, and we identify the newest rollout for this project afterwards.
+export async function discoverNativeSession(projectRoot, options = {}) {
+  const { nativeSessions } = locations(projectRoot, options.environment);
+  const matches = await matchingRollouts(nativeSessions, projectRoot);
+  const candidates = await Promise.all(matches.filter((item) => item.id).map(async (item) => ({
+    ...item,
+    modified: (await stat(path.join(nativeSessions, item.relative))).mtimeMs,
+  })));
+  const eligible = options.notBefore === undefined
+    ? candidates
+    : candidates.filter((item) => item.modified >= options.notBefore);
+  eligible.sort((left, right) => right.modified - left.modified || right.relative.localeCompare(left.relative));
+  if (!eligible[0]?.id) throw new Error("Codex did not create a discoverable native session after launch");
+  return eligible[0].id;
+}
 
 function locations(projectRoot, environment = process.env) {
   const codexHome = environment.CODEX_HOME || path.join(homedir(), ".codex");
@@ -72,7 +133,13 @@ export async function capture(projectRoot, options = {}) {
   const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
   const rollouts = await matchingRollouts(nativeSessions, projectRoot);
   if (rollouts.length === 0) {
-    return { count: 0, changed: false };
+    return {
+      count: 0,
+      changed: false,
+      diagnostics: [existsSync(nativeSessions)
+        ? "Found Codex session data, but none matched this workspace."
+        : `Codex session root not found: ${nativeSessions}`],
+    };
   }
   const ids = new Set(rollouts.map(({ id }) => id).filter(Boolean));
   await replaceDirectory(portable, async (temporary) => {
@@ -86,7 +153,7 @@ export async function capture(projectRoot, options = {}) {
       await writeFile(path.join(temporary, "session_index.jsonl"), `${index}\n`, "utf8");
     }
   });
-  return { count: rollouts.length, changed: true };
+  return { count: rollouts.length, changed: true, diagnostics: [] };
 }
 
 async function restoreIndex(portable, codexHome) {

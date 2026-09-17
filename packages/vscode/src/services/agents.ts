@@ -6,11 +6,14 @@ import {
   bindProject,
   buildLaunchInjection,
   clearLocalAuth,
+  detectAgentInstallation,
   deinitializeAgent,
   effectiveAgentConfig,
+  getAgentRuntimeMode,
   getAgent,
   getSessionAdapter,
   initializeAgent,
+  importProjectSessions,
   loadRuntime,
   projectAuthEnvironment,
   projectModelStatus,
@@ -18,6 +21,7 @@ import {
   sessionLeasePath,
   setLocalAuth,
   type Agent,
+  type AgentInstallation,
   type EffectiveAgentConfig,
   type ProcessEnvLike,
 } from "@avenic/core";
@@ -27,8 +31,20 @@ export interface AgentStatus {
   agent: Agent;
   executableAvailable: boolean;
   effective: EffectiveAgentConfig | null;
+  mode?: Awaited<ReturnType<typeof getAgentRuntimeMode>>;
   // 本机已装版本与 npm registry 最新版（10 分钟缓存，失败容错为 null）
   cli: CliVersionStatus;
+  installation?: AgentInstallation;
+}
+
+// Agents and Dashboard ask for the same status during one refresh cycle.
+// Keep a short-lived in-memory snapshot so we do not respawn three CLIs for
+// every view. Mutations explicitly invalidate it from the extension shell.
+const STATUS_TTL_MS = 1_000;
+const statusCache = new Map<string, { at: number; value: Promise<AgentStatus> }>();
+
+export function invalidateAgentStatusCache(): void {
+  statusCache.clear();
 }
 
 export function listAgents(): Agent[] {
@@ -40,45 +56,64 @@ export function agentExecutableAvailable(agentId: string): boolean {
   return coreAgentExecutableAvailable(agentId);
 }
 
+export function detectInstallation(agentId: string): AgentInstallation {
+  return detectAgentInstallation(agentId);
+}
+
 export async function agentStatus(projectRoot: string, agentId: string): Promise<AgentStatus> {
+  const key = `${projectRoot}\u0000${agentId}`;
+  const cached = statusCache.get(key);
+  if (cached !== undefined && Date.now() - cached.at < STATUS_TTL_MS) return cached.value;
+  const pending = readAgentStatus(projectRoot, agentId);
+  statusCache.set(key, { at: Date.now(), value: pending });
+  return pending;
+}
+
+async function readAgentStatus(projectRoot: string, agentId: string): Promise<AgentStatus> {
   const state = await loadRuntime(projectRoot);
   const agent = getAgent(agentId);
+  const installation = detectAgentInstallation(agentId);
   // 探测并行化：本机 --version 与 npm registry 查询互不依赖；单次失败容错为 null
   const [executableAvailable, cli] = await Promise.all([
     Promise.resolve(coreAgentExecutableAvailable(agentId)),
-    cliVersionStatus(agentId, agent),
+    cliVersionStatus(agentId, agent, undefined, installation),
   ]);
-  return { agent, executableAvailable, effective: effectiveAgentConfig(state, agentId), cli };
+  return { agent, executableAvailable, effective: effectiveAgentConfig(state, agentId), mode: await getAgentRuntimeMode(projectRoot, agentId), cli, installation };
 }
 
 export { invalidateCliVersionCache, npmPackage } from "./agent-versions.ts";
 
 export function initialize(projectRoot: string, agentId: string, authMode: "global" | "project", sessionsMode: "global" | "project") {
-  return initializeAgent(projectRoot, agentId, authMode, sessionsMode);
+  return initializeAgent(projectRoot, agentId, authMode, sessionsMode).finally(invalidateAgentStatusCache);
 }
 
 export function deinitialize(projectRoot: string, agentId: string, purge?: boolean) {
-  return deinitializeAgent(projectRoot, agentId, purge ? { purge: true } : undefined);
+  return deinitializeAgent(projectRoot, agentId, purge ? { purge: true } : undefined).finally(invalidateAgentStatusCache);
 }
 
 export async function setAuthMode(projectRoot: string, agentId: string, mode: "global" | "project" | "reset") {
-  if (mode === "reset") return clearLocalAuth(projectRoot, agentId);
-  return setLocalAuth(projectRoot, agentId, mode);
+  const result = mode === "reset" ? await clearLocalAuth(projectRoot, agentId) : await setLocalAuth(projectRoot, agentId, mode);
+  invalidateAgentStatusCache();
+  return result;
 }
 
 export async function setSessionsMode(projectRoot: string, agentId: string, mode: "global" | "project") {
   const state = await loadRuntime(projectRoot);
   const effective = effectiveAgentConfig(state, agentId);
   const auth = effective?.auth ?? "global";
-  return initializeAgent(projectRoot, agentId, auth, mode);
+  const result = await initializeAgent(projectRoot, agentId, auth, mode);
+  invalidateAgentStatusCache();
+  return result;
 }
 
 export function importSessions(projectRoot: string, agentId: string) {
-  return getSessionAdapter(agentId).restore(projectRoot);
+  // Import means native Agent history -> project portable storage. This must
+  // match `avenic <agent> sessions import`; restore is the explicit writeback.
+  return importProjectSessions(projectRoot, agentId);
 }
 
 export function writebackSessions(projectRoot: string, agentId: string) {
-  return getSessionAdapter(agentId).capture(projectRoot);
+  return getSessionAdapter(agentId).restore(projectRoot);
 }
 
 // ---- 启动运行（免 @avenic/cli npm 包：插件直接复用 core 运行时原语） ----

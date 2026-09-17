@@ -7,8 +7,25 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { select } from "../src/services/catalog.ts";
-import { adopt, addDirect, adoptedOnlyNames, adoptPacked, detected, directSkills, installedPackIds, installPacks, planAdopt, removeDirect, repairLinks, status, uninstallPacks } from "../src/services/skills.ts";
+import { adopt, addDirect, adoptedOnlyNames, adoptPacked, detected, directSkills, installedPackIds, installPacks, invalidateSkillsSnapshot, planAdopt, readSkillsSnapshot, removeDirect, repairLinks, status, uninstallPacks } from "../src/services/skills.ts";
 import { makeCatalogFixture, testEnv } from "./helpers.ts";
+
+test("skills snapshot shares one read until an explicit refresh invalidates it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-skills-snapshot-"));
+  try {
+    const env = testEnv(path.join(root, "state"));
+    const cwd = path.join(root, "project");
+    await mkdir(cwd, { recursive: true });
+    const first = readSkillsSnapshot("project", cwd, env);
+    assert.strictEqual(first, readSkillsSnapshot("project", cwd, env));
+    await first;
+    invalidateSkillsSnapshot();
+    assert.notStrictEqual(first, readSkillsSnapshot("project", cwd, env));
+  } finally {
+    invalidateSkillsSnapshot();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("pack install → status → uninstall round-trip in project scope", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-skills-"));

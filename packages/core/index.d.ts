@@ -20,6 +20,20 @@ export interface Io {
 export const AGENTS: Record<string, Agent>;
 export function getAgent(agentId: string): Agent;
 export function agentExecutableAvailable(agentId: string, environment?: ProcessEnvLike): boolean;
+export type AgentInstallMethod = "standalone" | "npm-global" | "npm-local" | "brew" | "binary" | "source" | "unknown";
+export interface AgentUpdateStrategy {
+  kind: "standalone" | "npm-global" | "npm-local" | "brew" | "manual";
+  command: string | null;
+}
+export interface AgentInstallation {
+  executable: string | null;
+  resolvedExecutable: string | null;
+  version: string | null;
+  installMethod: AgentInstallMethod;
+  packageManager: "npm" | "brew" | null;
+  updateStrategy: AgentUpdateStrategy;
+}
+export function detectAgentInstallation(agentId: string, options?: { environment?: ProcessEnvLike; cwd?: string }): AgentInstallation;
 
 // ---- runtime: config ----
 
@@ -47,7 +61,7 @@ export interface RuntimePaths {
 
 export interface RuntimeState {
   paths: RuntimePaths;
-  runtime: { schemaVersion?: number; agents?: Record<string, AgentRuntimeConfig> };
+  runtime: { schemaVersion?: number; activeCanonicalSessionId?: string; agents?: Record<string, AgentRuntimeConfig> };
   local: { schemaVersion?: number; agents?: Record<string, { auth?: "global" | "project" }> };
 }
 
@@ -55,6 +69,8 @@ export function validateAuthMode(authMode: unknown): "global" | "project";
 export function validateSessionsMode(sessionsMode: unknown): "global" | "project";
 export function runtimePaths(projectRoot: string): RuntimePaths;
 export function loadRuntime(projectRoot: string): Promise<RuntimeState>;
+export function getActiveCanonicalSessionId(projectRoot: string): Promise<string | null>;
+export function setActiveCanonicalSession(projectRoot: string, canonicalSessionId: string | null): Promise<string | null>;
 export function initializeAgent(
   projectRoot: string,
   agentId: string,
@@ -70,6 +86,32 @@ export function deinitializeAgent(
 export function setLocalAuth(projectRoot: string, agentId: string, authMode: "global" | "project"): Promise<EffectiveAgentConfig>;
 export function clearLocalAuth(projectRoot: string, agentId: string): Promise<EffectiveAgentConfig>;
 export function effectiveAgentConfig(state: RuntimeState, agentId: string): EffectiveAgentConfig | null;
+export interface AgentRuntimeMode {
+  auth: {
+    default: "global" | "project";
+    localOverride: "global" | "project" | null;
+    effective: "global" | "project";
+  };
+  sessions: { mode: "global" | "project" };
+}
+export function getAgentRuntimeMode(projectRoot: string, agentId: string): Promise<AgentRuntimeMode | null>;
+export interface EffectiveAgentRuntime {
+  executable: string;
+  authScope: "global" | "project";
+  provider: string | null;
+  endpoint: string | null;
+  model: string | null;
+  config: EffectiveAgentConfig;
+  profile: unknown;
+  argumentsList: string[];
+  environment: ProcessEnvLike;
+  note: string | null;
+}
+export function resolveEffectiveAgentRuntime(
+  projectRoot: string,
+  agentId: string,
+  options?: { state?: RuntimeState; environment?: ProcessEnvLike; argumentsList?: string[]; io?: Io },
+): Promise<EffectiveAgentRuntime>;
 
 // ---- runtime: gitignore / project-root / process / sessions / adapters ----
 
@@ -110,6 +152,7 @@ export function releaseSessionLease(agentId: string, projectRoot: string, member
 export function sessionLeasePath(agentId: string, projectRoot: string): string;
 export function processAlive(pid: number): boolean;
 export function samePath(left: string, right: string): boolean;
+export function normalizeProjectIdentity(value: string): string | null;
 export function hashContent(content: string): string;
 export function readFirstJsonLine(file: string): Promise<unknown | null>;
 export function listFiles(sourcePath: string): Promise<string[]>;
@@ -119,6 +162,51 @@ export function revertFrom(snapshot: string, source: string): Promise<unknown>;
 export function replaceDirectory(destination: string, build: (destination: string) => Promise<unknown>): Promise<unknown>;
 export function mergeFiles(sourceRoot: string, relativeFiles: string[], destinationRoot: string, transform?: (content: string) => string, options?: { filter?: (relativePath: string) => boolean }): Promise<unknown>;
 export function transformJsonLines(content: string, transform: (value: unknown) => unknown): string;
+
+// ---- runtime: canonical sessions ----
+
+export interface CanonicalEvent {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  createdAt: string;
+  content: Array<{ type: string; [key: string]: unknown }>;
+  [key: string]: unknown;
+}
+export interface NativeSessionMapping {
+  agentId: string;
+  nativeSessionId: string;
+  nativeRevision?: string | null;
+  canonicalRevision?: string | null;
+  projectionHash?: string | null;
+  lastCanonicalEventId?: string | null;
+  lastSyncedAt?: string;
+  diagnostics?: unknown[];
+}
+export interface ContinuationResult {
+  nativeSessionId: string;
+  nativeRevision?: string | null;
+  projectionHash?: string | null;
+  diagnostics?: unknown[];
+}
+export function createCanonicalSession(projectRoot: string, input?: Record<string, unknown>): Promise<{ id: string; created: boolean }>;
+export function importProjectSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ count: number; changed: boolean; discovered: number; imported: number; unchanged: number; failed: number; diagnostics: string[] }>;
+export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
+export function appendCanonicalEvents(projectRoot: string, id: string, events: CanonicalEvent[]): Promise<{ added: number; duplicate: number }>;
+export function canonicalSessionRevision(events: CanonicalEvent[]): string;
+export function syncNativeMapping(projectRoot: string, id: string, mapping: NativeSessionMapping): Promise<NativeSessionMapping>;
+export function prepareCanonicalContinuation(projectRoot: string, canonicalId: string, targetAgent: string): Promise<unknown>;
+export function completeCanonicalContinuation(projectRoot: string, canonicalId: string, targetAgent: string, result: ContinuationResult): Promise<NativeSessionMapping>;
+export function reconcileCanonicalSession(projectRoot: string, canonicalId: string, options?: {
+  environment?: ProcessEnvLike;
+  environmentForAgent?: (agentId: string) => ProcessEnvLike;
+}): Promise<Array<{ agentId: string; stale?: boolean; nativeSessionId?: string; added?: number; duplicate?: number }>>;
+export function continueCanonicalSession(options: {
+  projectRoot: string;
+  canonicalId: string;
+  targetAgent: string;
+  capture(stage: "before" | "after", context?: unknown): Promise<{ nativeSessionId?: string; nativeRevision?: string; events?: CanonicalEvent[] } | null>;
+  launch(continuation: unknown): Promise<ContinuationResult>;
+}): Promise<unknown>;
 
 export interface SessionAdapterResult {
   count: number;

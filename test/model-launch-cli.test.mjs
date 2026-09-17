@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,6 +29,7 @@ writeFileSync(process.env.AVENIC_PROBE_FILE, JSON.stringify({ argumentsList: pro
 // Windows 上 npm 全局安装产出的 agent CLI 就是 .cmd shim，core 的 resolveOnPath 也正是
 // 按 .exe/.com/.ps1/.cmd/.bat 的顺序找的——用 .cmd 假件走的就是真实那条路径（含 shell 引号化）。
 const SHIM = (probePath) => `@echo off\r\nnode "${probePath}" %*\r\n`;
+const POSIX_SHIM = (probePath) => `#!/bin/sh\nexec node "${probePath}" "$@"\n`;
 
 async function withRig(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-launch-cli-"));
@@ -40,7 +41,11 @@ async function withRig(run) {
   await mkdir(binDir, { recursive: true });
   const probePath = path.join(binDir, "probe.mjs");
   await writeFile(probePath, PROBE);
-  for (const name of ["claude", "codex"]) await writeFile(path.join(binDir, `${name}.cmd`), SHIM(probePath));
+  for (const name of ["claude", "codex", "opencode"]) {
+    const shim = process.platform === "win32" ? path.join(binDir, `${name}.cmd`) : path.join(binDir, name);
+    await writeFile(shim, process.platform === "win32" ? SHIM(probePath) : POSIX_SHIM(probePath));
+    if (process.platform !== "win32") await chmod(shim, 0o755);
+  }
   const probeFile = path.join(root, "probe.json");
   const environment = {
     AVENIC_STATE_DIR: stateDir,
@@ -158,6 +163,19 @@ test("launching an unbound project injects nothing", async () => {
     assert.equal(probe.env.ANTHROPIC_AUTH_TOKEN, null, "未绑定不得注入密钥");
     assert.equal(probe.env.ANTHROPIC_MODEL, null, "未绑定不得注入模型");
     assert.equal(probe.env.AVENIC_LAUNCH_SENTINEL, "preserved-9c3f", "宿主环境照常传给子进程");
+  });
+});
+
+test("fake agent shims preserve a space-containing user argument on every platform", async () => {
+  await withRig(async ({ projectRoot, spawnEnv, probeFile }) => {
+    assert.equal(launch(spawnEnv, projectRoot, "opencode", ["init", "--auth", "global", "--sessions", "global"]).status, 0);
+
+    const run = launch(spawnEnv, projectRoot, "opencode", ["--project", "directory with spaces"]);
+    assert.equal(run.status, 0, run.stderr);
+    const probe = await readProbe(probeFile);
+    assert.deepEqual(probe.argumentsList, ["--project", "directory with spaces"]);
+    assert.equal(probe.env.AVENIC_LAUNCH_SENTINEL, "preserved-9c3f");
+    assert.ok(probe.env.PATH.includes(path.dirname(probeFile)), "fake executable directory must stay on PATH");
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "name": "avenic-repo",
   "license": "MIT",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   "scripts": {
     "sync-core": "node scripts/sync-core.mjs",
     "pretest": "npm run sync-core",
-    "test": "node --test",
+    "test": "node --test test/*.test.mjs",
     "test:vscode": "npm --prefix packages/vscode test",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "pack:cli": "cd packages/cli && npm pack --dry-run --json"

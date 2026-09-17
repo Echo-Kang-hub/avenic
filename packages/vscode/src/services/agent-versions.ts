@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import process from "node:process";
 import { promisify } from "node:util";
-import { spawnExecutableSync, type Agent } from "@avenic/core";
+import { spawnExecutableSync, type Agent, type AgentInstallation } from "@avenic/core";
 
 const execFileAsync = promisify(execFile);
 
@@ -22,6 +22,13 @@ export function npmPackage(agentId: string): string {
   const pkg = AGENT_NPM_PACKAGES[agentId];
   if (pkg === undefined) throw new Error(`Unknown npm package for agent: ${agentId}`);
   return pkg;
+}
+
+export function updateCommandForInstallation(agentId: string, installation: AgentInstallation | null): string | null {
+  if (installation === null || installation.executable === null) {
+    return `npm install --global ${npmPackage(agentId)}@latest`;
+  }
+  return installation.updateStrategy.command;
 }
 
 // 从 --version 输出提取首个语义版本：`2.1.238 (Claude Code)` / `codex-cli 0.150.1` → semver
@@ -86,10 +93,15 @@ export async function cliVersionStatus(
   agentId: string,
   agent: Agent,
   probes: VersionProbes = defaultProbes,
+  installation: AgentInstallation | null = null,
 ): Promise<CliVersionStatus> {
   const cached = cache.get(agentId);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.value;
-  const [installed, latest] = await Promise.all([probes.probeInstalled(agent), probes.probeLatest(agentId)]);
+  const useNpmRegistry = installation === null || installation.executable === null || installation.installMethod.startsWith("npm-");
+  const [installed, latest] = await Promise.all([
+    installation?.version ?? probes.probeInstalled(agent),
+    useNpmRegistry ? probes.probeLatest(agentId) : Promise.resolve(null),
+  ]);
   const value: CliVersionStatus = {
     installed,
     latest,

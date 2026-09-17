@@ -74,8 +74,8 @@ async function catalogRootFor(spec: string, environment: ProcessEnvLike, options
   }
 }
 
-export async function packsFor(spec: string, environment = process.env): Promise<Map<string, Pack> | null> {
-  const root = await catalogRootFor(spec, environment);
+export async function packsFor(spec: string, environment = process.env, options: { cachedOnly?: boolean } = {}): Promise<Map<string, Pack> | null> {
+  const root = await catalogRootFor(spec, environment, options);
   if (root === null) return null;
   try { return await loadPacks(root); }
   catch { return null; }

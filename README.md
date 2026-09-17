@@ -2,6 +2,26 @@
 
 Avenic 是一个命令行工具，用于统一管理编码 Agent（Claude Code、Codex、OpenCode）的运行时配置与 Skills，支持 Windows、macOS 和 Linux。
 
+## Shared sessions
+
+Avenic keeps a portable canonical conversation alongside each agent's native
+history. Authentication is deliberately separate: continuing a session keeps
+your existing Claude provider (including DeepSeek/API/cc-switch), Codex login,
+and OpenCode configuration unchanged.
+
+```bash
+avenic sessions list
+avenic sessions status
+avenic sessions continue <session-id> --agent codex
+avenic sessions continue <session-id> --agent claude
+avenic sessions continue <session-id> --agent opencode
+```
+
+`continue` reports whether it is bootstrapping or resuming and how many shared
+events are newly supplied. Claude Code and Codex provide L3a semantic
+continuation; OpenCode provides L3 native continuation. Catalog Tree is
+cache-first: use explicit Hub Add or Sync for network work.
+
 ## 安装
 
 要求 Node.js ≥ 18.17。

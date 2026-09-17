@@ -1,12 +1,15 @@
 // Public API of @avenic/core.
 
-export { AGENTS, agentExecutableAvailable, getAgent } from "./runtime/agents.mjs";
+export { AGENTS, agentExecutableAvailable, detectAgentInstallation, getAgent } from "./runtime/agents.mjs";
 export {
   clearLocalAuth,
   deinitializeAgent,
   effectiveAgentConfig,
+  getAgentRuntimeMode,
   initializeAgent,
   loadRuntime,
+  getActiveCanonicalSessionId,
+  setActiveCanonicalSession,
   projectAuthEnvironment,
   runtimePaths,
   setLocalAuth,
@@ -22,13 +25,26 @@ export {
   setSessionsGitIgnored,
 } from "./runtime/gitignore.mjs";
 export { locateProjectRoot } from "./runtime/project-root.mjs";
+export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export { spawnExecutableSync } from "./runtime/process.mjs";
+export {
+  captureCanonicalSession,
+  reconcileCanonicalSession,
+  completeCanonicalContinuation,
+  continueCanonicalSession,
+  importProjectSessions,
+  continuationLaunchArguments,
+  prepareCanonicalContinuation,
+  projectCanonicalSession,
+} from "./runtime/session-interop.mjs";
+export { buildHandoff, HANDOFF_SCHEMA_VERSION } from "./runtime/handoff.mjs";
 export {
   PROJECT_ROOT_TOKEN,
   acquireSessionLease,
   hashContent,
   listFiles,
   mergeFiles,
+  normalizeProjectIdentity,
   processAlive,
   readFirstJsonLine,
   releaseSessionLease,
@@ -41,6 +57,15 @@ export {
   transformJsonLines,
 } from "./runtime/sessions.mjs";
 export { getSessionAdapter } from "./runtime/adapters/index.mjs";
+export {
+  CANONICAL_SESSION_SCHEMA_VERSION,
+  appendCanonicalEvents,
+  canonicalSessionRevision,
+  createCanonicalSession,
+  listCanonicalSessions,
+  readCanonicalSession,
+  syncNativeMapping,
+} from "./runtime/canonical-sessions.mjs";
 
 export { fail } from "./util/fail.mjs";
 export { isInside, removeEmptyDirectory } from "./util/fs.mjs";

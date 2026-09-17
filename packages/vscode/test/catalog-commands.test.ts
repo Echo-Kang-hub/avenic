@@ -44,6 +44,21 @@ test("packsFor previews the packs of a catalog spec (read-only view data)", asyn
   }
 });
 
+test("cache-only catalog preview never fetches a newly registered local Hub", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-catalog-"));
+  try {
+    const catalogDir = path.join(root, "catalog");
+    const env = testEnv(path.join(root, "state"));
+    await makeCatalogFixture(catalogDir);
+    // The cache directory is intentionally absent: rendering a tree must not
+    // synchronously clone/fetch merely because a user expands the Hub row.
+    const cacheOnly = packsFor as unknown as (spec: string, environment: NodeJS.ProcessEnv, options: { cachedOnly: boolean }) => ReturnType<typeof packsFor>;
+    assert.equal(await cacheOnly(catalogDir, env, { cachedOnly: true }), null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("packStructure resolves the source-grouped skill layers of a pack (cache-first)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-catalog-"));
   try {

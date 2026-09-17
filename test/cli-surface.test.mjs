@@ -187,6 +187,24 @@ test("sessions git toggles on/off/status and rejects invalid modes", async () =>
   });
 });
 
+test("unified sessions list reads the canonical store without native agent dependencies", async () => {
+  await withTempDirectory("avenic-canonical-list-", async (projectRoot) => {
+    const result = runAgent(projectRoot, ["sessions", "list"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Canonical sessions/);
+    assert.match(result.stdout, /No canonical sessions/);
+  });
+});
+
+test("unified sessions status explains an empty canonical store", async () => {
+  await withTempDirectory("avenic-canonical-status-", async (projectRoot) => {
+    const result = runAgent(projectRoot, ["sessions", "status"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Canonical session status/);
+    assert.match(result.stdout, /No canonical sessions/);
+  });
+});
+
 test("agent auth CLI switches scope, resets, and rejects invalid modes", async () => {
   await withTempDirectory("avenic-auth-", async (projectRoot) => {
     const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "global"]);

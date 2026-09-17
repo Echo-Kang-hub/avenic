@@ -1,0 +1,54 @@
+import { createHash } from "node:crypto";
+
+export const HANDOFF_SCHEMA_VERSION = 1;
+// Keep rehydration prompts bounded even when a legacy project has thousands
+// of canonical events. The append-only canonical store remains complete; only
+// the model-visible semantic handoff is compacted.
+const MAX_TRANSCRIPT_EVENTS = 12;
+const MAX_EVENT_TEXT = 1_200;
+
+function text(event) {
+  return (event.content ?? []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim();
+}
+
+function compact(value) {
+  return value.length > MAX_EVENT_TEXT ? `${value.slice(0, MAX_EVENT_TEXT)}\n[truncated]` : value;
+}
+
+function deriveState(events) {
+  const users = events.filter((event) => event.role === "user").map(text).filter(Boolean);
+  const assistants = events.filter((event) => event.role === "assistant").map(text).filter(Boolean);
+  return {
+    goal: users[0] ?? null,
+    completed: assistants.filter((value) => /\b(completed|done|implemented|fixed)\b/i.test(value)).slice(-10),
+    pending: users.length > 1 ? users.at(-1) : null,
+    decisions: [],
+    relevantFiles: [],
+    blockers: [],
+  };
+}
+
+// A compact, deterministic rehydration payload. Native adapters decide how to
+// submit it; this layer deliberately does not fabricate native transcripts.
+export function buildHandoff({ session, events, targetAgent, lastCanonicalEventId = null }) {
+  const start = lastCanonicalEventId ? events.findIndex((event) => event.id === lastCanonicalEventId) + 1 : 0;
+  const delta = events.slice(Math.max(0, start));
+  const state = deriveState(events);
+  // Canonical history remains complete. A launcher receives only a bounded,
+  // recent semantic transcript so legacy projects cannot exceed CLI/context
+  // limits during first bootstrap.
+  const transcript = delta.slice(-MAX_TRANSCRIPT_EVENTS)
+    .map((event) => `- ${event.role}: ${compact(text(event))}`)
+    .filter((line) => !line.endsWith(": "));
+  const markdown = [
+    `# Avenic continuation (${targetAgent})`,
+    `Goal: ${state.goal ?? "Unknown"}`,
+    `Current task: ${state.pending ?? "Continue the shared session."}`,
+    state.completed.length ? `Completed work:\n${state.completed.map((value) => `- ${value}`).join("\n")}` : "",
+    `Project: ${session.project?.cwd ?? "Unknown"}`,
+    `Source provenance: ${session.provenance?.source ?? session.source ?? "unknown"}`,
+    transcript.length ? `New shared events since your last sync:\n${transcript.join("\n")}` : "No new shared events.",
+  ].filter(Boolean).join("\n\n");
+  const hash = createHash("sha256").update(JSON.stringify({ version: HANDOFF_SCHEMA_VERSION, sessionId: session.id, targetAgent, lastCanonicalEventId, delta, state })).digest("hex");
+  return { schemaVersion: HANDOFF_SCHEMA_VERSION, targetAgent, delta, state, markdown, hash, lastCanonicalEventId: delta.at(-1)?.id ?? lastCanonicalEventId };
+}

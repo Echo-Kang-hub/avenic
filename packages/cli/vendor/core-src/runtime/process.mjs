@@ -8,7 +8,11 @@ function resolveOnPath(executable, environment) {
     return existsSync(executable) ? executable : null;
   }
   const extensions = process.platform === "win32" ? [".exe", ".com", ".ps1", ".cmd", ".bat", ""] : [""];
-  for (const directory of (environment.PATH ?? "").split(path.delimiter)) {
+  // Windows preserves the inherited spelling of environment variables. Node
+  // processes commonly receive `Path` (not `PATH`), while callers that build a
+  // minimal POSIX-style environment use `PATH`.
+  const pathValue = environment.PATH ?? environment.Path ?? "";
+  for (const directory of pathValue.split(path.delimiter)) {
     if (!directory) continue;
     for (const extension of extensions) {
       const candidate = path.join(directory.replace(/^"|"$/g, ""), `${executable}${extension}`);

@@ -1,12 +1,12 @@
 import * as vscode from "vscode";
 import { defaultSpec, listKnown, packStructure, packsFor } from "../services/catalog.ts";
-import { catalogPackSkillsToViewModels, catalogPacksToViewModels, catalogSourceGroupsToViewModels, catalogToViewModels, type CatalogChildItem, type CatalogSourceGroupModel } from "./view-models.ts";
+import { catalogPackSkillsToViewModels, catalogPacksToViewModels, catalogSourceGroupsToViewModels, catalogToViewModels, type CatalogChildItem } from "./view-models.ts";
+import { measurePerformance } from "../ui/performance.ts";
 
 interface PackTreeItem extends vscode.TreeItem {
   packId?: string;
   skillNames?: string[]; // 扁平回退：packStructure 不可用时的 Skill 列表
   packSpec?: string;
-  sourceGroups?: CatalogSourceGroupModel[]; // 层次：pack.sources 顺序的 source 分组
 }
 interface SourceTreeItem extends vscode.TreeItem {
   sourceSkills?: string[];
@@ -48,7 +48,7 @@ export class CatalogViewProvider implements vscode.TreeDataProvider<vscode.TreeI
     const packItem = element as PackTreeItem;
     const packId = packItem.packId;
     if (packId !== undefined) {
-      const children = this.packSkillChildren(packItem, packId);
+      const children = await this.packSkillChildren(packItem, packId);
       this.scopeChildren.set(element, children);
       return children;
     }
@@ -70,32 +70,32 @@ export class CatalogViewProvider implements vscode.TreeDataProvider<vscode.TreeI
   }
 
   // Catalog 行 → Pack 行（cache-first 只读预览；无缓存先尝试 fetch，仍失败给提示行）。
-  // 每个 Pack 行同时在 packStructure 成功时挂上 sourceGroups（层次优先）；失败（离线无缓存
-  // 等）回退 skillNames 扁平列表。packStructure 只读缓存，异常轻，不阻塞行渲染。
+  // Hub 展开只读取 Pack 清单；source 分组延后到用户展开对应 Pack，避免一次性重复解析。
   private async packChildren(spec: string): Promise<vscode.TreeItem[]> {
-    const packs = await packsFor(spec);
+    // A tree expansion is a rendering operation, never an instruction to
+    // clone/fetch a Hub. Explicit Add/Sync owns network I/O and progress UI.
+    const packs = await measurePerformance("catalog-view.packs", () => packsFor(spec, process.env, { cachedOnly: true }));
     if (packs === null) {
       return [this.row({ kind: "hint", label: "Hub 未缓存", description: "同步后可查看 Packs", iconHint: "info" })];
     }
-    return Promise.all(catalogPacksToViewModels([...packs.values()]).map(async (model) => {
+    return catalogPacksToViewModels([...packs.values()]).map((model) => {
       const item = this.row(model);
       const stamped = item as PackTreeItem;
       // pack 行挂 packId（展开判名字段）+ packSpec（安装命令校验用），绝不复用条目行的 catalogSpec
       stamped.packId = model.id!;
       stamped.skillNames = [...new Set(packs.get(model.id!)!.sources.flatMap((s) => s.skills))];
       stamped.packSpec = spec; // 安装命令校验：仅默认 Catalog 的 Pack 可直接安装
-      const structure = await packStructure(spec, model.id!);
-      if (structure !== null) {
-        stamped.sourceGroups = catalogSourceGroupsToViewModels(structure);
-      }
       return item;
-    }));
+    });
   }
 
-  // Pack 行子级：有 sourceGroups → 分组行；否则回退扁平 Skill 行（未缓存的降级）
-  private packSkillChildren(item: PackTreeItem, packId: string): vscode.TreeItem[] {
-    if (item.sourceGroups !== undefined) {
-      return item.sourceGroups.map((group) => {
+  // Pack 行子级：优先读取该 Pack 的 source 分组；缓存不可用时回退扁平 Skill 列表。
+  private async packSkillChildren(item: PackTreeItem, packId: string): Promise<vscode.TreeItem[]> {
+    const structure = item.packSpec === undefined
+      ? null
+      : await measurePerformance("catalog-view.pack", () => packStructure(item.packSpec!, packId, process.env, { cachedOnly: true }));
+    if (structure !== null) {
+      return catalogSourceGroupsToViewModels(structure).map((group) => {
         const row = this.row({ kind: "source", label: group.label, description: group.description, iconHint: "repo" });
         const stamped = row as SourceTreeItem;
         stamped.sourceSkills = group.skills;

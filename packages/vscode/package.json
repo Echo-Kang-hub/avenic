@@ -3,7 +3,7 @@
   "displayName": "Avenic Agent Manager",
   "description": "管理 Avenic Agent 运行时与 Skills 的图形界面",
   "publisher": "EchoKang",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "icon": "media/icon.png",
@@ -511,7 +511,7 @@
     "package": "npm run build && vsce package --out dist/avenic-agent-manager.vsix"
   },
   "devDependencies": {
-    "@avenic/core": "^1.2.1",
+    "@avenic/core": "file:../core",
     "@types/node": "^18.19.0",
     "@types/vscode": "^1.90.0",
     "@vscode/codicons": "^0.0.46-24",

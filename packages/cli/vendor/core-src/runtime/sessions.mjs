@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -12,18 +12,28 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 
 export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 
-export function samePath(left, right) {
-  if (!left || !right) {
-    return false;
+export function normalizeProjectIdentity(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    if (/^file:/i.test(value)) value = fileURLToPath(value);
+  } catch {
+    return null;
   }
-  const normalize = (value) => {
-    const resolved = path.resolve(value);
-    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-  };
-  return normalize(left) === normalize(right);
+  let resolved = path.normalize(path.resolve(value));
+  // Resolve junctions/symlinks when the path exists, while retaining the
+  // lexical fallback for native metadata that references a deleted path.
+  try { resolved = realpathSync.native(resolved); } catch {}
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+export function samePath(left, right) {
+  const normalizedLeft = normalizeProjectIdentity(left);
+  const normalizedRight = normalizeProjectIdentity(right);
+  return normalizedLeft !== null && normalizedLeft === normalizedRight;
 }
 
 export function transformJsonLines(content, transform) {

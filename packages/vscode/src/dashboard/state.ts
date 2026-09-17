@@ -1,6 +1,6 @@
 import { agentExecutableAvailable, agentStatus, listAgents } from "../services/agents.ts";
 import { cachedRevision, defaultSpec } from "../services/catalog.ts";
-import { detected as detectedSkillNames, status as skillsStatus } from "../services/skills.ts";
+import { readSkillsSnapshot } from "../services/skills.ts";
 import type { DashboardData } from "./protocol.ts";
 
 // 纯数据组装（无 vscode import）：所有可执行/网络/状态读取都走 services 层 + 注入的 environment，
@@ -66,9 +66,10 @@ export async function buildDashboardData(projectRoot: string | null, environment
     }),
   );
   const spec = await defaultSpec(environment);
-  const skills = await skillsStatus("project", projectRoot, environment).catch(() => null);
+  const skillSnapshot = await readSkillsSnapshot("project", projectRoot, environment).catch(() => null);
+  const skills = skillSnapshot?.status ?? null;
   // 磁盘检测（未托管内容：旧版/外部工具安装、手工拷贝）——只读，任何错误降级为空
-  const detected = await detectedSkillNames("project", projectRoot, environment).catch(() => []);
+  const detected = skillSnapshot?.detected ?? [];
   const untracked = skills === null ? detected : detected.filter((name) => !skills.names.includes(name));
   const untrackedRow = { label: "Skills", ok: false, details: `${untracked.length} 个 Skill 未托管` };
   return {

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
@@ -6,7 +7,6 @@ import {
   acquireSessionLease,
   agentExecutableAvailable,
   bindProject,
-  buildLaunchInjection,
   clearLocalAuth,
   createInstallContext,
   deinitializeAgent,
@@ -14,19 +14,30 @@ import {
   ensureSkillLinks,
   formatLinkSummary,
   getAgent,
+  getActiveCanonicalSessionId,
   getSessionAdapter,
   initializeAgent,
+  importProjectSessions,
   loadRuntime,
   locateProjectRoot,
   logConflicts,
+  listCanonicalSessions,
+  captureCanonicalSession,
+  reconcileCanonicalSession,
+  continueCanonicalSession,
+  continuationLaunchArguments,
   managedSkillNames,
+  projectCanonicalSession,
+  readCanonicalSession,
   projectAuthEnvironment,
   projectModelStatus,
   resolveProjectProfile,
+  resolveEffectiveAgentRuntime,
   sessionLeasePath,
   sessionsGitIgnored,
   setLocalAuth,
   setSessionsGitIgnored,
+  setActiveCanonicalSession,
   spawnExecutableSync,
   validateAuthMode,
   validateSessionsMode,
@@ -42,7 +53,8 @@ function launchExecutable(executable, argumentsList, options = {}) {
   const result = spawnExecutableSync(executable, argumentsList, {
     cwd: options.cwd,
     env: options.environment,
-    stdio: options.capture ? "pipe" : "inherit",
+    stdio: options.input !== undefined ? ["pipe", "inherit", "inherit"] : (options.capture ? "pipe" : "inherit"),
+    input: options.input,
     windowsHide: Boolean(options.capture),
   });
   if (result.error) {
@@ -76,6 +88,8 @@ Agent runtimes:
   avenic <claude|codex|opencode> status
   avenic <claude|codex|opencode> sessions [import|writeback|status]
   avenic <claude|codex|opencode> [official CLI arguments...]
+  avenic sessions list                 List unified canonical sessions
+  avenic sessions continue <id> --agent <claude|codex|opencode>
   avenic sessions git [on|off|status]
   avenic status                       Show all three agents
   avenic doctor                       Check the environment
@@ -153,9 +167,9 @@ async function resolveActiveProfileForLaunch(projectRoot, environment) {
   }
 }
 
-async function dispatchAgent(agentId, argumentsList) {
+async function dispatchAgent(agentId, argumentsList, options = {}) {
   const agent = getAgent(agentId);
-  const projectRoot = locateProjectRoot();
+  const projectRoot = options.projectRoot ?? locateProjectRoot();
   const [command, ...remainingArguments] = argumentsList;
 
   if (command === "help" || command === "--help" || command === "-h") {
@@ -264,11 +278,14 @@ async function dispatchAgent(agentId, argumentsList) {
       console.log(`${agent.displayName} portable sessions\n\nProject  ${projectRoot}\nSessions ${result.count}`);
       return 0;
     }
-    const result = action === "import" ? await adapter.capture(projectRoot) : await adapter.restore(projectRoot);
+    const result = action === "import" ? await importProjectSessions(projectRoot, agentId) : await adapter.restore(projectRoot);
     console.log(`${agent.displayName} session ${action}\n`);
     console.log(`Project   ${projectRoot}`);
-    console.log(`Sessions  ${result.count}`);
+    console.log(`Sessions  ${action === "import" ? `${result.discovered} discovered; ${result.imported} imported; ${result.unchanged} unchanged; ${result.failed} failed` : result.count}`);
     console.log(action === "import" ? `Portable  ${result.changed ? "Updated" : "Unchanged"}` : `Written back  ${result.added + result.updated}`);
+    if (action === "import" && result.discovered === 0 && result.diagnostics?.length) {
+      console.log(`Note      ${result.diagnostics[0]}`);
+    }
     if (result.conflicts > 0) {
       console.log(`Conflicts ${result.conflicts} (project sessions overwrote native storage)`);
     }
@@ -280,11 +297,27 @@ async function dispatchAgent(agentId, argumentsList) {
   if (!config) {
     throw new Error(`${agent.displayName} is not initialized. Run: avenic ${agentId} init`);
   }
-  const environment = config.auth === "project"
+  const environment = options.environment ?? (config.auth === "project"
     ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-    : process.env;
+    : process.env);
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
+  // Project sessions always follow the active canonical session. This keeps
+  // the ordinary `avenic <agent>` path identical to `sessions continue` and
+  // prevents an older native/portable rollout from winning by mtime.
+  if (portableSessions && !options.skipCanonical && argumentsList.length === 0) {
+    let activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
+    if (!activeCanonicalId) {
+      // Legacy project sessions are imported once before the first unified
+      // launch. This is migration, not a second launch/recovery pipeline.
+      await importProjectSessions(projectRoot, agentId, { environment });
+      activeCanonicalId = (await listCanonicalSessions(projectRoot))[0]?.id ?? null;
+      if (activeCanonicalId) await setActiveCanonicalSession(projectRoot, activeCanonicalId);
+    }
+    if (activeCanonicalId) {
+      return dispatchSessions(["continue", activeCanonicalId, "--agent", agentId], { projectRootOverride: projectRoot });
+    }
+  }
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
@@ -314,7 +347,7 @@ async function dispatchAgent(agentId, argumentsList) {
       await spawnSessionWatchdog(agentId, projectRoot, lease.member, environment);
     } catch {}
   }
-  if (portableSessions) {
+  if (portableSessions && !options.skipRestore) {
     // Project session records take priority on launch: conflicting native
     // copies are overwritten silently. Native storage is never written to
     // proactively; only `avenic <agent> sessions writeback` writes
@@ -349,21 +382,21 @@ async function dispatchAgent(agentId, argumentsList) {
   } catch (error) {
     console.warn(`⚠ Skills repair skipped: ${error.code ?? error.message}`);
   }
-  const launchProfile = await resolveActiveProfileForLaunch(projectRoot, environment);
-  const injection = buildLaunchInjection({
-    agentId,
-    profile: launchProfile,
+  const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, {
+    state,
+    environment,
     argumentsList,
-    environment: { ...environment },
+    io: console,
   });
-  if (injection.note) console.log(injection.note);
+  if (runtime.note) console.log(runtime.note);
   let status;
   try {
-    status = launchExecutable(agent.executable, injection.argumentsList, { cwd: projectRoot, environment: injection.environment });
+    status = launchExecutable(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input });
   } finally {
     if (portableSessions) {
       try {
         await adapter.capture(projectRoot, { environment });
+        if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
       } finally {
         if (leaveLaunchGroup) {
           await leaveLaunchGroup();
@@ -417,12 +450,136 @@ function untrackSessions(projectRoot) {
   return files.length;
 }
 
-async function dispatchSessions(argumentsList) {
+async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
-  if (command !== "git" || extra.length > 0 || !["on", "off", "status"].includes(mode)) {
+  const projectRoot = options.projectRootOverride ?? locateProjectRoot();
+  if ((command === "list" || command === "status") && argumentsList.length === 1) {
+    const sessions = await listCanonicalSessions(projectRoot);
+    const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
+    console.log(command === "status" ? "Canonical session status\n" : "Canonical sessions\n");
+    console.log(`Project  ${projectRoot}`);
+    console.log(`Active   ${activeCanonicalId ?? "none"}`);
+    if (sessions.length === 0) {
+      console.log("No canonical sessions");
+      return 0;
+    }
+    for (const session of sessions) {
+      const stored = await readCanonicalSession(projectRoot, session.id);
+      const latestEventId = stored.events.at(-1)?.id ?? null;
+      if (command === "status") {
+        console.log(`  events ${stored.events.length}  revision ${stored.session.revision ?? "derived"}`);
+      }
+      const projections = Object.entries(stored.mappings.projections)
+        .filter(([, mapping]) => mapping?.nativeSessionId)
+        .map(([agentId, mapping]) => `${agentId}:${mapping.nativeSessionId}`)
+        .join(", ") || "none";
+      const latest = Object.entries(stored.mappings.projections)
+        .filter(([, mapping]) => mapping?.lastSyncedAt)
+        .sort(([, left], [, right]) => right.lastSyncedAt.localeCompare(left.lastSyncedAt))[0]?.[0] ?? "none";
+      console.log(`${session.id}  ${session.title ?? "Untitled"}  updated ${session.updatedAt}`);
+      console.log(`  native ${projections}  last agent ${latest}`);
+      if (command === "status") {
+        for (const [agentId, mapping] of Object.entries(stored.mappings.projections ?? {})) {
+          if (!mapping?.nativeSessionId) continue;
+          const cursor = mapping.lastCanonicalEventId === latestEventId ? "current" : "stale";
+          console.log(`  ${agentId} cursor ${cursor} @${mapping.lastCanonicalEventId ?? "none"}`);
+        }
+      }
+    }
+    return 0;
+  }
+  if (command === "continue") {
+    if (extra.length !== 2 || extra[0] !== "--agent" || !["claude", "codex", "opencode"].includes(extra[1])) {
+      throw new Error("Usage: avenic sessions continue <id> --agent <claude|codex|opencode>");
+    }
+    const agentId = extra[1];
+    const state = await loadRuntime(projectRoot);
+    const config = effectiveAgentConfig(state, agentId);
+    if (!config) throw new Error(`${getAgent(agentId).displayName} is not initialized. Run: avenic ${agentId} init`);
+    const environment = config.auth === "project"
+      ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
+      : process.env;
+    if (agentId === "opencode") {
+      const projection = await projectCanonicalSession(projectRoot, mode, agentId, { environment });
+      try {
+        return await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment });
+      } finally {
+        await captureCanonicalSession(projectRoot, mode, agentId, { environment });
+      }
+    }
+
+    const targetAdapter = getSessionAdapter(agentId);
+    const targetStored = await readCanonicalSession(projectRoot, mode);
+    const targetMapping = targetStored.mappings.projections[agentId];
+    // Codex's native history is an opaque rollout projection. If its cursor
+    // is behind the canonical tail, rehydrate a fresh official thread rather
+    // than reopening an old transcript (the old thread remains untouched).
+    const forceBootstrap = agentId === "codex"
+      && Boolean(targetMapping?.nativeSessionId)
+      && targetMapping.lastCanonicalEventId !== targetStored.events.at(-1)?.id;
+    let capturedDuringLaunch = null;
+    const result = await continueCanonicalSession({
+      projectRoot,
+      canonicalId: mode,
+      targetAgent: agentId,
+      forceBootstrap,
+      // Every call resolves the normal auth/runtime environment for that
+      // agent. Sessions never manufacture or migrate credential directories.
+      captureKnown: async () => {
+        const results = await reconcileCanonicalSession(projectRoot, mode, {
+          environmentForAgent: (sourceAgent) => {
+            const sourceConfig = effectiveAgentConfig(state, sourceAgent);
+            if (!sourceConfig) return process.env;
+            return sourceConfig.auth === "project"
+              ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
+              : process.env;
+          },
+        });
+        for (const result of results.filter((entry) => entry.stale)) {
+          console.warn(`${getAgent(result.agentId).displayName} native mapping is stale; rehydrating from canonical history.`);
+        }
+      },
+      capture: async (stage, context = {}) => {
+        if (stage === "after" && context.launched?.capturedDuringLaunch) return context.launched.capturedDuringLaunch;
+        const nativeSessionId = context.launched?.nativeSessionId
+          ?? context.continuation?.nativeSessionId
+          ?? (await readCanonicalSession(projectRoot, mode)).mappings.projections[agentId]?.nativeSessionId;
+        if (!nativeSessionId) return null;
+        return targetAdapter.readCanonical(projectRoot, nativeSessionId, { environment });
+      },
+      launch: async (continuation) => {
+        const nativeSessionId = continuation.nativeSessionId
+          ?? (agentId === "claude" ? randomUUID() : null);
+        const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
+        const launchStartedAt = Date.now() - 1000;
+        console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}; delta ${continuation.handoff.delta.length} event(s).`);
+        const status = await dispatchAgent(agentId, launch.argumentsList, {
+          projectRoot,
+          environment,
+          input: launch.input,
+          skipCanonical: true,
+          skipRestore: true,
+          onExit: async () => {
+            const nativeId = nativeSessionId ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
+            capturedDuringLaunch = await targetAdapter.readCanonical(projectRoot, nativeId, { environment, canonicalSessionId: mode });
+          },
+        });
+        if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
+        const discoveredId = nativeSessionId
+          ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
+        return { nativeSessionId: discoveredId, projectionHash: continuation.handoff.hash, capturedDuringLaunch };
+      },
+    });
+    for (const diagnostic of result.diagnostics ?? []) console.warn(diagnostic);
+    await setActiveCanonicalSession(projectRoot, mode);
+    return result.launched.status ?? 0;
+  }
+  if (command !== "git") {
     throw new Error("Usage: avenic sessions git [on|off|status]");
   }
-  const projectRoot = locateProjectRoot();
+  if (extra.length > 0 || !["on", "off", "status"].includes(mode)) {
+    throw new Error("Usage: avenic sessions git [on|off|status]");
+  }
   if (mode === "off") {
     const changed = await setSessionsGitIgnored(projectRoot, true);
     const untracked = untrackSessions(projectRoot);

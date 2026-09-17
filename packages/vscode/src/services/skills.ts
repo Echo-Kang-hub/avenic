@@ -26,6 +26,25 @@ import { defaultSpec, packStructure } from "./catalog.ts";
 export type Scope = "project" | "global";
 type Env = ProcessEnvLike;
 
+export interface SkillsSnapshot {
+  status: InstallStatus | null;
+  detected: string[];
+  layers: InstalledPackLayer[];
+}
+
+// A refresh generation is the only in-memory cache for view data. It shares
+// the same disk reads between the Skills tree and Overview, then is discarded
+// after a mutation refresh so services never become an independent state store.
+let snapshots = new WeakMap<object, Map<string, Promise<SkillsSnapshot>>>();
+
+function snapshotKey(scope: Scope, cwd?: string): string {
+  return `${scope}:${cwd ?? ""}`;
+}
+
+export function invalidateSkillsSnapshot(): void {
+  snapshots = new WeakMap();
+}
+
 function context(scope: Scope, cwd: string | undefined, environment: Env): InstallContext {
   return createInstallContext(scope === "global", { cwd, environment });
 }
@@ -97,6 +116,26 @@ export async function installedPackLayers(scope: Scope, cwd?: string, environmen
   } catch {
     return [];
   }
+}
+
+export function readSkillsSnapshot(scope: Scope, cwd?: string, environment: Env = process.env): Promise<SkillsSnapshot> {
+  const envKey = environment as object;
+  let byScope = snapshots.get(envKey);
+  if (byScope === undefined) {
+    byScope = new Map();
+    snapshots.set(envKey, byScope);
+  }
+  const key = snapshotKey(scope, cwd);
+  let snapshot = byScope.get(key);
+  if (snapshot === undefined) {
+    snapshot = Promise.all([
+      status(scope, cwd, environment),
+      detected(scope, cwd, environment),
+      installedPackLayers(scope, cwd, environment),
+    ]).then(([current, names, layers]) => ({ status: current, detected: names, layers }));
+    byScope.set(key, snapshot);
+  }
+  return snapshot;
 }
 
 export async function availablePacks(scope: Scope, cwd?: string, environment: Env = process.env): Promise<Map<string, Pack>> {

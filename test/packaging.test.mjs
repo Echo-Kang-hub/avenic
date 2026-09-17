@@ -43,7 +43,7 @@ test("core manifest is configured for public publishing", async () => {
   assert.equal(manifest.name, "@avenic/core");
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.license, "MIT");
-  assert.equal(manifest.version, "1.2.1");
+  assert.equal(manifest.version, "1.3.0");
   assert.deepEqual(manifest.files, ["src/", "index.d.ts", "LICENSE"]);
   assert.equal(manifest.exports["."].types, "./index.d.ts");
   assert.equal(manifest.exports["."].import, "./src/index.mjs");
@@ -74,7 +74,7 @@ test("core type declarations cover the extension contract", async () => {
 test("root manifest carries the internal avenic-repo identity", async () => {
   const manifest = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
   assert.equal(manifest.name, "avenic-repo");
-  assert.equal(manifest.version, "1.0.0");
+  assert.equal(manifest.version, "1.1.0");
   assert.deepEqual(Object.keys(manifest.bin).sort(), ["ave", "avenic"]);
   assert.equal(manifest.repository.url, "git+https://github.com/Echo-Kang-hub/avenic.git");
 });

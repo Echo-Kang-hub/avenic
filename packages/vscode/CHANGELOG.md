@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Added unified shared-session visibility and continuation commands.
+- Made Skills and Hub views cache-first and coalesced duplicate refresh work.
+- Added active Codex installation provenance and update guidance.
+
 ## 0.1.12
 
 - **本机模型配置库 + 项目绑定**：新增模型配置面板与命令，profile 统一存放于本机库

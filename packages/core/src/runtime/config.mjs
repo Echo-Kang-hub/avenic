@@ -56,6 +56,25 @@ export async function loadRuntime(projectRoot) {
   return { paths, runtime, local };
 }
 
+export async function getActiveCanonicalSessionId(projectRoot) {
+  const state = await loadRuntime(projectRoot);
+  const id = state.runtime.activeCanonicalSessionId;
+  if (typeof id !== "string" || !id) return null;
+  const sessionFile = path.join(state.paths.sessionsRoot, "canonical", id, "session.json");
+  return existsSync(sessionFile) ? id : null;
+}
+
+export async function setActiveCanonicalSession(projectRoot, canonicalSessionId) {
+  if (canonicalSessionId !== null && (typeof canonicalSessionId !== "string" || !canonicalSessionId)) {
+    throw new Error("Active canonical session id must be a non-empty string or null");
+  }
+  const state = await loadRuntime(projectRoot);
+  if (canonicalSessionId === null) delete state.runtime.activeCanonicalSessionId;
+  else state.runtime.activeCanonicalSessionId = canonicalSessionId;
+  await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
+  return canonicalSessionId;
+}
+
 export async function initializeAgent(projectRoot, agentId, authMode, sessionsMode) {
   getAgent(agentId);
   if (authMode) {
@@ -223,5 +242,21 @@ export function effectiveAgentConfig(state, agentId) {
     ...override,
     configuredAuth: configured.auth ?? "global",
     localAuth: override?.auth ?? null,
+  };
+}
+
+// Shared status shape for CLI and VS Code. Auth and session storage are
+// intentionally independent dimensions; callers can switch either one.
+export async function getAgentRuntimeMode(projectRoot, agentId) {
+  const state = await loadRuntime(projectRoot);
+  const effective = effectiveAgentConfig(state, agentId);
+  if (!effective) return null;
+  return {
+    auth: {
+      default: effective.configuredAuth,
+      localOverride: effective.localAuth,
+      effective: effective.auth,
+    },
+    sessions: { mode: effective.sessions ?? "project" },
   };
 }

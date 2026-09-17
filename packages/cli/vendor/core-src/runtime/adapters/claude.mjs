@@ -1,4 +1,6 @@
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
@@ -7,11 +9,53 @@ import {
   listFiles,
   mergeFiles,
   revertFrom,
+  replaceDirectory,
   samePath,
-  snapshotFiles,
   snapshotInto,
   transformJsonLines,
 } from "../sessions.mjs";
+import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
+
+export const agentId = "claude";
+
+export function toCanonical(content, options = {}) {
+  const records = parseJsonLines(content, agentId);
+  const nativeSessionId = options.nativeSessionId ?? records.find((record) => typeof record.sessionId === "string")?.sessionId ?? "unknown";
+  const events = records.flatMap((record, index) => {
+    const role = record.message?.role;
+    if (!new Set(["user", "assistant", "system", "tool"]).has(role)) return [];
+    return [{
+      id: nativeEventId(agentId, nativeSessionId, record.uuid, index, record),
+      role,
+      createdAt: eventTimestamp(record.timestamp),
+      content: textBlocks(record.message.content),
+      model: record.message.model,
+      provider: "anthropic",
+      extensions: { claude: { record, message: record.message } },
+    }];
+  });
+  return { nativeSessionId, events, revision: options.revision ?? null };
+}
+
+export function fromCanonical(events) {
+  return readonlyProjection(events);
+}
+
+// Reads one known native session only. It never consults configuration or
+// credentials; callers supply the launch environment that is already active.
+export async function readCanonical(projectRoot, nativeSessionId, options = {}) {
+  for (const native of (await discoverNativeProjectDirectories(projectRoot, options.environment)).directories) {
+    for (const relative of await listFiles(native)) {
+      if (!isRootSession(relative)) continue;
+      const content = await readFile(path.join(native, relative), "utf8");
+      const parsed = toCanonical(content);
+      if (parsed.nativeSessionId === nativeSessionId) {
+        return { ...parsed, revision: createHash("sha256").update(content).digest("hex") };
+      }
+    }
+  }
+  throw new Error(`Claude native session is unavailable: ${nativeSessionId}`);
+}
 
 export function claudeProjectKey(projectRoot) {
   return path.resolve(projectRoot).replace(/[^a-zA-Z0-9]/g, "-");
@@ -25,6 +69,75 @@ function locations(projectRoot, environment = process.env) {
   };
 }
 
+function isRootSession(relative) {
+  return relative.endsWith(".jsonl") && !relative.includes(`${path.sep}subagents${path.sep}`);
+}
+
+async function jsonlCwd(file) {
+  let handle;
+  try {
+    handle = await open(file, "r");
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    for (const line of buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const cwd = JSON.parse(line.replace(/^\uFEFF/, "")).cwd;
+        if (typeof cwd === "string") return cwd;
+      } catch {}
+    }
+  } catch {}
+  finally { await handle?.close(); }
+  return null;
+}
+
+// Claude's encoded `projects/<name>` directory is not a stable API. Keep it
+// as a cheap hint, then identify every other candidate from the native cwd
+// recorded in its JSONL. This keeps custom config roots and Windows URI/path
+// spelling from silently hiding existing project history.
+async function discoverNativeProjectDirectories(projectRoot, environment = process.env) {
+  const { native: hinted } = locations(projectRoot, environment);
+  const projectsRoot = path.dirname(hinted);
+  if (!existsSync(projectsRoot)) {
+    return { directories: [], diagnostics: [`Claude session root not found: ${projectsRoot}`] };
+  }
+  const directories = [hinted];
+  try {
+    for (const entry of await readdir(projectsRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) directories.push(path.join(projectsRoot, entry.name));
+    }
+  } catch {}
+  const unique = [...new Set(directories.map((directory) => path.resolve(directory)))];
+  const matches = [];
+  let candidateSessions = 0;
+  let unreadable = 0;
+  for (const directory of unique) {
+    const files = await listFiles(directory);
+    const rootSessions = files.filter(isRootSession);
+    if (rootSessions.length === 0) continue;
+    candidateSessions += rootSessions.length;
+    let hasMetadata = false;
+    for (const relative of rootSessions) {
+      const cwd = await jsonlCwd(path.join(directory, relative));
+      if (cwd) hasMetadata = true;
+      else unreadable += 1;
+      if (samePath(cwd, projectRoot)) {
+        matches.push(directory);
+        break;
+      }
+    }
+    // Older Claude records can lack cwd. The historical encoded directory is
+    // a compatibility fallback only when there was no contradicting metadata.
+    if (!hasMetadata && path.resolve(directory) === path.resolve(hinted)) matches.push(directory);
+  }
+  if (matches.length > 0) return { directories: matches, diagnostics: [] };
+  if (candidateSessions > 0) {
+    const suffix = unreadable > 0 ? `; ${unreadable} session file(s) had no readable cwd metadata` : "";
+    return { directories: [], diagnostics: [`Found ${candidateSessions} Claude session(s), but none matched this workspace${suffix}.`] };
+  }
+  return { directories: [], diagnostics: [`No Claude sessions were found under ${projectsRoot}.`] };
+}
+
 function rewriteCwd(content, projectRoot, restore) {
   return transformJsonLines(content.toString("utf8"), (record) => {
     if (restore ? typeof record.cwd === "string" : samePath(record.cwd, projectRoot)) {
@@ -35,15 +148,25 @@ function rewriteCwd(content, projectRoot, restore) {
 }
 
 export async function capture(projectRoot, options = {}) {
-  const { native, portable } = locations(projectRoot, options.environment);
-  const files = await listFiles(native);
-  if (files.length === 0) {
-    return { count: 0, changed: false };
+  const { portable } = locations(projectRoot, options.environment);
+  const discovery = await discoverNativeProjectDirectories(projectRoot, options.environment);
+  const natives = discovery.directories;
+  const sources = [];
+  for (const native of natives) {
+    for (const relative of await listFiles(native)) sources.push({ native, relative });
   }
-  await snapshotFiles(native, files, portable, (content, relative) =>
-    relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, false) : content,
-  );
-  return { count: files.filter((file) => file.endsWith(".jsonl") && !file.includes(`${path.sep}subagents${path.sep}`)).length, changed: true };
+  if (sources.length === 0) {
+    return { count: 0, changed: false, diagnostics: discovery.diagnostics };
+  }
+  await replaceDirectory(portable, async (temporary) => {
+    for (const { native, relative } of sources) {
+      const content = await readFile(path.join(native, relative));
+      const target = path.join(temporary, relative);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, false) : content);
+    }
+  });
+  return { count: sources.filter(({ relative }) => isRootSession(relative)).length, changed: true, diagnostics: [] };
 }
 
 export async function restore(projectRoot, options = {}) {

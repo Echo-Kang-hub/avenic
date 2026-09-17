@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as agents from "../services/agents.ts";
+import { updateCommandForInstallation } from "../services/agent-versions.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { assertIdle, pickOne } from "../ui/flows.ts";
 import { showError } from "./errors.ts";
@@ -61,8 +62,12 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (busy()) return;
     const target = await agentTarget(treeItem);
     if (target === null) return;
-    const pkg = agents.npmPackage(target.id);
-    const terminal = vscode.window.createTerminal({ name: `Avenic · ${pkg}` });
+    const command = updateCommandForInstallation(target.id, agents.detectInstallation(target.id));
+    if (command === null) {
+      await vscode.window.showWarningMessage(`Avenic detected a manual or unknown ${target.id} installation. It will not update a different npm copy; use that installation's updater.`);
+      return;
+    }
+    const terminal = vscode.window.createTerminal({ name: `Avenic · ${target.id}` });
     const closeListener = vscode.window.onDidCloseTerminal((closed) => {
       if (closed !== terminal) return;
       closeListener.dispose();
@@ -70,7 +75,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
       deps.refresh();
     });
     terminal.show();
-    terminal.sendText(`npm install --global ${pkg}@latest`);
+    terminal.sendText(command);
   };
   register("avenic.agents.install", runCliInstall);
   register("avenic.agents.update", runCliInstall);
@@ -138,7 +143,9 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     const target = await agentTarget(treeItem);
     if (target === null) return;
     const result = await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.importSessions(target.root, target.id).then((r) => { report("完成"); return r; })), () => deps.refresh());
-    await vscode.window.showInformationMessage(`已导入 ${result.count} 个会话`);
+    const message = `发现 ${result.discovered} 个会话；导入 ${result.imported} 个；未变更 ${result.unchanged} 个；失败 ${result.failed} 个。`;
+    if ((result.discovered === 0 || result.failed > 0) && result.diagnostics.length > 0) await vscode.window.showWarningMessage(`${message} ${result.diagnostics[0]}`);
+    else await vscode.window.showInformationMessage(message);
   });
 
   register("avenic.agents.sessionsWriteback", async (treeItem) => {

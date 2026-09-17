@@ -10,8 +10,12 @@ import { OverviewProvider } from "./dashboard/overview.ts";
 import { AgentsViewProvider } from "./views/agents-view.ts";
 import { CatalogViewProvider } from "./views/catalog-view.ts";
 import { SkillsViewProvider } from "./views/skills-view.ts";
+import { markPerformance } from "./ui/performance.ts";
+import { invalidateSkillsSnapshot } from "./services/skills.ts";
+import { invalidateAgentStatusCache } from "./services/agents.ts";
 
 export function activate(context: vscode.ExtensionContext): void {
+  const activationStartedAt = performance.now();
   // 多根：resolveProjectRoot 返回 null，此时优先 active editor 所属的文件夹（B6：用户正在编辑哪个项目
   // 就是哪个项目），再回退到记忆根（经当前文件夹列表校验）；无记忆则 null → 视图提示行。
   const root = () => {
@@ -28,7 +32,20 @@ export function activate(context: vscode.ExtensionContext): void {
   const overview = new OverviewProvider(root, context.extensionUri);
   const queue = new MutationQueue();
   // 数据单向：任何变更后视图/仪表盘重读真实状态（设计 §3），不反向写 core
-  const refresh = () => { agents.refresh(); catalog.refresh(); skills.refresh(); overview.refresh(); };
+  let refreshPending = false;
+  const refresh = () => {
+    // Multiple mutation callbacks commonly arrive in one event-loop turn.
+    // Coalescing prevents every visible view from repeating its filesystem
+    // reads for the same final state.
+    if (refreshPending) return;
+    refreshPending = true;
+    queueMicrotask(() => {
+      refreshPending = false;
+      invalidateSkillsSnapshot();
+      invalidateAgentStatusCache();
+      agents.refresh(); catalog.refresh(); skills.refresh(); overview.refresh();
+    });
+  };
   // 同步根解析：单根直接返回；多根/null 时经 T6 pickProjectRoot 引导用户选定（workspaceFolders 实时读取，避免激活期闭包过期）
   const resolveRoot = async (): Promise<string | null> => {
     const r = root();
@@ -48,6 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerSkillsCommands(context, { queue, resolveRoot, refresh });
   // 模型面板的命令层：root 是同步的（面板每次刷新都取一次），resolveRoot 是异步的（没项目时引导用户选）
   registerModelCommands(context, { queue, root, resolveRoot, refresh });
+  markPerformance("extension.activate", activationStartedAt);
 }
 
 export function deactivate(): void {}
