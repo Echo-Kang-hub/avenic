@@ -8,6 +8,7 @@ import {
   acquireSessionLease,
   agentExecutableAvailable,
   bindProject,
+  buildHandoff,
   clearLocalAuth,
   createInstallContext,
   deinitializeAgent,
@@ -26,6 +27,7 @@ import {
   captureCanonicalSession,
   reconcileCanonicalSession,
   continueCanonicalSession,
+  ensureNativeProjection,
   continuationLaunchArguments,
   managedSkillNames,
   projectCanonicalSession,
@@ -80,6 +82,37 @@ function launchCaptured(executable, argumentsList, options = {}) {
 
 function isActiveSessionError(output) {
   return /active writer|already in use|already active|session lock|thread-store conflict/i.test(output);
+}
+
+async function materializeResumeProjection(agentId, projectRoot, state, environment, canonical) {
+  const adapter = getSessionAdapter(agentId);
+  if (agentId === "opencode") return null;
+  const handoff = buildHandoff({
+    session: canonical.session,
+    events: canonical.events,
+    targetAgent: agentId,
+    lastCanonicalEventId: null,
+  });
+  const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, {
+    state,
+    environment,
+    argumentsList: [],
+    io: { log() {}, warn() {} },
+  });
+  const sessionId = randomUUID();
+  const argumentsList = agentId === "claude"
+    ? ["--bg", "--session-id", sessionId, handoff.markdown]
+    : ["exec", "--json", handoff.markdown];
+  const result = launchCaptured(runtime.executable, argumentsList, {
+    cwd: projectRoot,
+    environment: runtime.environment,
+  });
+  if (result.status !== 0) throw new Error(`${getAgent(agentId).displayName} projection bootstrap exited with status ${result.status}`);
+  const nativeSessionId = agentId === "claude"
+    ? sessionId
+    : await adapter.discoverNativeSession(projectRoot, { environment, notBefore: Date.now() - 120000 });
+  if (!nativeSessionId) throw new Error(`${getAgent(agentId).displayName} projection bootstrap did not expose a native session id`);
+  return { nativeSessionId, diagnostics: [] };
 }
 
 function takeOption(argumentsList, option) {
@@ -330,6 +363,22 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   // select a canonical session here and deliberately do not synthesize native
   // history for unmapped sessions.
   if (!options.skipCanonical && portableSessions) {
+    const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
+    if (activeCanonicalId) {
+      try {
+        const canonical = await readCanonicalSession(projectRoot, activeCanonicalId);
+        await ensureNativeProjection({
+          projectRoot,
+          canonicalId: activeCanonicalId,
+          targetAgent: agentId,
+          environment,
+          intent: "resume-catalog",
+          materialize: ({ session, events }) => materializeResumeProjection(agentId, projectRoot, state, environment, { session, events }),
+        });
+      } catch (error) {
+        console.warn(`Avenic resume catalog preparation skipped: ${error.message}`);
+      }
+    }
     for (const session of await listCanonicalSessions(projectRoot)) {
       try {
         await reconcileCanonicalSession(projectRoot, session.id, {

@@ -32,6 +32,7 @@ export {
   reconcileCanonicalSession,
   completeCanonicalContinuation,
   continueCanonicalSession,
+  ensureNativeProjection,
   importProjectSessions,
   continuationLaunchArguments,
   prepareCanonicalContinuation,

@@ -14,6 +14,7 @@ import {
   getActiveCanonicalSessionId,
   setActiveCanonicalSession,
   reconcileCanonicalSession,
+  ensureNativeProjection,
 } from "../packages/core/src/index.mjs";
 
 async function withProject(run) {
@@ -26,6 +27,26 @@ const event = (id, role, value) => ({
   role,
   createdAt: "2026-09-15T00:00:00.000Z",
   content: [{ type: "text", text: value }],
+});
+
+test("resume-catalog materialization creates one stable native mapping", async () => {
+  await withProject(async (projectRoot) => {
+    await createCanonicalSession(projectRoot, { id: "shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+    let calls = 0;
+    const first = await ensureNativeProjection({
+      projectRoot, canonicalId: "shared", targetAgent: "codex", intent: "resume-catalog",
+      materialize: async () => { calls += 1; return { nativeSessionId: "thread-1", projectionHash: "h1" }; },
+    });
+    const second = await ensureNativeProjection({
+      projectRoot, canonicalId: "shared", targetAgent: "codex", intent: "resume-catalog",
+      materialize: async () => { calls += 1; return { nativeSessionId: "thread-2" }; },
+    });
+    assert.equal(first.status, "created");
+    assert.equal(second.status, "current");
+    assert.equal(second.nativeSessionId, "thread-1");
+    assert.equal(calls, 1);
+  });
 });
 
 test("continuation launch arguments use official resume commands and handoff as an explicit prompt", () => {

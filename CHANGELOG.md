@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.7 / 1.3.5 - 2026-09-17
+
+- Prepare the active canonical session for the official Claude/Codex resume
+  catalog without automatically selecting it in the foreground TUI.
+- Add idempotent native projection materialization with canonical cursor and
+  provenance tracking.
+
 ## 1.4.6 - 2026-09-17
 
 - Keep ordinary `avenic <agent>` launches transparent: shared canonical

@@ -86,6 +86,35 @@ export async function projectCanonicalSession(projectRoot, canonicalSessionId, a
   return { ...result, canonicalRevision: revision };
 }
 
+// Prepare one native projection for a resume catalog without selecting it in
+// the foreground UI. The caller supplies the agent's official bootstrap hook;
+// this function owns identity, cursor, and idempotency.
+export async function ensureNativeProjection({ projectRoot, canonicalId, targetAgent, environment, intent = "resume-catalog", materialize }) {
+  const stored = await readCanonicalSession(projectRoot, canonicalId);
+  const existing = stored.mappings.projections[targetAgent];
+  const tail = stored.events.at(-1)?.id ?? null;
+  if (existing?.nativeSessionId && existing.lastCanonicalEventId === tail) {
+    return { nativeSessionId: existing.nativeSessionId, status: "current", mapping: existing };
+  }
+  if (existing?.nativeSessionId && intent === "resume-catalog" && !materialize) {
+    return { nativeSessionId: existing.nativeSessionId, status: "stale", mapping: existing };
+  }
+  if (typeof materialize !== "function") throw new Error(`No ${targetAgent} projection materializer is available`);
+  const result = await materialize({ session: stored.session, events: stored.events, mapping: existing ?? null, intent });
+  if (!result?.nativeSessionId) throw new Error(`${targetAgent} projection did not return a native session id`);
+  const mapping = await syncNativeMapping(projectRoot, canonicalId, {
+    agentId: targetAgent,
+    nativeSessionId: result.nativeSessionId,
+    nativeRevision: result.nativeRevision ?? null,
+    canonicalRevision: canonicalRevision(stored),
+    projectionHash: result.projectionHash ?? null,
+    lastCanonicalEventId: tail,
+    provenance: { kind: "avenic-projection", intent },
+    diagnostics: result.diagnostics ?? [],
+  });
+  return { nativeSessionId: result.nativeSessionId, status: existing ? "refreshed" : "created", mapping };
+}
+
 export async function captureCanonicalSession(projectRoot, canonicalSessionId, agentId, options = {}) {
   const stored = await readCanonicalSession(projectRoot, canonicalSessionId);
   const adapter = getSessionAdapter(agentId);
