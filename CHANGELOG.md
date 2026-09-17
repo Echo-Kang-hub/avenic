@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.8 / 1.3.6 - 2026-09-17
+
+- Tolerate malformed Claude JSONL records and continue importing valid records.
+- Deduplicate reconciliation diagnostics and keep plain launches responsive.
+- Run resume-catalog preparation asynchronously so the foreground TUI is not
+  blocked by bootstrap or native-session discovery.
+
 ## 1.4.7 / 1.3.5 - 2026-09-17
 
 - Prepare the active canonical session for the official Claude/Codex resume
