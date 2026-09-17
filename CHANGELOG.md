@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.6 - 2026-09-17
+
+- Keep ordinary `avenic <agent>` launches transparent: shared canonical
+  continuation is now opt-in via `avenic sessions continue`.
+- Make `self-update` report registry/current/active versions and verify the
+  executable actually selected by PATH after installation.
+
 ## 1.4.5 - 2026-09-17
 
 - Keep Claude, Codex, and OpenCode foreground launches attached to the user's
