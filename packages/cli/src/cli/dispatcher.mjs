@@ -325,6 +325,26 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   // imply a launch target. Shared-session continuation is opt-in via
   // `sessions continue`, while this path preserves the agent's native new/
   // default-session UX (including its own /resume command).
+  // Reconcile already materialized mappings before entering the native TUI so
+  // its official resume picker is not backed by stale Avenic state. We never
+  // select a canonical session here and deliberately do not synthesize native
+  // history for unmapped sessions.
+  if (!options.skipCanonical && portableSessions) {
+    for (const session of await listCanonicalSessions(projectRoot)) {
+      try {
+        await reconcileCanonicalSession(projectRoot, session.id, {
+          environmentForAgent: (sourceAgent) => {
+            const sourceConfig = effectiveAgentConfig(state, sourceAgent);
+            return sourceConfig?.auth === "project"
+              ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
+              : process.env;
+          },
+        });
+      } catch (error) {
+        console.warn(`Avenic session reconciliation skipped: ${error.message}`);
+      }
+    }
+  }
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
