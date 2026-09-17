@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.3 - 2026-09-17
+
+- Safely rehydrate a canonical continuation into a new Codex native thread when
+  the mapped thread is already occupied by another Codex process.
+- Preserve canonical source-of-truth history, abrupt-exit reconciliation, stale
+  native projection recovery, historical session import, and independent
+  Auth × Sessions modes.
+- Keep Claude/Codex continuation at semantic L3a; Codex native-faithful L3b is
+  not claimed.
+
 ## 1.4.0 - 2026-09-16
 
 - Added startup recovery for abrupt exits: canonical sessions remain durable,
