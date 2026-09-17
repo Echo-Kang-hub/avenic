@@ -63,6 +63,23 @@ function launchExecutable(executable, argumentsList, options = {}) {
   return result.status ?? 1;
 }
 
+function launchCaptured(executable, argumentsList, options = {}) {
+  const result = spawnExecutableSync(executable, argumentsList, {
+    cwd: options.cwd,
+    env: options.environment,
+    stdio: "pipe",
+    input: options.input,
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (result.error) throw new Error(`Unable to launch ${executable}: ${result.error.message}`);
+  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+function isActiveSessionError(output) {
+  return /active writer|already in use|already active|session lock|thread-store conflict/i.test(output);
+}
+
 function takeOption(argumentsList, option) {
   const index = argumentsList.indexOf(option);
   if (index === -1) {
@@ -390,8 +407,12 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   });
   if (runtime.note) console.log(runtime.note);
   let status;
+  let launchResult;
   try {
-    status = launchExecutable(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input });
+    launchResult = options.capture
+      ? launchCaptured(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input })
+      : launchExecutable(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input });
+    status = options.capture ? launchResult.status : launchResult;
   } finally {
     if (portableSessions) {
       try {
@@ -404,7 +425,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       }
     }
   }
-  return status;
+  return options.capture ? launchResult : status;
 }
 
 async function dispatchStatus() {
@@ -502,7 +523,14 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (agentId === "opencode") {
       const projection = await projectCanonicalSession(projectRoot, mode, agentId, { environment });
       try {
-        return await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment });
+        const launched = await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment, capture: true });
+        if (launched.status !== 0 && isActiveSessionError(`${launched.stdout}\n${launched.stderr}`)) {
+          console.log(`${getAgent(agentId).displayName} session is already active; leaving the existing session unchanged.`);
+          return 0;
+        }
+        if (launched.stdout) process.stdout.write(launched.stdout);
+        if (launched.stderr) process.stderr.write(launched.stderr);
+        return launched.status;
       } finally {
         await captureCanonicalSession(projectRoot, mode, agentId, { environment });
       }
@@ -554,7 +582,7 @@ async function dispatchSessions(argumentsList, options = {}) {
         const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
         const launchStartedAt = Date.now() - 1000;
         console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}; delta ${continuation.handoff.delta.length} event(s).`);
-        const status = await dispatchAgent(agentId, launch.argumentsList, {
+        const launchOptions = {
           projectRoot,
           environment,
           input: launch.input,
@@ -564,7 +592,21 @@ async function dispatchSessions(argumentsList, options = {}) {
             const nativeId = nativeSessionId ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
             capturedDuringLaunch = await targetAdapter.readCanonical(projectRoot, nativeId, { environment, canonicalSessionId: mode });
           },
-        });
+        };
+        let status;
+        if (continuation.mode === "resume") {
+          const captured = await dispatchAgent(agentId, launch.argumentsList, { ...launchOptions, capture: true });
+          if (captured.status !== 0 && isActiveSessionError(`${captured.stdout}\n${captured.stderr}`)) {
+            console.log(`${getAgent(agentId).displayName} session is already active; leaving the existing session unchanged.`);
+            status = 0;
+          } else {
+            if (captured.stdout) process.stdout.write(captured.stdout);
+            if (captured.stderr) process.stderr.write(captured.stderr);
+            status = captured.status;
+          }
+        } else {
+          status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+        }
         if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
         const discoveredId = nativeSessionId
           ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
