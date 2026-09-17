@@ -25,6 +25,13 @@ export class AgentsViewProvider implements vscode.TreeDataProvider<vscode.TreeIt
     const root = this.projectRoot();
     if (root === null) return [new vscode.TreeItem("打开项目文件夹", vscode.TreeItemCollapsibleState.None)];
     const statuses = await Promise.all(listAgents().map((a) => agentStatus(root, a.id)));
+    if (statuses.every((status) => status.effective === null)) {
+      const setup = new vscode.TreeItem("Avenic is not initialized for this project", vscode.TreeItemCollapsibleState.None);
+      setup.description = "Initialize Avenic";
+      setup.command = { command: "avenic.agents.configureProject", title: "Initialize Avenic" };
+      setup.iconPath = new vscode.ThemeIcon("rocket");
+      return [setup];
+    }
     return agentsToViewModels(statuses).map((m) => {
       const item = new vscode.TreeItem(m.label, vscode.TreeItemCollapsibleState.None);
       item.id = m.id; // T7 上下文菜单命令经 treeItem.id 取 agent

@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getAgent } from "./agents.mjs";
 import { ensureRuntimeGitignore, removeRuntimeGitignore } from "./gitignore.mjs";
 
 const AUTH_MODES = new Set(["global", "project"]);
 const SESSIONS_MODES = new Set(["global", "project"]);
+const SESSION_INTEROP_MODES = new Set(["shared", "isolated"]);
 
 async function readJsonIfExists(file, fallback) {
   if (!existsSync(file)) {
@@ -20,7 +21,9 @@ async function writeJsonIfChanged(file, value) {
     return false;
   }
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, content, "utf8");
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temporary, content, "utf8");
+  await rename(temporary, file);
   return true;
 }
 
@@ -36,6 +39,13 @@ export function validateSessionsMode(sessionsMode) {
     throw new Error(`Sessions must be global or project: ${sessionsMode}`);
   }
   return sessionsMode;
+}
+
+export function validateSessionInteropMode(mode) {
+  if (!SESSION_INTEROP_MODES.has(mode)) {
+    throw new Error(`Session history must be shared or isolated: ${mode}`);
+  }
+  return mode;
 }
 
 export function runtimePaths(projectRoot) {
@@ -54,6 +64,65 @@ export async function loadRuntime(projectRoot) {
   const runtime = await readJsonIfExists(paths.runtimeFile, { schemaVersion: 1, agents: {} });
   const local = await readJsonIfExists(paths.localRuntimeFile, { schemaVersion: 1, agents: {} });
   return { paths, runtime, local };
+}
+
+// The persisted file is deliberately small: credentials stay in their native
+// locations and only the user-selected scopes and session policy live here.
+// Legacy projects had canonical sessions before an explicit policy existed;
+// treating that absence as shared preserves their released behavior.
+export function projectConfig(state) {
+  const agents = {};
+  for (const [agentId, config] of Object.entries(state.runtime.agents ?? {})) {
+    if (!config?.enabled) continue;
+    agents[agentId] = {
+      auth: config.auth ?? "global",
+      sessions: config.sessions ?? "project",
+    };
+  }
+  return {
+    agents,
+    sessionInterop: state.runtime.sessionInterop ?? "shared",
+  };
+}
+
+function normalizedAgents(agents) {
+  const result = {};
+  for (const [agentId, config] of Object.entries(agents ?? {})) {
+    getAgent(agentId);
+    const auth = validateAuthMode(config?.auth ?? "global");
+    const sessions = validateSessionsMode(config?.sessions ?? "project");
+    result[agentId] = { enabled: true, auth, sessions };
+  }
+  return result;
+}
+
+// Apply a complete project draft in one write. Callers build the draft in
+// memory first, so cancelling an init/change wizard cannot leave half-configured
+// state on disk. Omitting `agents` changes only the requested project policy.
+export async function configureProject(projectRoot, draft = {}) {
+  if (draft.sessionInterop !== undefined) validateSessionInteropMode(draft.sessionInterop);
+  const state = await loadRuntime(projectRoot);
+  const nextAgents = draft.agents === undefined
+    ? (state.runtime.agents ?? {})
+    : normalizedAgents(draft.agents);
+  const nextInterop = draft.sessionInterop ?? state.runtime.sessionInterop ?? "shared";
+  state.runtime = {
+    ...state.runtime,
+    schemaVersion: Math.max(2, state.runtime.schemaVersion ?? 1),
+    agents: nextAgents,
+    sessionInterop: nextInterop,
+  };
+  const directories = [];
+  for (const [agentId, config] of Object.entries(nextAgents)) {
+    directories.push(path.join(state.paths.sessionsRoot, agentId));
+    if (config.auth === "project") directories.push(path.join(state.paths.localRoot, agentId));
+  }
+  for (const directory of directories) await mkdir(directory, { recursive: true });
+  const configChanged = await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
+  const gitignoreChanged = Object.keys(nextAgents).length > 0
+    ? await ensureRuntimeGitignore(projectRoot)
+    : false;
+  return { ...state, configChanged, gitignoreChanged, config: projectConfig(state) };
 }
 
 export async function getActiveCanonicalSessionId(projectRoot) {
@@ -84,17 +153,9 @@ export async function initializeAgent(projectRoot, agentId, authMode, sessionsMo
     validateSessionsMode(sessionsMode);
   }
   const state = await loadRuntime(projectRoot);
-  state.runtime.schemaVersion ??= 1;
-  state.runtime.agents ??= {};
-  const previous = state.runtime.agents[agentId] ?? {};
+  const previous = state.runtime.agents?.[agentId] ?? {};
   const effectiveAuthMode = authMode ?? previous.auth ?? "global";
   const effectiveSessionsMode = sessionsMode ?? previous.sessions ?? "project";
-  state.runtime.agents[agentId] = {
-    ...previous,
-    enabled: true,
-    auth: effectiveAuthMode,
-    sessions: effectiveSessionsMode,
-  };
   const sessionDirectory = path.join(state.paths.sessionsRoot, agentId);
   const localDirectory = path.join(state.paths.localRoot, agentId);
   const missingStructure = [sessionDirectory];
@@ -105,14 +166,15 @@ export async function initializeAgent(projectRoot, agentId, authMode, sessionsMo
   for (const directory of missingStructure) {
     await mkdir(directory, { recursive: true });
   }
-  const configChanged = await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
-  const gitignoreChanged = await ensureRuntimeGitignore(projectRoot);
+  const draft = projectConfig(state);
+  draft.agents[agentId] = { auth: effectiveAuthMode, sessions: effectiveSessionsMode };
+  const configured = await configureProject(projectRoot, draft);
   return {
-    ...state,
+    ...configured,
     authMode: effectiveAuthMode,
     sessionsMode: effectiveSessionsMode,
-    configChanged,
-    gitignoreChanged,
+    configChanged: configured.configChanged,
+    gitignoreChanged: configured.gitignoreChanged,
     structureRepaired,
   };
 }

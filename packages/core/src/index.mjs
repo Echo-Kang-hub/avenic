@@ -3,6 +3,7 @@
 export { AGENTS, agentExecutableAvailable, detectAgentInstallation, getAgent } from "./runtime/agents.mjs";
 export {
   clearLocalAuth,
+  configureProject,
   deinitializeAgent,
   effectiveAgentConfig,
   getAgentRuntimeMode,
@@ -11,9 +12,11 @@ export {
   getActiveCanonicalSessionId,
   setActiveCanonicalSession,
   projectAuthEnvironment,
+  projectConfig,
   runtimePaths,
   setLocalAuth,
   validateAuthMode,
+  validateSessionInteropMode,
   validateSessionsMode,
 } from "./runtime/config.mjs";
 export {
@@ -30,6 +33,7 @@ export { spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
   reconcileCanonicalSession,
+  setSessionInteropMode,
   completeCanonicalContinuation,
   continueCanonicalSession,
   ensureNativeProjection,

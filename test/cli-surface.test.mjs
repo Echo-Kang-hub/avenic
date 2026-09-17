@@ -264,6 +264,22 @@ test("init validates options and auth/sessions modes", async () => {
   });
 });
 
+test("top-level init and change keep shared history separate from agent scopes", async () => {
+  await withTempDirectory("avenic-project-setup-", async (projectRoot) => {
+    const initialized = runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "isolated"]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    assert.match(initialized.stdout, /History: isolated/);
+
+    const changed = runAgent(projectRoot, ["change", "--history", "shared"]);
+    assert.equal(changed.status, 0, changed.stderr);
+    assert.match(changed.stdout, /History: shared/);
+    const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
+    assert.equal(runtime.sessionInterop, "shared");
+    assert.deepEqual(runtime.agents.claude, { enabled: true, auth: "global", sessions: "project" });
+    assert.deepEqual(runtime.agents.codex, { enabled: true, auth: "global", sessions: "project" });
+  });
+});
+
 test("agent sessions import and status work through the CLI", async () => {
   await withTempDirectory("avenic-sessions-cli-", async (projectRoot) => {
     const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "global"]);

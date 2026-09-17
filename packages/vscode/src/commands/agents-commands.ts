@@ -55,6 +55,35 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.initialize(target.root, target.id, mode.value.auth, mode.value.sessions).then(() => { report("完成"); })), () => deps.refresh());
   });
 
+  register("avenic.agents.configureProject", async () => {
+    if (busy()) return;
+    const root = await deps.resolveRoot();
+    if (root === null) return;
+    const current = await agents.readProjectConfiguration(root);
+    const selected = await vscode.window.showQuickPick(
+      agents.listAgents().map((agent) => ({ label: agent.displayName, id: agent.id, picked: Object.hasOwn(current.agents, agent.id) })),
+      { canPickMany: true, title: "Avenic: Select agents" },
+    );
+    if (selected === undefined || selected.length === 0) return;
+    const draft: agents.ProjectAgentSettings = {};
+    for (const selectedAgent of selected) {
+      const previous = current.agents[selectedAgent.id] ?? { auth: "global", sessions: "project" };
+      const auth = await vscode.window.showQuickPick(["global", "project"], { title: `${selectedAgent.label}: Authentication (current: ${previous.auth})` });
+      if (auth === undefined) return;
+      const sessions = await vscode.window.showQuickPick(["global", "project"], { title: `${selectedAgent.label}: Session storage (current: ${previous.sessions})` });
+      if (sessions === undefined) return;
+      draft[selectedAgent.id] = { auth: auth as "global" | "project", sessions: sessions as "global" | "project" };
+    }
+    const history = await vscode.window.showQuickPick([
+      { label: "Shared", value: "shared" as const, description: "Selected agents can continue the same Avenic history" },
+      { label: "Isolated", value: "isolated" as const, description: "Each agent keeps independent histories" },
+    ], { title: `Avenic: Session history (current: ${current.sessionInterop})` });
+    if (history === undefined) return;
+    await runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
+      agents.configureProjectRuntime(root, draft, history.value).then(() => { report("Completed"); }),
+    ), () => deps.refresh());
+  });
+
   // 安装/升级官方 Agent CLI（npm @latest）：集成终端实时输出 npm 进度（无文字按钮，
   // 键位图标区分：安装 cloud-download / 升级 arrow-up）。两条命令共用同一 npm line；
   // 终端关闭后作废版本缓存并刷新，让「可升级」/「CLI 未安装」态即时退场。

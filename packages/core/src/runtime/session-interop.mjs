@@ -4,7 +4,16 @@ import { getSessionAdapter } from "./adapters/index.mjs";
 import { buildHandoff } from "./handoff.mjs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimePaths, setActiveCanonicalSession } from "./config.mjs";
+import {
+  configureProject,
+  effectiveAgentConfig,
+  loadRuntime,
+  projectAuthEnvironment,
+  projectConfig,
+  runtimePaths,
+  setActiveCanonicalSession,
+  validateSessionInteropMode,
+} from "./config.mjs";
 import { listFiles } from "./sessions.mjs";
 
 function canonicalRevision(stored) {
@@ -50,11 +59,43 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       nativeRevision: native.revision ?? null,
       lastCanonicalEventId: native.events.at(-1)?.id ?? null,
     });
-    await setActiveCanonicalSession(projectRoot, canonicalId);
+    if (options.setActive !== false) await setActiveCanonicalSession(projectRoot, canonicalId);
     if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
     if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
   }
   return { ...captured, discovered, imported, unchanged, failed, diagnostics };
+}
+
+// Switching policy never rewrites or deletes native history. Moving into
+// Shared imports each enabled agent into the canonical workspace by identity;
+// unrelated conversations remain separate canonical sessions rather than being
+// joined merely because their timestamps are close.
+export async function setSessionInteropMode(projectRoot, mode, options = {}) {
+  validateSessionInteropMode(mode);
+  const before = await loadRuntime(projectRoot);
+  const previous = projectConfig(before).sessionInterop;
+  const configured = await configureProject(projectRoot, {
+    ...(options.agents === undefined ? {} : { agents: options.agents }),
+    sessionInterop: mode,
+  });
+  if (previous === mode || mode !== "shared") {
+    return { previous, mode, imported: [], config: configured.config };
+  }
+  const imported = [];
+  for (const agentId of Object.keys(configured.config.agents)) {
+    const agent = effectiveAgentConfig(configured, agentId);
+    const environment = options.environmentForAgent?.(agentId) ?? (agent?.auth === "project"
+      ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
+      : process.env);
+    try {
+      imported.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
+    } catch (error) {
+      // A single damaged agent cache must not make the mode change destructive
+      // or prevent other histories from becoming available in the workspace.
+      imported.push({ agentId, failed: true, diagnostics: [error.message] });
+    }
+  }
+  return { previous, mode, imported, config: configured.config };
 }
 
 // The service owns mapping updates. Adapters only understand one native format,

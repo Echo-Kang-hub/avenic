@@ -1,5 +1,4 @@
 import path from "node:path";
-import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { readFileSync } from "node:fs";
@@ -11,6 +10,7 @@ import {
   bindProject,
   buildHandoff,
   clearLocalAuth,
+  configureProject,
   createInstallContext,
   deinitializeAgent,
   effectiveAgentConfig,
@@ -28,12 +28,12 @@ import {
   captureCanonicalSession,
   reconcileCanonicalSession,
   continueCanonicalSession,
-  ensureNativeProjection,
   continuationLaunchArguments,
   managedSkillNames,
   projectCanonicalSession,
   readCanonicalSession,
   projectAuthEnvironment,
+  projectConfig,
   projectModelStatus,
   resolveProjectProfile,
   resolveEffectiveAgentRuntime,
@@ -42,14 +42,17 @@ import {
   setLocalAuth,
   setSessionsGitIgnored,
   setActiveCanonicalSession,
+  setSessionInteropMode,
   spawnExecutableSync,
   validateAuthMode,
+  validateSessionInteropMode,
   validateSessionsMode,
 } from "#core";
 import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { spawnSessionWatchdog } from "./watchdog.mjs";
+import { confirm, isInteractive, multiselect, select } from "./prompts.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")).version;
@@ -85,44 +88,6 @@ function isActiveSessionError(output) {
   return /active writer|already in use|already active|session lock|thread-store conflict/i.test(output);
 }
 
-async function materializeResumeProjection(agentId, projectRoot, state, environment, canonical) {
-  const adapter = getSessionAdapter(agentId);
-  if (agentId === "opencode") return null;
-  const handoff = buildHandoff({
-    session: canonical.session,
-    events: canonical.events,
-    targetAgent: agentId,
-    lastCanonicalEventId: null,
-  });
-  const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, {
-    state,
-    environment,
-    argumentsList: [],
-    io: { log() {}, warn() {} },
-  });
-  const sessionId = randomUUID();
-  const argumentsList = agentId === "claude"
-    ? ["--bg", "--session-id", sessionId, handoff.markdown]
-    : ["exec", "--json", handoff.markdown];
-  const launchStartedAt = Date.now() - 1000;
-  await new Promise((resolve, reject) => {
-    const child = spawnProcess(runtime.executable, argumentsList, {
-      cwd: projectRoot,
-      env: runtime.environment,
-      stdio: "ignore",
-      windowsHide: true,
-      shell: process.platform === "win32" && /\.(?:cmd|bat)$/i.test(runtime.executable),
-    });
-    child.once("error", reject);
-    child.once("close", (status) => status === 0 ? resolve() : reject(new Error(`${getAgent(agentId).displayName} projection bootstrap exited with status ${status}`)));
-  });
-  const nativeSessionId = agentId === "claude"
-    ? sessionId
-    : await adapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
-  if (!nativeSessionId) throw new Error(`${getAgent(agentId).displayName} projection bootstrap did not expose a native session id`);
-  return { nativeSessionId, diagnostics: [] };
-}
-
 function takeOption(argumentsList, option) {
   const index = argumentsList.indexOf(option);
   if (index === -1) {
@@ -136,12 +101,120 @@ function takeOption(argumentsList, option) {
   return value;
 }
 
+function parseAgentList(value) {
+  const agents = value.split(",").filter(Boolean);
+  if (agents.length === 0) throw new Error("Select at least one agent");
+  for (const agentId of agents) getAgent(agentId);
+  return [...new Set(agents)];
+}
+
+function configurationSummary(config) {
+  const lines = [];
+  for (const [agentId, entry] of Object.entries(config.agents)) {
+    lines.push(`${getAgent(agentId).displayName}: ${entry.auth} auth · ${entry.sessions} sessions`);
+  }
+  lines.push(`History: ${config.sessionInterop}`);
+  return lines;
+}
+
+async function interactiveProjectDraft(projectRoot, editing = false) {
+  const state = await loadRuntime(projectRoot);
+  const current = projectConfig(state);
+  const selected = await multiselect({
+    title: editing ? "Select enabled agents" : "Select agents",
+    options: Object.values(AGENTS).map((agent) => ({ value: agent.id, label: agent.displayName })),
+    initial: Object.keys(current.agents),
+  });
+  if (selected === null) return null;
+  if (selected.length === 0) throw new Error("Select at least one agent");
+  const agents = {};
+  for (const agentId of selected) {
+    const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
+    const auth = await select({
+      title: `${getAgent(agentId).displayName} authentication`,
+      options: [
+        { value: "global", label: "Global" },
+        { value: "project", label: "Project" },
+      ],
+      initial: previous.auth === "project" ? 1 : 0,
+    });
+    if (auth === null) return null;
+    const sessions = await select({
+      title: `${getAgent(agentId).displayName} session storage`,
+      options: [
+        { value: "global", label: "Global" },
+        { value: "project", label: "Project" },
+      ],
+      initial: previous.sessions === "project" ? 1 : 0,
+    });
+    if (sessions === null) return null;
+    agents[agentId] = { auth, sessions };
+  }
+  const sessionInterop = await select({
+    title: "Session history",
+    options: [
+      { value: "shared", label: "Shared — selected agents can continue the same Avenic history" },
+      { value: "isolated", label: "Isolated — each agent keeps independent histories" },
+    ],
+    initial: current.sessionInterop === "isolated" ? 1 : 0,
+  });
+  if (sessionInterop === null) return null;
+  return { agents, sessionInterop };
+}
+
+async function applyProjectDraft(projectRoot, draft) {
+  const current = projectConfig(await loadRuntime(projectRoot));
+  if (draft.sessionInterop !== current.sessionInterop) {
+    return setSessionInteropMode(projectRoot, draft.sessionInterop, { agents: draft.agents });
+  }
+  const configured = await configureProject(projectRoot, { agents: draft.agents, sessionInterop: draft.sessionInterop });
+  return { previous: current.sessionInterop, mode: draft.sessionInterop, imported: [], config: configured.config };
+}
+
+async function dispatchProjectSetup(argumentsList, editing = false) {
+  const projectRoot = locateProjectRoot();
+  let draft;
+  if (argumentsList.length === 0 && isInteractive()) {
+    draft = await interactiveProjectDraft(projectRoot, editing);
+    if (!draft) return 0;
+    console.log(`\nAvenic project configuration\n${configurationSummary(draft).map((line) => `  ${line}`).join("\n")}\n`);
+    if (await confirm({ title: "Apply configuration?" }) !== true) return 0;
+  } else {
+    const values = [...argumentsList];
+    const agentsOption = takeOption(values, "--agents");
+    const auth = takeOption(values, "--auth");
+    const sessions = takeOption(values, "--sessions");
+    const history = takeOption(values, "--history");
+    if (values.length > 0) throw new Error(`Unknown option: ${values[0]}`);
+    const current = projectConfig(await loadRuntime(projectRoot));
+    const ids = agentsOption ? parseAgentList(agentsOption) : Object.keys(current.agents);
+    if (ids.length === 0) throw new Error("Usage: avenic init --agents <claude,codex,opencode> [--auth global|project] [--sessions global|project] [--history shared|isolated]");
+    const authMode = auth ? validateAuthMode(auth) : null;
+    const sessionsMode = sessions ? validateSessionsMode(sessions) : null;
+    const sessionInterop = history ? validateSessionInteropMode(history) : current.sessionInterop;
+    const agents = {};
+    for (const agentId of ids) {
+      const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
+      agents[agentId] = { auth: authMode ?? previous.auth, sessions: sessionsMode ?? previous.sessions };
+    }
+    draft = { agents, sessionInterop };
+  }
+  const result = await applyProjectDraft(projectRoot, draft);
+  console.log(`Avenic project ${editing ? "updated" : "initialized"}\n`);
+  console.log(`Project  ${projectRoot}`);
+  for (const line of configurationSummary(result.config)) console.log(`  ${line}`);
+  if (result.imported.length) console.log(`Imported native histories from ${result.imported.length} agent(s) into the shared workspace.`);
+  return 0;
+}
+
 export function printHelp(io = console) {
   io.log(`Avenic
 
 CLI: avenic (shorthand: ave)
 
 Agent runtimes:
+  avenic init [--agents <claude,codex,opencode>] [--auth global|project] [--sessions global|project] [--history shared|isolated]
+  avenic change [same options]          Reconfigure this project
   avenic <claude|codex|opencode> init [--auth global|project] [--sessions global|project]
   avenic <claude|codex|opencode> deinit [--purge]
   avenic <claude|codex|opencode> auth [global|project|reset]
@@ -362,62 +435,15 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     : process.env);
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
+  const sharedSessions = projectConfig(state).sessionInterop === "shared";
   // A plain agent launch is intentionally transparent: storage scope does not
   // imply a launch target. Shared-session continuation is opt-in via
   // `sessions continue`, while this path preserves the agent's native new/
   // default-session UX (including its own /resume command).
-  // Reconcile already materialized mappings before entering the native TUI so
-  // its official resume picker is not backed by stale Avenic state. We never
-  // select a canonical session here and deliberately do not synthesize native
-  // history for unmapped sessions.
-  if (!options.skipCanonical && portableSessions) {
-    const diagnosticsShown = new Set();
-    const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
-    if (activeCanonicalId) {
-      try {
-        const canonical = await readCanonicalSession(projectRoot, activeCanonicalId);
-        const preparation = ensureNativeProjection({
-          projectRoot,
-          canonicalId: activeCanonicalId,
-          targetAgent: agentId,
-          environment,
-          intent: "resume-catalog",
-          materialize: ({ session, events }) => materializeResumeProjection(agentId, projectRoot, state, environment, { session, events }),
-        });
-        // A missing/stale projection may require a real agent bootstrap. Do
-        // not put that model/network latency on the plain TUI startup path.
-        const targetMapping = canonical.mappings.projections[agentId];
-        const canonicalTail = canonical.events.at(-1)?.id ?? null;
-        if (!targetMapping?.nativeSessionId || targetMapping.lastCanonicalEventId !== canonicalTail) {
-          void preparation.catch(() => {});
-        } else {
-          await preparation;
-        }
-      } catch (error) {
-        console.warn(`Avenic resume catalog preparation skipped: ${error.message}`);
-      }
-    }
-    for (const session of await listCanonicalSessions(projectRoot)) {
-      try {
-        const reconciled = await reconcileCanonicalSession(projectRoot, session.id, {
-          environmentForAgent: (sourceAgent) => {
-            const sourceConfig = effectiveAgentConfig(state, sourceAgent);
-            return sourceConfig?.auth === "project"
-              ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
-              : process.env;
-          },
-        });
-        for (const diagnostic of reconciled.flatMap((item) => item.diagnostics ?? [])) {
-          const key = `${diagnostic.agentId ?? "agent"}:${diagnostic.line ?? ""}:${diagnostic.kind ?? ""}:${diagnostic.file ?? ""}`;
-          if (diagnosticsShown.has(key)) continue;
-          diagnosticsShown.add(key);
-          console.warn(`Avenic: recovered ${diagnostic.agentId ?? "agent"} history with malformed record skipped.`);
-        }
-      } catch (error) {
-        console.warn(`Avenic session reconciliation skipped: ${error.message}`);
-      }
-    }
-  }
+  // Plain launch is deliberately a zero-session-control-plane path. Do not
+  // parse another agent's history, create projections, or call a model before
+  // the official TUI appears. Explicit `sessions continue` performs recovery
+  // and reconciliation; ordinary exits capture the selected native history.
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
@@ -502,7 +528,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
         await adapter.capture(projectRoot, { environment });
         // Reconcile ordinary launches as well. This observes sessions created
         // or selected inside the native TUI without choosing one beforehand.
-        if (!options.skipCanonical) {
+        if (!options.skipCanonical && sharedSessions) {
           await importProjectSessions(projectRoot, agentId, { environment });
         }
         if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
@@ -521,6 +547,7 @@ async function dispatchStatus() {
   const state = await loadRuntime(projectRoot);
   console.log("Avenic Status\n");
   console.log(`Project  ${projectRoot}\n`);
+  console.log(`History  ${projectConfig(state).sessionInterop}\n`);
   for (const agentId of Object.keys(AGENTS)) {
     const agent = getAgent(agentId);
     const config = effectiveAgentConfig(state, agentId);
@@ -562,6 +589,27 @@ function untrackSessions(projectRoot) {
 async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
+  if (!command && isInteractive()) {
+    const interop = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
+    const action = await select({
+      title: `Sessions (${interop})`,
+      options: [
+        ...(interop === "shared" ? [{ value: ["continue"], label: "Continue shared session" }] : []),
+        { value: ["list"], label: "List sessions" },
+        { value: ["sync"], label: "Sync native histories" },
+        { value: ["status"], label: "Status" },
+      ],
+    });
+    if (!action) return 0;
+    if (action[0] !== "continue") return dispatchSessions(action, options);
+    const sessions = await listCanonicalSessions(projectRoot);
+    if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
+    const sessionId = await select({ title: "Continue shared session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+    if (!sessionId) return 0;
+    const agentId = await select({ title: "Continue with", options: Object.values(AGENTS).map((agent) => ({ value: agent.id, label: agent.displayName })) });
+    if (!agentId) return 0;
+    return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
+  }
   if ((command === "list" || command === "status") && argumentsList.length === 1) {
     const sessions = await listCanonicalSessions(projectRoot);
     const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
@@ -603,6 +651,9 @@ async function dispatchSessions(argumentsList, options = {}) {
     }
     const agentId = extra[1];
     const state = await loadRuntime(projectRoot);
+    if (projectConfig(state).sessionInterop !== "shared") {
+      throw new Error("Shared continuation is disabled for this project. Run: avenic change --history shared");
+    }
     const config = effectiveAgentConfig(state, agentId);
     if (!config) throw new Error(`${getAgent(agentId).displayName} is not initialized. Run: avenic ${agentId} init`);
     const environment = config.auth === "project"
@@ -701,6 +752,19 @@ async function dispatchSessions(argumentsList, options = {}) {
     await setActiveCanonicalSession(projectRoot, mode);
     return result.launched.status ?? 0;
   }
+  if (command === "sync" && argumentsList.length === 1) {
+    const state = await loadRuntime(projectRoot);
+    const results = [];
+    for (const agentId of Object.keys(projectConfig(state).agents)) {
+      const config = effectiveAgentConfig(state, agentId);
+      const environment = config?.auth === "project"
+        ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
+        : process.env;
+      results.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
+    }
+    console.log(`Synced ${results.reduce((total, item) => total + (item.imported ?? 0), 0)} native session(s).`);
+    return 0;
+  }
   if (command !== "git") {
     throw new Error("Usage: avenic sessions git [on|off|status]");
   }
@@ -754,6 +818,12 @@ export async function runCli(options = {}) {
   }
   if (Object.hasOwn(AGENTS, command)) {
     return dispatchAgent(command, remainingArguments);
+  }
+  if (command === "init") {
+    return dispatchProjectSetup(remainingArguments);
+  }
+  if (command === "change") {
+    return dispatchProjectSetup(remainingArguments, true);
   }
   if (command === "skills") {
     return dispatchSkillsCommand(remainingArguments);

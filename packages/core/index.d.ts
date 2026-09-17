@@ -61,12 +61,19 @@ export interface RuntimePaths {
 
 export interface RuntimeState {
   paths: RuntimePaths;
-  runtime: { schemaVersion?: number; activeCanonicalSessionId?: string; agents?: Record<string, AgentRuntimeConfig> };
+  runtime: { schemaVersion?: number; activeCanonicalSessionId?: string; sessionInterop?: "shared" | "isolated"; agents?: Record<string, AgentRuntimeConfig> };
   local: { schemaVersion?: number; agents?: Record<string, { auth?: "global" | "project" }> };
 }
 
 export function validateAuthMode(authMode: unknown): "global" | "project";
 export function validateSessionsMode(sessionsMode: unknown): "global" | "project";
+export function validateSessionInteropMode(mode: unknown): "shared" | "isolated";
+export interface ProjectConfig {
+  agents: Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
+  sessionInterop: "shared" | "isolated";
+}
+export function projectConfig(state: RuntimeState): ProjectConfig;
+export function configureProject(projectRoot: string, draft?: Partial<ProjectConfig>): Promise<RuntimeState & { configChanged: boolean; gitignoreChanged: boolean; config: ProjectConfig }>;
 export function runtimePaths(projectRoot: string): RuntimePaths;
 export function loadRuntime(projectRoot: string): Promise<RuntimeState>;
 export function getActiveCanonicalSessionId(projectRoot: string): Promise<string | null>;
@@ -190,6 +197,7 @@ export interface ContinuationResult {
 }
 export function createCanonicalSession(projectRoot: string, input?: Record<string, unknown>): Promise<{ id: string; created: boolean }>;
 export function importProjectSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ count: number; changed: boolean; discovered: number; imported: number; unchanged: number; failed: number; diagnostics: string[] }>;
+export function setSessionInteropMode(projectRoot: string, mode: "shared" | "isolated", options?: { agents?: ProjectConfig["agents"]; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
 export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
 export function appendCanonicalEvents(projectRoot: string, id: string, events: CanonicalEvent[]): Promise<{ added: number; duplicate: number }>;
 export function canonicalSessionRevision(events: CanonicalEvent[]): string;

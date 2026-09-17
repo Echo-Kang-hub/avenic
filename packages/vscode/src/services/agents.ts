@@ -6,6 +6,7 @@ import {
   bindProject,
   buildLaunchInjection,
   clearLocalAuth,
+  configureProject as configureProjectCore,
   detectAgentInstallation,
   deinitializeAgent,
   effectiveAgentConfig,
@@ -16,9 +17,11 @@ import {
   importProjectSessions,
   loadRuntime,
   projectAuthEnvironment,
+  projectConfig,
   projectModelStatus,
   resolveProjectProfile,
   sessionLeasePath,
+  setSessionInteropMode,
   setLocalAuth,
   type Agent,
   type AgentInstallation,
@@ -85,6 +88,23 @@ export { invalidateCliVersionCache, npmPackage } from "./agent-versions.ts";
 
 export function initialize(projectRoot: string, agentId: string, authMode: "global" | "project", sessionsMode: "global" | "project") {
   return initializeAgent(projectRoot, agentId, authMode, sessionsMode).finally(invalidateAgentStatusCache);
+}
+
+export type ProjectAgentSettings = Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
+
+export async function readProjectConfiguration(projectRoot: string) {
+  return projectConfig(await loadRuntime(projectRoot));
+}
+
+// The extension only collects choices. Core validates, commits, and imports
+// isolated native histories when switching into Shared mode.
+export async function configureProjectRuntime(projectRoot: string, agents: ProjectAgentSettings, sessionInterop: "shared" | "isolated") {
+  const current = await readProjectConfiguration(projectRoot);
+  const result = current.sessionInterop === sessionInterop
+    ? { config: (await configureProjectCore(projectRoot, { agents, sessionInterop })).config, imported: [] }
+    : await setSessionInteropMode(projectRoot, sessionInterop, { agents });
+  invalidateAgentStatusCache();
+  return result;
 }
 
 export function deinitialize(projectRoot: string, agentId: string, purge?: boolean) {

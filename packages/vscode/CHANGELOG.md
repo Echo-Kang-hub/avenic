@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Added project-level configuration for enabled agents, independent auth and
+  native-session scopes, and Shared or Isolated session history.
+- Added a single Configure Project entry point and an initialization welcome
+  state; launch continues to open the official default agent TUI.
+
 ## 0.2.0
 
 - Added unified shared-session visibility and continuation commands.

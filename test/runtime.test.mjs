@@ -22,7 +22,7 @@ import {
   ensureRuntimeGitignore,
   sessionsGitIgnored,
 } from "../packages/core/src/runtime/gitignore.mjs";
-import { agentExecutableAvailable, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
+import { agentExecutableAvailable, listCanonicalSessions, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
 import { locateProjectRoot } from "../packages/core/src/runtime/project-root.mjs";
 import * as claudeSessions from "../packages/core/src/runtime/adapters/claude.mjs";
 import * as codexSessions from "../packages/core/src/runtime/adapters/codex.mjs";
@@ -785,6 +785,23 @@ test("project sessions revert native storage after launch", async () => {
       `${JSON.stringify({ type: "session_meta", payload: { id: "sess-1", cwd: projectRoot } })}\n`,
     );
     assert.equal(await readFile(indexFile, "utf8"), `${JSON.stringify({ id: "sess-1" })}\n`);
+  });
+});
+
+test("isolated history mode captures native project sessions without auto-sharing them", async () => {
+  await withTempProject(async (projectRoot) => {
+    const binDirectory = await fakeAgentWritesSession(projectRoot, "codex");
+    const environment = {
+      ...process.env,
+      PATH: `${binDirectory}${path.delimiter}${process.env.PATH}`,
+      CODEX_HOME: path.join(projectRoot, "codex-home"),
+      PROJECT_ROOT: projectRoot,
+    };
+    const initialized = runCli(projectRoot, "skills.mjs", ["init", "--agents", "codex", "--auth", "global", "--sessions", "project", "--history", "isolated"], environment);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const launched = runCli(projectRoot, "skills.mjs", ["codex", "exec"], environment);
+    assert.equal(launched.status, 0, launched.stderr);
+    assert.equal((await listCanonicalSessions(projectRoot)).length, 0);
   });
 });
 
