@@ -12,6 +12,7 @@ import {
   projectConfig,
   runtimePaths,
   listCanonicalSessions,
+  readCanonicalSession,
   setSessionInteropMode,
   setLocalAuth,
   clearLocalAuth,
@@ -100,6 +101,35 @@ test("isolated to shared imports native histories without joining unrelated sess
     assert.equal(transitioned.mode, "shared");
     assert.equal((await listCanonicalSessions(root)).length, 1);
     assert.equal((await loadRuntime(root)).runtime.sessionInterop, "shared");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(claudeHome, { recursive: true, force: true });
+  }
+});
+
+test("shared to isolated preserves canonical history and rejoining captures the isolated delta", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-shared-isolated-shared-"));
+  const claudeHome = await mkdtemp(path.join(os.tmpdir(), "avenic-claude-delta-"));
+  try {
+    const environment = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
+    await configureProject(root, { agents: { claude: { auth: "global", sessions: "project" } }, sessionInterop: "shared" });
+    const key = path.resolve(root).replace(/[^a-zA-Z0-9]/g, "-");
+    const native = path.join(claudeHome, "projects", key, "history.jsonl");
+    await mkdir(path.dirname(native), { recursive: true });
+    const record = (id, content) => JSON.stringify({ type: "user", uuid: id, sessionId: "stable-native", cwd: root, timestamp: `2026-09-17T00:00:0${id}.000Z`, message: { role: "user", content } });
+    await writeFile(native, `${record("1", "before isolation")}\n`);
+    await setSessionInteropMode(root, "isolated", { environmentForAgent: () => environment });
+    const first = await setSessionInteropMode(root, "shared", { environmentForAgent: () => environment });
+    assert.equal(first.imported[0].imported, 1);
+    const canonicalId = (await listCanonicalSessions(root))[0].id;
+    assert.equal((await readCanonicalSession(root, canonicalId)).events.length, 1);
+
+    await setSessionInteropMode(root, "isolated", { environmentForAgent: () => environment });
+    await writeFile(native, `${record("1", "before isolation")}\n${record("2", "while isolated")}\n`);
+    const rejoined = await setSessionInteropMode(root, "shared", { environmentForAgent: () => environment });
+    assert.equal(rejoined.imported[0].failed, 0);
+    const stored = await readCanonicalSession(root, canonicalId);
+    assert.deepEqual(stored.events.map((event) => event.content[0]?.text), ["before isolation", "while isolated"]);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(claudeHome, { recursive: true, force: true });

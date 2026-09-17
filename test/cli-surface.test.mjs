@@ -280,6 +280,18 @@ test("top-level init and change keep shared history separate from agent scopes",
   });
 });
 
+test("change updates only the selected agent scope unless agents are explicitly replaced", async () => {
+  await withTempDirectory("avenic-change-scope-", async (projectRoot) => {
+    assert.equal(runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "shared"]).status, 0);
+    const changed = runAgent(projectRoot, ["change", "--agents", "codex", "--auth", "project"]);
+    assert.equal(changed.status, 0, changed.stderr);
+    const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
+    assert.deepEqual(Object.keys(runtime.agents).sort(), ["claude", "codex"]);
+    assert.equal(runtime.agents.claude.auth, "global");
+    assert.equal(runtime.agents.codex.auth, "project");
+  });
+});
+
 test("agent sessions import and status work through the CLI", async () => {
   await withTempDirectory("avenic-sessions-cli-", async (projectRoot) => {
     const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "global"]);

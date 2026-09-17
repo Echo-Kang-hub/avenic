@@ -181,6 +181,9 @@ async function dispatchProjectSetup(argumentsList, editing = false) {
     if (await confirm({ title: "Apply configuration?" }) !== true) return 0;
   } else {
     const values = [...argumentsList];
+    const replaceAgentsIndex = values.indexOf("--replace-agents");
+    const replaceAgents = replaceAgentsIndex !== -1;
+    if (replaceAgents) values.splice(replaceAgentsIndex, 1);
     const agentsOption = takeOption(values, "--agents");
     const auth = takeOption(values, "--auth");
     const sessions = takeOption(values, "--sessions");
@@ -192,7 +195,12 @@ async function dispatchProjectSetup(argumentsList, editing = false) {
     const authMode = auth ? validateAuthMode(auth) : null;
     const sessionsMode = sessions ? validateSessionsMode(sessions) : null;
     const sessionInterop = history ? validateSessionInteropMode(history) : current.sessionInterop;
-    const agents = {};
+    // `change --agents codex --auth project` updates Codex without silently
+    // disabling Claude/OpenCode. Replacing the enabled set is explicit; the
+    // interactive picker already has that explicit whole-list semantics.
+    const agents = editing && !replaceAgents
+      ? Object.fromEntries(Object.entries(current.agents).map(([agentId, entry]) => [agentId, { ...entry }]))
+      : {};
     for (const agentId of ids) {
       const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
       agents[agentId] = { auth: authMode ?? previous.auth, sessions: sessionsMode ?? previous.sessions };
@@ -214,7 +222,7 @@ CLI: avenic (shorthand: ave)
 
 Agent runtimes:
   avenic init [--agents <claude,codex,opencode>] [--auth global|project] [--sessions global|project] [--history shared|isolated]
-  avenic change [same options]          Reconfigure this project
+  avenic change [same options] [--replace-agents]  Reconfigure this project
   avenic <claude|codex|opencode> init [--auth global|project] [--sessions global|project]
   avenic <claude|codex|opencode> deinit [--purge]
   avenic <claude|codex|opencode> auth [global|project|reset]
@@ -610,6 +618,7 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (!agentId) return 0;
     return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
   }
+  if (!command) return dispatchSessions(["status"], options);
   if ((command === "list" || command === "status") && argumentsList.length === 1) {
     const sessions = await listCanonicalSessions(projectRoot);
     const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
