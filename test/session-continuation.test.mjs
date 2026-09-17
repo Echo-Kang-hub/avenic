@@ -218,3 +218,23 @@ test("a stale Codex rollout rehydrates without changing canonical history", asyn
     assert.deepEqual(stored.events.map((item) => item.id), ["a", "b", "c"]);
   });
 });
+
+test("Codex v2 sub-agent mappings resolve to their resumable parent thread", async () => {
+  await withProject(async (projectRoot) => {
+    const codexHome = await mkdtemp(path.join(os.tmpdir(), "avenic-v2-codex-"));
+    try {
+      const rollout = path.join(codexHome, "sessions", "2026", "09", "17", "rollout-child.jsonl");
+      await mkdir(path.dirname(rollout), { recursive: true });
+      await writeFile(rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "child", parent_thread_id: "parent", multi_agent_version: 2, cwd: projectRoot } })}\n`);
+      const { resolveResumableSession } = await import("../packages/core/src/runtime/adapters/codex.mjs");
+      assert.equal(await resolveResumableSession(projectRoot, "child", { environment: { CODEX_HOME: codexHome } }), "parent");
+      await createCanonicalSession(projectRoot, { id: "v2" });
+      await completeCanonicalContinuation(projectRoot, "v2", "codex", { nativeSessionId: "child" });
+      const continuation = await prepareCanonicalContinuation(projectRoot, "v2", "codex", { environment: { CODEX_HOME: codexHome } });
+      assert.equal(continuation.mode, "resume");
+      assert.equal(continuation.nativeSessionId, "parent");
+    } finally {
+      await (await import("node:fs/promises")).rm(codexHome, { recursive: true, force: true });
+    }
+  });
+});

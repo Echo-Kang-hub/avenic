@@ -522,6 +522,7 @@ async function dispatchSessions(argumentsList, options = {}) {
       projectRoot,
       canonicalId: mode,
       targetAgent: agentId,
+      environment,
       forceBootstrap,
       // Every call resolves the normal auth/runtime environment for that
       // agent. Sessions never manufacture or migrate credential directories.

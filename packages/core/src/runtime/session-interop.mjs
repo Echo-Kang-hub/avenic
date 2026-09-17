@@ -136,6 +136,11 @@ export async function reconcileCanonicalSession(projectRoot, canonicalSessionId,
 export async function prepareCanonicalContinuation(projectRoot, canonicalSessionId, agentId, options = {}) {
   const stored = await readCanonicalSession(projectRoot, canonicalSessionId);
   const mapping = stored.mappings.projections[agentId] ?? null;
+  const adapter = getSessionAdapter(agentId);
+  const mappedNativeSessionId = options.forceBootstrap ? null : mapping?.nativeSessionId ?? null;
+  const nativeSessionId = mappedNativeSessionId && typeof adapter.resolveResumableSession === "function"
+    ? await adapter.resolveResumableSession(projectRoot, mappedNativeSessionId, options)
+    : mappedNativeSessionId;
   const handoff = buildHandoff({
     session: stored.session,
     events: stored.events,
@@ -145,8 +150,8 @@ export async function prepareCanonicalContinuation(projectRoot, canonicalSession
   return {
     canonicalSessionId,
     agentId,
-    mode: mapping?.nativeSessionId && !options.forceBootstrap ? "resume" : "bootstrap",
-    nativeSessionId: options.forceBootstrap ? null : mapping?.nativeSessionId ?? null,
+    mode: nativeSessionId ? "resume" : "bootstrap",
+    nativeSessionId,
     mapping,
     handoff,
     canonicalRevision: canonicalRevision(stored),
@@ -176,7 +181,7 @@ export async function completeCanonicalContinuation(projectRoot, canonicalSessio
 // The only continuation orchestration path. Callers provide the native hooks;
 // adapters remain responsible only for their native format and launch command.
 // `capture` may return null when no mapped native session exists yet.
-export async function continueCanonicalSession({ projectRoot, canonicalId, targetAgent, captureKnown, capture, launch, forceBootstrap: requestedBootstrap = false }) {
+export async function continueCanonicalSession({ projectRoot, canonicalId, targetAgent, captureKnown, capture, launch, environment, forceBootstrap: requestedBootstrap = false }) {
   if (typeof capture !== "function" || typeof launch !== "function") {
     throw new Error("Canonical continuation requires capture and launch hooks");
   }
@@ -190,7 +195,7 @@ export async function continueCanonicalSession({ projectRoot, canonicalId, targe
     forceBootstrap = true;
     recoveredProjection = true;
   }
-  const continuation = await prepareCanonicalContinuation(projectRoot, canonicalId, targetAgent, { forceBootstrap });
+  const continuation = await prepareCanonicalContinuation(projectRoot, canonicalId, targetAgent, { environment, forceBootstrap });
   const launched = await launch(continuation);
   const captured = await capture("after", { continuation, launched });
   await mergeCapturedEvents(projectRoot, canonicalId, captured);

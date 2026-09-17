@@ -76,6 +76,18 @@ export async function discoverNativeSession(projectRoot, options = {}) {
   return eligible[0].id;
 }
 
+// Codex multi-agent v2 persists child rollouts with a parent_thread_id, but
+// the app-server cannot resume an unloaded child directly. Keep the canonical
+// mapping stable while resolving the native resume target to its parent.
+export async function resolveResumableSession(projectRoot, nativeSessionId, options = {}) {
+  const { nativeSessions } = locations(projectRoot, options.environment);
+  const matches = await matchingRollouts(nativeSessions, projectRoot);
+  const child = matches.find((item) => item.id === nativeSessionId);
+  const parent = child?.parentThreadId;
+  if (!parent || child.multiAgentVersion === undefined) return nativeSessionId;
+  return parent;
+}
+
 function locations(projectRoot, environment = process.env) {
   const codexHome = environment.CODEX_HOME || path.join(homedir(), ".codex");
   return {
@@ -104,7 +116,12 @@ async function matchingRollouts(root, projectRoot) {
     try {
       const first = await readFirstJsonLine(path.join(root, relative));
       if (first.type === "session_meta" && samePath(first.payload?.cwd, projectRoot)) {
-        matches.push({ relative, id: first.payload?.id ?? first.payload?.session_id });
+        matches.push({
+          relative,
+          id: first.payload?.id ?? first.payload?.session_id,
+          parentThreadId: first.payload?.parent_thread_id,
+          multiAgentVersion: first.payload?.multi_agent_version,
+        });
       }
     } catch {}
   }
