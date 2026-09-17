@@ -523,14 +523,7 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (agentId === "opencode") {
       const projection = await projectCanonicalSession(projectRoot, mode, agentId, { environment });
       try {
-        const launched = await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment, capture: true });
-        if (launched.status !== 0 && isActiveSessionError(`${launched.stdout}\n${launched.stderr}`)) {
-          console.log(`${getAgent(agentId).displayName} session is already active; leaving the existing session unchanged.`);
-          return 0;
-        }
-        if (launched.stdout) process.stdout.write(launched.stdout);
-        if (launched.stderr) process.stderr.write(launched.stderr);
-        return launched.status;
+        return await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment });
       } finally {
         await captureCanonicalSession(projectRoot, mode, agentId, { environment });
       }
@@ -595,8 +588,8 @@ async function dispatchSessions(argumentsList, options = {}) {
         };
         let status;
         if (continuation.mode === "resume") {
-          const captured = await dispatchAgent(agentId, launch.argumentsList, { ...launchOptions, capture: true });
-          if (captured.status !== 0 && isActiveSessionError(`${captured.stdout}\n${captured.stderr}`)) {
+          const statusFromInteractiveResume = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+          if (statusFromInteractiveResume !== 0 && agentId === "codex") {
             const fallbackNativeSessionId = agentId === "claude" ? randomUUID() : null;
             const bootstrap = continuationLaunchArguments({
               ...continuation,
@@ -610,9 +603,7 @@ async function dispatchSessions(argumentsList, options = {}) {
               input: bootstrap.input,
             });
           } else {
-            if (captured.stdout) process.stdout.write(captured.stdout);
-            if (captured.stderr) process.stderr.write(captured.stderr);
-            status = captured.status;
+            status = statusFromInteractiveResume;
           }
         } else {
           status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);

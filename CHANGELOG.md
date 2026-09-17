@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.5 - 2026-09-17
+
+- Keep Claude, Codex, and OpenCode foreground launches attached to the user's
+  terminal; continuation handoff is passed as an initial prompt instead of a
+  non-interactive stdin pipe.
+- Use official interactive Codex `resume`/bootstrap commands for TUI sessions.
+
 ## 1.4.4 - 2026-09-17
 
 - Restrict Codex native capture to rollouts belonging to the current project

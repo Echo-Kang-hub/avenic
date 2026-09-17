@@ -31,12 +31,12 @@ const event = (id, role, value) => ({
 test("continuation launch arguments use official resume commands and handoff as an explicit prompt", () => {
   const handoff = { markdown: "# Avenic continuation\nNew shared events since your last sync:\n- assistant: D" };
   const claude = continuationLaunchArguments({ agentId: "claude", mode: "resume", nativeSessionId: "123e4567-e89b-12d3-a456-426614174000", handoff });
-  assert.deepEqual(claude.argumentsList, ["-p", "--output-format", "json", "--resume", "123e4567-e89b-12d3-a456-426614174000"]);
-  assert.equal(claude.input, handoff.markdown);
+  assert.deepEqual(claude.argumentsList, ["--resume", "123e4567-e89b-12d3-a456-426614174000", handoff.markdown]);
+  assert.equal(claude.input, undefined);
   const codex = continuationLaunchArguments({ agentId: "codex", mode: "resume", nativeSessionId: "thread-1", handoff });
-  assert.deepEqual(codex.argumentsList, ["exec", "resume", "thread-1", "-"]);
+  assert.deepEqual(codex.argumentsList, ["resume", "thread-1", handoff.markdown]);
   const newClaude = continuationLaunchArguments({ agentId: "claude", mode: "bootstrap", handoff, nativeSessionId: "123e4567-e89b-12d3-a456-426614174001" });
-  assert.deepEqual(newClaude.argumentsList, ["-p", "--output-format", "json", "--session-id", "123e4567-e89b-12d3-a456-426614174001"]);
+  assert.deepEqual(newClaude.argumentsList, ["--session-id", "123e4567-e89b-12d3-a456-426614174001", handoff.markdown]);
 });
 
 test("native capture metadata does not erase the continuation cursor", async () => {

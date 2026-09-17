@@ -223,16 +223,16 @@ export function continuationLaunchArguments({ agentId, mode, nativeSessionId, ha
     claude: () => {
       if (!nativeSessionId) throw new Error("Claude continuation requires a session id");
       return mode === "resume"
-        ? ["-p", "--output-format", "json", "--resume", nativeSessionId]
-        : ["-p", "--output-format", "json", "--session-id", nativeSessionId];
+        ? ["--resume", nativeSessionId, handoff.markdown]
+        : ["--session-id", nativeSessionId, handoff.markdown];
     },
-    // `exec` is the official non-interactive surface and still persists a
-    // resumable thread. It works from terminals, VS Code tasks, and CI alike.
+    // The foreground command must remain the official interactive TUI. Handoff
+    // is an initial prompt argument; stdin/stdout stay attached to the user.
     codex: () => mode === "resume"
-      ? ["exec", "resume", nativeSessionId, "-"]
-      : ["exec", "-"],
+      ? ["resume", nativeSessionId, handoff.markdown]
+      : [handoff.markdown],
   };
   const createArguments = launchers[agentId];
   if (!createArguments) throw new Error(`No semantic continuation launcher for ${agentId}`);
-  return { argumentsList: createArguments(), input: handoff.markdown };
+  return { argumentsList: createArguments(), input: undefined };
 }

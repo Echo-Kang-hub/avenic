@@ -43,7 +43,7 @@ test("core manifest is configured for public publishing", async () => {
   assert.equal(manifest.name, "@avenic/core");
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.license, "MIT");
-  assert.equal(manifest.version, "1.3.3");
+  assert.equal(manifest.version, "1.3.4");
   assert.deepEqual(manifest.files, ["src/", "index.d.ts", "LICENSE"]);
   assert.equal(manifest.exports["."].types, "./index.d.ts");
   assert.equal(manifest.exports["."].import, "./src/index.mjs");
