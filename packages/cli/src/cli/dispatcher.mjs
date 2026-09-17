@@ -577,7 +577,7 @@ async function dispatchSessions(argumentsList, options = {}) {
         return targetAdapter.readCanonical(projectRoot, nativeSessionId, { environment });
       },
       launch: async (continuation) => {
-        const nativeSessionId = continuation.nativeSessionId
+        let nativeSessionId = continuation.nativeSessionId
           ?? (agentId === "claude" ? randomUUID() : null);
         const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
         const launchStartedAt = Date.now() - 1000;
@@ -597,8 +597,18 @@ async function dispatchSessions(argumentsList, options = {}) {
         if (continuation.mode === "resume") {
           const captured = await dispatchAgent(agentId, launch.argumentsList, { ...launchOptions, capture: true });
           if (captured.status !== 0 && isActiveSessionError(`${captured.stdout}\n${captured.stderr}`)) {
-            console.log(`${getAgent(agentId).displayName} session is already active; leaving the existing session unchanged.`);
-            status = 0;
+            const fallbackNativeSessionId = agentId === "claude" ? randomUUID() : null;
+            const bootstrap = continuationLaunchArguments({
+              ...continuation,
+              mode: "bootstrap",
+              nativeSessionId: fallbackNativeSessionId,
+            });
+            nativeSessionId = fallbackNativeSessionId;
+            console.log(`${getAgent(agentId).displayName} session is already active; starting a new native thread from the shared canonical history.`);
+            status = await dispatchAgent(agentId, bootstrap.argumentsList, {
+              ...launchOptions,
+              input: bootstrap.input,
+            });
           } else {
             if (captured.stdout) process.stdout.write(captured.stdout);
             if (captured.stderr) process.stderr.write(captured.stderr);
