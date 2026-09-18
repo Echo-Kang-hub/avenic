@@ -24,11 +24,13 @@ import {
   assertSafeSkillName,
   buildCatalog,
   catalogDisplayName,
+  catalogLayout,
   cloneHead,
   cloneRevision,
   createInstallContext,
   createTempDirectory,
   deriveSourceId,
+  directSkillNames,
   discoverSourceSkills,
   ensureCatalog,
   fail,
@@ -45,21 +47,15 @@ import {
   loadSources,
   logConflicts,
   parsePackArguments,
-  previousManagedState,
   printTree,
   pruneCatalogSkills,
-  readDirectState,
   readJson,
   registerCatalog,
   registerKnownCatalog,
   registerSource,
   remoteHead,
-  removeAllManagedSkills,
-  removeDirectSkills,
-  removeEmptyDirectory,
+  removeAllInstalledSkills,
   removeExternalSkills,
-  removeInstallationFiles,
-  removeSkillDirectories,
   removeTempDirectory,
   replaceStagedFiles,
   resolveInstallSource,
@@ -70,7 +66,6 @@ import {
   skillCoveredByPacks,
   skillsInstallationStatus,
   stageSource,
-  stateRoot,
   uninstallPacks,
   writeJson,
 } from "#core";
@@ -134,7 +129,7 @@ async function interactiveInstall(options = {}) {
       io: quietIo,
     }, { refresh: true });
     sourceConfig = await loadSources(catalogInfo.catalogRoot);
-    catalog = await buildCatalog(sourceConfig, path.join(catalogInfo.catalogRoot, "skills"));
+    catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
     packs = await loadPacks(catalogInfo.catalogRoot);
   } catch (error) {
     spin.fail(error.message);
@@ -235,10 +230,10 @@ async function commandUninstall(packArguments, options = {}) {
   if (packArguments.length === 0) {
     // 无参 + 终端：Yes/No 确认（清空是破坏性操作）；无参 + 管道/脚本维持直接执行。
     if (isInteractive(options.prompts ?? {})) {
-      await interactiveRemoveAll(context, options, options.prompts ?? {}, current);
+      await interactiveRemoveAll(context, options.prompts ?? {}, current);
       return;
     }
-    await removeAllManaged(context, options, io);
+    await removeAllManaged(context, io);
     return;
   }
 
@@ -267,30 +262,17 @@ async function commandUninstall(packArguments, options = {}) {
   io.log(`\nUninstall complete: ${result.removed.join(", ")}`);
 }
 
-// 无参卸载的全量清理（管道/脚本路径）：直接移除直装与托管 Skills 并清元数据。
-async function removeAllManaged(context, options, io) {
-  const managed = await previousManagedState(context);
-  const directState = await readDirectState(context);
-  const directNames = directState.directSources.flatMap((source) => source.skills);
-  if (directNames.length > 0) {
-    await removeDirectSkills(context, directNames);
-    await removeSkillDirectories(context, directNames, io);
-  }
-  const total = await removeAllManagedSkills(context, managed, io);
-  await removeInstallationFiles(context);
-  if (options.global) {
-    await removeEmptyDirectory(stateRoot(options.environment));
-  }
-  io.log(`Uninstalled all managed ${context.label.toLowerCase()} Skills: ${total}`);
+// 无参卸载的全量清理（管道/脚本路径）：清空由 core 负责，这里只管回显。
+async function removeAllManaged(context, io) {
+  const { managed } = await removeAllInstalledSkills(context, io);
+  io.log(`Uninstalled all managed ${context.label.toLowerCase()} Skills: ${managed}`);
 }
 
 // 交互式卸载：Yes/No 确认 → 清空 → 摘要框 + Done。
-async function interactiveRemoveAll(context, options, prompts, current) {
+async function interactiveRemoveAll(context, prompts, current) {
   const { stdout } = prompts;
-  const quietIo = { log() {} };
   const label = context.label.toLowerCase();
-  const directState = await readDirectState(context);
-  const directNames = directState.directSources.flatMap((source) => source.skills);
+  const directNames = await directSkillNames(context);
   intro(stdout, "Uninstall Skills");
   const yes = await confirm({
     ...prompts,
@@ -304,24 +286,17 @@ async function interactiveRemoveAll(context, options, prompts, current) {
     return;
   }
   const spin = spinner({ ...prompts, text: "Removing…" });
-  let total;
+  let removed;
   try {
-    if (directNames.length > 0) {
-      await removeDirectSkills(context, directNames);
-      await removeSkillDirectories(context, directNames, quietIo);
-    }
-    total = await removeAllManagedSkills(context, await previousManagedState(context), quietIo);
-    await removeInstallationFiles(context);
-    if (options.global) {
-      await removeEmptyDirectory(stateRoot(options.environment));
-    }
+    // 安装期输出吞掉：交互帧是唯一状态输出（进度归 spinner）。
+    removed = await removeAllInstalledSkills(context, { log() {} });
   } catch (error) {
     spin.fail(error.message);
     throw error;
   }
   spin.stop("Removed");
   box(stdout, [
-    `✓  ${[directNames.length > 0 && `${directNames.length} direct`, `${total} managed`].filter(Boolean).join(" + ")} Skills removed`,
+    `✓  ${[removed.direct > 0 && `${removed.direct} direct`, `${removed.managed} managed`].filter(Boolean).join(" + ")} Skills removed`,
     "",
     `scope: ${context.label}`,
     `config: ${context.configFile}`,
@@ -367,7 +342,7 @@ async function commandTree(packArguments, options = {}) {
   const io = options.io ?? console;
   const catalogInfo = await resolveInstallSource(options);
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(catalogInfo.catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   if (packArguments.length === 0) {
     printTree(catalog.groups, "All Hub Skills", [], io);
     return;
@@ -389,7 +364,7 @@ async function commandPacks(options = {}) {
   const io = options.io ?? console;
   const catalogInfo = await resolveInstallSource(options);
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(catalogInfo.catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   const packs = await loadPacks(catalogInfo.catalogRoot);
   io.log("\nAvailable Packs\n");
   for (const pack of packs.values()) {
@@ -450,7 +425,7 @@ async function commandStatus(options = {}) {
 }
 
 async function commandDoctor(catalogRoot, io = console) {
-  const skillsRoot = path.join(catalogRoot, "skills");
+  const skillsRoot = catalogLayout(catalogRoot).skills;
   const sourceConfig = await loadSources(catalogRoot);
   const catalog = await buildCatalog(sourceConfig, skillsRoot);
   const configuredSources = new Set(sourceConfig.sources.map((source) => source.id));
@@ -489,7 +464,7 @@ async function commandUpdate(argumentsList, catalogRoot, io = console) {
   }
   const [target] = remainingArguments;
   const sourceConfig = await loadSources(catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogRoot).skills);
   const sources = target
     ? sourceConfig.sources.filter((source) => source.id === target)
     : sourceConfig.sources;
@@ -556,9 +531,7 @@ async function commandUpdate(argumentsList, catalogRoot, io = console) {
 }
 
 async function commandAdd(argumentsList, catalogRoot, io = console) {
-  const skillsRoot = path.join(catalogRoot, "skills");
-  const packsRoot = path.join(catalogRoot, "packs");
-  const sourcesFile = path.join(catalogRoot, "sources.lock.json");
+  const { skills: skillsRoot, packs: packsRoot, sourcesFile } = catalogLayout(catalogRoot);
   const packsValue = takeOption(argumentsList, "--pack");
   const packIds = packsValue
     ? packsValue.split(",").map((value) => value.trim()).filter(Boolean)
@@ -739,7 +712,7 @@ async function commandAdd(argumentsList, catalogRoot, io = console) {
 }
 
 async function commandRemove(argumentsList, catalogRoot, io = console) {
-  const packsRoot = path.join(catalogRoot, "packs");
+  const packsRoot = catalogLayout(catalogRoot).packs;
   const packsValue = takeOption(argumentsList, "--pack");
   const [sourceReference, ...requestedSkillNames] = argumentsList;
   if (!sourceReference || requestedSkillNames.length === 0) {
@@ -801,7 +774,7 @@ async function commandRemove(argumentsList, catalogRoot, io = console) {
 }
 
 async function commandPackRemove(argumentsList, catalogRoot, io = console) {
-  const packsRoot = path.join(catalogRoot, "packs");
+  const packsRoot = catalogLayout(catalogRoot).packs;
   if (argumentsList.length === 0) {
     fail("Usage: pack-remove <pack...>");
   }
@@ -863,7 +836,7 @@ async function commandSourceAdd(argumentsList, catalogRoot, io = console) {
 }
 
 async function commandPackAdd(argumentsList, catalogRoot, io = console) {
-  const packsRoot = path.join(catalogRoot, "packs");
+  const packsRoot = catalogLayout(catalogRoot).packs;
   const name = takeOption(argumentsList, "--name");
   const description = takeOption(argumentsList, "--description");
   const [id] = argumentsList;

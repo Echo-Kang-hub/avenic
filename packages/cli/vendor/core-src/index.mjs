@@ -123,6 +123,7 @@ export {
   PROJECT_LOCK_FILE,
   PROJECT_TARGETS,
   catalogCacheRoot,
+  catalogLayout,
   defaultCatalogFile,
   globalConfigFile,
   globalLockFile,
@@ -230,6 +231,7 @@ export {
   sameTree,
   shareTargets,
 } from "./skills/links.mjs";
+export { directSkillNames, removeAllInstalledSkills } from "./skills/uninstall.mjs";
 export {
   API_TYPES,
   AUTH_FIELDS,

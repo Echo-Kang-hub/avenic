@@ -311,6 +311,7 @@ export const PROJECT_TARGETS: Array<{ id: string; agents: string[]; label: strin
 export const GLOBAL_TARGETS: InstallTarget[];
 export function stateRoot(environment?: ProcessEnvLike): string;
 export function catalogCacheRoot(environment?: ProcessEnvLike): string;
+export function catalogLayout(catalogRoot: string): { skills: string; packs: string; sourcesFile: string; licenses: string };
 export function defaultCatalogFile(environment?: ProcessEnvLike): string;
 export function knownCatalogsFile(environment?: ProcessEnvLike): string;
 export function globalConfigFile(environment?: ProcessEnvLike): string;
@@ -497,6 +498,8 @@ export function writeInstallMetadata(context: InstallContext, resolvedPacks: Res
 export function removeAllManagedSkills(context: InstallContext, managed: Map<string, unknown>, io?: Io): Promise<number>;
 export function removeSkillDirectories(context: InstallContext, skillNames: string[], io?: Io): Promise<number>;
 export function removeInstallationFiles(context: InstallContext): Promise<unknown>;
+export function directSkillNames(context: InstallContext): Promise<string[]>;
+export function removeAllInstalledSkills(context: InstallContext, io?: Io): Promise<{ direct: number; managed: number }>;
 export function resolveInstallSource(options: { global?: boolean; cwd?: string; environment?: ProcessEnvLike; io?: Io }, opts?: { refresh?: boolean }): Promise<CatalogInfo & { packageMetadata: unknown }>;
 export function installPacks(context: InstallContext, explicitPacks?: string[], options?: { io?: Io; onPlan?: (resolvedPacks: ResolvedPacks) => void }): Promise<{ catalogInfo: CatalogInfo; packIds: string[]; resolvedPacks: ResolvedPacks }>;
 export function uninstallPacks(context: InstallContext, packArguments?: string[], options?: { io?: Io; onPlan?: (resolvedPacks: ResolvedPacks, removed: string[]) => void }): Promise<{ changed: boolean; removed: string[]; absent: string[]; skippedCommon: boolean; current: string[] | null; resolvedPacks?: ResolvedPacks }>;

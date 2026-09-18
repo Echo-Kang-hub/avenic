@@ -12,6 +12,7 @@ import {
 } from "./ids.mjs";
 import { cloneHead, normalizeRepositoryInput, repositoryIdentity } from "./git.mjs";
 import { createTempDirectory, removeTempDirectory } from "./vendor.mjs";
+import { catalogLayout } from "./paths.mjs";
 
 export function parseFrontmatterName(content, file) {
   const frontmatter = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
@@ -36,7 +37,7 @@ export async function readSkill(skillDirectory, requireMatchingFolder = true) {
 }
 
 export async function loadSources(catalogRoot) {
-  const data = await readJson(path.join(catalogRoot, "sources.lock.json"));
+  const data = await readJson(catalogLayout(catalogRoot).sourcesFile);
   if (!Array.isArray(data.sources) || data.sources.length === 0) {
     fail("sources.lock.json has no upstream sources");
   }
@@ -62,7 +63,7 @@ export async function loadSources(catalogRoot) {
 }
 
 export async function saveSources(catalogRoot, data) {
-  await writeJson(path.join(catalogRoot, "sources.lock.json"), data);
+  await writeJson(catalogLayout(catalogRoot).sourcesFile, data);
 }
 
 export async function buildCatalog(config, skillsRoot) {
@@ -235,7 +236,7 @@ export async function registerSource(catalogRoot, sourceConfig, options, io = co
       await cp(upstreamLicense, path.join(catalogRoot, source.licenseFile));
     }
     sourceConfig.sources.push(source);
-    await mkdir(path.join(catalogRoot, "skills", options.id), { recursive: true });
+    await mkdir(path.join(catalogLayout(catalogRoot).skills, options.id), { recursive: true });
     await saveSources(catalogRoot, sourceConfig);
     io.log(`Registered ${options.id} @ ${revision.slice(0, 8)}`);
     io.log(`Skill root: ${skillRoot}`);

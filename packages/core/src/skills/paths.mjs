@@ -92,6 +92,19 @@ export const GLOBAL_TARGETS = [
   },
 ];
 
+// A catalog checkout: `packs/*.json` plus `sources.lock.json` beside the
+// `skills/` and `licenses/` trees they point at. The CLI edits catalogs while
+// core reads them, and a join spelled differently on one side reads an empty
+// catalog instead of failing, so the layout is written down once.
+export function catalogLayout(catalogRoot) {
+  return {
+    skills: path.join(catalogRoot, "skills"),
+    packs: path.join(catalogRoot, "packs"),
+    sourcesFile: path.join(catalogRoot, "sources.lock.json"),
+    licenses: path.join(catalogRoot, "licenses"),
+  };
+}
+
 export function catalogCacheRoot(environment = process.env) {
   return path.join(stateRoot(environment), "catalog");
 }

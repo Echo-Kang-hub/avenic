@@ -6,9 +6,10 @@ import { isInside } from "../util/fs.mjs";
 import { readJson, writeJson } from "../util/json.mjs";
 import { assertSafeId, assertSafeSkillName } from "./ids.mjs";
 import { saveSources } from "./sources.mjs";
+import { catalogLayout } from "./paths.mjs";
 
 export async function loadPacks(catalogRoot) {
-  const packsRoot = path.join(catalogRoot, "packs");
+  const packsRoot = catalogLayout(catalogRoot).packs;
   const files = (await readdir(packsRoot)).filter((file) => file.endsWith(".json")).sort();
   const packs = new Map();
   for (const file of files) {
@@ -146,7 +147,7 @@ export function catalogReferences(packs) {
 }
 
 export async function addSkillsToPacks(catalogRoot, packIds, sourceId, skillNames) {
-  const packsRoot = path.join(catalogRoot, "packs");
+  const packsRoot = catalogLayout(catalogRoot).packs;
   const loadedPacks = new Map();
   for (const packId of packIds) {
     assertSafeId(packId, "Pack id");
@@ -206,7 +207,7 @@ export async function addSkillsToPacks(catalogRoot, packIds, sourceId, skillName
 }
 
 export async function pruneCatalogSkills(catalogRoot, sourceConfig, packs, candidates) {
-  const skillsRoot = path.join(catalogRoot, "skills");
+  const skillsRoot = catalogLayout(catalogRoot).skills;
   const references = catalogReferences(packs);
   const removed = [];
   const affectedSources = new Set();

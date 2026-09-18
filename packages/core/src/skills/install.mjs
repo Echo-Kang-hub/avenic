@@ -27,17 +27,15 @@ import {
   PROJECT_CONFIG_FILE,
   PROJECT_LOCK_FILE,
   PROJECT_TARGETS,
+  catalogLayout,
   globalConfigFile,
   globalLockFile,
   migrateLegacyProjectFiles,
 } from "./paths.mjs";
 
 export function isCatalogDirectory(directory) {
-  return (
-    existsSync(path.join(directory, "sources.lock.json")) &&
-    existsSync(path.join(directory, "skills")) &&
-    existsSync(path.join(directory, "packs"))
-  );
+  const layout = catalogLayout(directory);
+  return existsSync(layout.sourcesFile) && existsSync(layout.skills) && existsSync(layout.packs);
 }
 
 // 解析 shareFrom → shareDestination（同表内另一个 target 的绝对目录）。
@@ -479,7 +477,7 @@ export async function planAdoptSkills(context, skillNames) {
       io: { log: () => {} },
     });
     const sourceConfig = await loadSources(info.catalogRoot);
-    const catalog = await buildCatalog(sourceConfig, path.join(info.catalogRoot, "skills"));
+    const catalog = await buildCatalog(sourceConfig, catalogLayout(info.catalogRoot).skills);
     const packs = await loadPacks(info.catalogRoot);
     const candidates = [...packs.values()].map((pack) => {
       const packNames = pack.sources.flatMap((source) => source.skills);
@@ -519,7 +517,7 @@ export async function adoptPackedSkills(context, skillNames, packId, options = {
     io,
   });
   const sourceConfig = await loadSources(info.catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(info.catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(info.catalogRoot).skills);
   const packs = await loadPacks(info.catalogRoot);
   const pack = packs.get(packId);
   if (!pack) {
@@ -776,7 +774,7 @@ export async function installPacks(context, explicitPacks = [], options = {}) {
     io,
   }, { refresh: explicitPacks.length === 0 });
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(catalogInfo.catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   const packs = await loadPacks(catalogInfo.catalogRoot);
   const packIds = await resolveInstallPacks(context, explicitPacks);
   const resolvedPacks = resolvePacks(catalog, sourceConfig, packs, packIds);
@@ -812,7 +810,7 @@ export async function uninstallPacks(context, packArguments = [], options = {}) 
     io,
   });
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
-  const catalog = await buildCatalog(sourceConfig, path.join(catalogInfo.catalogRoot, "skills"));
+  const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   const packs = await loadPacks(catalogInfo.catalogRoot);
   const remaining = current.filter((packId) => !removable.has(packId));
   const resolvedPacks = resolvePacks(catalog, sourceConfig, packs, remaining);
