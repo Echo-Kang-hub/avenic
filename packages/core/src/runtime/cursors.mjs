@@ -56,8 +56,14 @@ export async function stampOf(file) {
   }
 }
 
+// A stamp is plain data, and which fields identify a source depends on the
+// source: a file is identified by its size and mtime, an agent that only
+// exposes a CLI is identified by whatever revision it reports for a session.
+// Comparing the fields present keeps one primitive for both.
 export function sameStamp(left, right) {
-  return Boolean(left && right && left.size === right.size && left.mtimeMs === right.mtimeMs);
+  if (!left || !right) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
 }
 
 export function agentCursors(cursors, agentId) {

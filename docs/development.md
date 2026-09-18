@@ -23,7 +23,19 @@ npm test               # node --test；pretest 自动同步 vendor core
 npm run test:install   # 双模式全局安装集成测试
 npm run pack:cli       # npm pack --dry-run
 npm run sync-core      # 手动同步 packages/core/src → packages/cli/vendor/core-src
+npm run perf           # 两条真实等待路径的端到端 + 分步计时
 ```
+
+## 性能
+
+`npm run perf` 在临时目录里造fixture（默认 40 个 Claude 会话 × 400 条记录、120 个 Codex rollout，外加 60 个其它 workspace 的历史），依次跑真实 CLI 并分步计时；`--json` 输出机器可读结果，`--keep` 保留 fixture 便于复测。规模用环境变量缩放：`CLAUDE_SESSIONS`、`CLAUDE_RECORDS`、`CODEX_ROLLOUTS`。
+
+它衡量的是用户真正等待的两条路径，而不是"有缓存所以应该很快"：
+
+- **启动**（`avenic claude|codex|opencode`）：用户按下回车到官方 TUI 出现。此路径不读 canonical、不扫历史、不联网。
+- **退出与恢复**：agent 退出后的捕获/导入，以及 `recoverSharedNativeSessions` 与各 adapter 的分步耗时。
+
+failing 预算由测试持有，不放在这个工具里：`test/launch-latency.test.mjs` 守着启动路径（预算宽松，防的是整段历史工作回到启动路径），`test/incremental-capture.test.mjs` 与 `test/session-adapter-contract.test.mjs` 守着"重复比较同一对路径不再访问文件系统"这条契约。分步耗时随机器规模变化的只有 discovery：它要读本机每个 Claude 会话的开头来判定归属，因此 `observeSharedNativeSessions` 的首次调用在大机器上比后续调用贵，运行中的 watchdog 用 `knownOnly` 跳过重扫。
 
 ## 打包约束（重要）
 
@@ -43,7 +55,19 @@ cd packages/cli && npm publish
 - registry 包 `private` 保持 `false`。
 - 发布物是 `packages/cli`（包名 `avenic`）与 `packages/core`（包名 `@avenic/core`）。
 - 发布顺序：core 变更 → bump 并发布 core → `npm run sync-core` → bump 并发布 CLI。提交与 tag 里的 `vendor/core-src` 必须与 core 同步（`test/sync.test.mjs` 守护一致性）；pack/publish 时 `prepack` 会自动执行 `sync-core`，所以 tarball 里的镜像总是新的。
-- 顺序约束：core 变更后必须先 `npm run sync-core` 再发布 CLI；插件（`packages/vscode`）依赖**已发布**的 `@avenic/core`（`devDependencies` 指向 npm registry），插件改动排在 core 发布之后。
+- 顺序约束：core 变更后必须先 `npm run sync-core` 再发布 CLI。
+
+### VS Code 插件
+
+插件把 core 打包进 `dist/extension.js`：`devDependencies` 里 `@avenic/core` 指向 `file:../core`，esbuild 在构建时内联，因此 VSIX 里的 core 与 CLI 同源同版本，不需要等 core 先发到 registry。
+
+```bash
+npm --prefix packages/vscode run typecheck
+npm --prefix packages/vscode test                 # typecheck + 构建测试
+npm --prefix packages/vscode run package          # → packages/vscode/dist/avenic-agent-manager.vsix
+```
+
+`vsce package` 产出的 VSIX 需人工上传 Marketplace（VSCE_PAT 由维护者持有，不进入仓库）。上传前先在真实 VS Code 里安装该 VSIX，走一遍 Initialize、Configure、Launch、Sessions、Hub Sync 以及 Shared/Isolated 两种模式。
 
 ## core 发布纪律
 

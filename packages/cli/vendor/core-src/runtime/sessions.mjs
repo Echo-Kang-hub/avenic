@@ -145,25 +145,37 @@ export async function snapshotFiles(sourceRoot, relativeFiles, destination, tran
 // drop destination files whose native source is gone. A repeated capture with
 // nothing new must touch nothing: that is the common case for every launch
 // after the first.
+//
+// An entry is either `{ relative, source }` — a file, stamped by its own
+// stat — or `{ relative, stamp, produce }`, for an agent whose history is only
+// reachable through its CLI: the caller supplies the revision the agent
+// reported plus a function that fetches the content, which is called only when
+// that revision moved. A `stamp` of null means "this agent reports no
+// revision", and such an entry is always produced.
 export async function syncDirectory(entries, destinationRoot, transform, cursors, agentId) {
   const files = agentCursors(cursors, agentId);
   const seen = new Set();
   let added = 0;
   let updated = 0;
   let unchanged = 0;
-  for (const { relative, source } of entries) {
+  for (const { relative, source, stamp, produce } of entries) {
     seen.add(relative);
-    const native = await stampOf(source);
-    if (!native) continue;
+    const native = produce ? stamp : await stampOf(source);
+    if (!produce && !native) continue;
     const destination = path.join(destinationRoot, relative);
     const entry = files[relative] ?? {};
     const destinationStamp = await stampOf(destination);
+    // Nothing to do only when the source and the destination copy both still
+    // look the way they did after the last capture. A missing stamp — an agent
+    // that reports no revision, or a destination someone deleted — never
+    // matches, so the entry is produced again.
     if (sameStamp(entry.native, native) && sameStamp(entry.portable, destinationStamp)) {
       unchanged += 1;
       continue;
     }
     await mkdir(path.dirname(destination), { recursive: true });
-    await writeFile(destination, transform ? await transform(await readFile(source), relative) : await readFile(source));
+    const content = produce ? await produce() : await readFile(source);
+    await writeFile(destination, transform ? await transform(content, relative) : content);
     files[relative] = { ...entry, native, portable: await stampOf(destination) };
     if (destinationStamp) updated += 1; else added += 1;
   }

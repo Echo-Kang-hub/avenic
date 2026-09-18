@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
-import { hashContent, listFiles, replaceDirectory, samePath } from "../sessions.mjs";
+import { loadCursors, saveCursors } from "../cursors.mjs";
+import { hashContent, listFiles, samePath, syncDirectory } from "../sessions.mjs";
 import { spawnExecutableSync } from "../process.mjs";
 import { eventTimestamp, nativeEventId } from "./canonical.mjs";
 import { createHash } from "node:crypto";
@@ -227,17 +228,36 @@ export function readCanonical(projectRoot, nativeSessionId, options = {}) {
   return toCanonical(content, { ...options, nativeSessionId, revision: hashContent(content) });
 }
 
+// OpenCode is the one agent whose history is only reachable through its CLI:
+// answering "which sessions are this project's, and did any of them move?"
+// means running `opencode session list`, because there is no directory to
+// stat. That question is asked on every pass — including the durability
+// watchdog's, every few seconds during a run — so the answer has to be enough
+// to skip the expensive half: a session is re-exported only when the revision
+// OpenCode reports for it moved, exactly like a file is re-read only when its
+// mtime moved.
 export async function capture(projectRoot, options = {}) {
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
   const sessions = matchingSessions(projectRoot, options);
   if (sessions.length === 0) {
-    return { count: 0, changed: false, diagnostics: ["Found no OpenCode sessions matching this workspace."] };
+    return { count: 0, changed: false, diagnostics: [{ kind: "missing-root", message: "Found no OpenCode sessions matching this workspace." }] };
   }
-  await replaceDirectory(portableRoot(projectRoot), async (temporary) => {
-    for (const session of sessions) {
-      await writeFile(path.join(temporary, `${session.id}.json`), run(["export", session.id], projectRoot, options), "utf8");
-    }
-  });
-  return { count: sessions.length, changed: true, diagnostics: [] };
+  const result = await syncDirectory(
+    sessions.map((session) => ({
+      relative: `${session.id}.json`,
+      // `time.updated` is OpenCode's own revision for the session. Without it
+      // there is nothing to compare, and the export has to be read again.
+      stamp: session.time?.updated === undefined ? null : { revision: `${session.id}:${session.time.updated}` },
+      produce: () => run(["export", session.id], projectRoot, options),
+    })),
+    portableRoot(projectRoot),
+    null,
+    cursors,
+    agentId,
+  );
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  return { count: sessions.length, changed: result.added + result.updated + result.removed > 0, diagnostics: [] };
 }
 
 export async function restore(projectRoot, options = {}) {

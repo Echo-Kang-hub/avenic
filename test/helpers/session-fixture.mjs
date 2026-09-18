@@ -106,6 +106,135 @@ process.exit(0);
 }
 
 /**
+ * A stand-in `opencode` that answers the session commands a capture uses and
+ * records every invocation. OpenCode is the one agent whose history is only
+ * reachable through its CLI, so "did anything move?" has to be asked rather
+ * than stat'ed; this fake is how a test proves the asking stays cheap.
+ */
+async function writeOpenCodeCli(bin, stateFile, logFile) {
+  await mkdir(bin, { recursive: true });
+  const target = path.join(bin, "opencode.mjs");
+  await writeFile(target, `import { appendFileSync, readFileSync } from "node:fs";
+const state = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, "utf8"));
+const log = ${JSON.stringify(logFile)};
+const [command, ...rest] = process.argv.slice(2);
+appendFileSync(log, \`\${[command, ...rest].join(" ")}\\n\`);
+if (command === "session" && rest[0] === "list") {
+  process.stdout.write(JSON.stringify(state.sessions ?? []));
+  process.exit(0);
+}
+if (command === "export") {
+  process.stdout.write(state.exports?.[rest[0]] ?? "{}");
+  process.exit(0);
+}
+process.exit(0);
+`);
+  if (process.platform === "win32") {
+    await writeFile(path.join(bin, "opencode.cmd"), `@echo off\r\n"${process.execPath}" "${target}" %*\r\n`);
+  } else {
+    await writeFile(path.join(bin, "opencode"), `#!/bin/sh\nexec "${process.execPath}" "${target}" "$@"\n`, { mode: 0o755 });
+  }
+}
+
+// A minimal but real-shaped export: one user and one assistant message per
+// turn, which is what the adapter reads back as canonical events.
+function openCodeExport(id, turn) {
+  const messages = [];
+  for (let index = 0; index < turn; index += 1) {
+    for (const role of ["user", "assistant"]) {
+      messages.push({
+        info: {
+          id: `${id}-${index}-${role}`,
+          role,
+          time: { created: Date.UTC(2026, 0, 1) + index * 1000 },
+          modelID: "gpt-5",
+          providerID: "openai",
+        },
+        parts: [{ type: "text", text: `${role} turn ${index}` }],
+      });
+    }
+  }
+  return JSON.stringify({ id, messages });
+}
+
+/**
+ * A project whose only agent is OpenCode, plus the state its CLI reads. The
+ * caller drives OpenCode by editing that state, the way a real agent would.
+ */
+export async function withOpenCodeProject(run, options = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-opencode-fixture-"));
+  const home = path.join(root, "home");
+  const projectRoot = path.join(root, "project");
+  const bin = path.join(root, "bin");
+  const stateFile = path.join(root, "opencode-state.json");
+  const logFile = path.join(root, "opencode-invocations.log");
+  await mkdir(home, { recursive: true });
+  await mkdir(path.join(projectRoot, ".agents"), { recursive: true });
+  await writeOpenCodeCli(bin, stateFile, logFile);
+
+  const inheritedPath = process.env.PATH ?? process.env.Path ?? "";
+  const environment = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    AVENIC_STATE_DIR: path.join(root, "state"),
+    PATH: `${bin}${path.delimiter}${inheritedPath}`,
+    Path: `${bin}${path.delimiter}${inheritedPath}`,
+  };
+
+  const sessions = new Map();
+  const writeState = async () => writeFile(stateFile, `${JSON.stringify({
+    sessions: [...sessions.entries()].map(([id, session]) => ({ id, directory: projectRoot, time: { created: session.created, updated: session.updated } })),
+    exports: Object.fromEntries([...sessions].map(([id, session]) => [id, session.exported])),
+  }, null, 2)}\n`);
+  await writeState();
+
+  const helpers = {
+    root,
+    home,
+    projectRoot,
+    environment,
+    portableRoot: path.join(projectRoot, ".agents", "sessions", "opencode"),
+
+    /** Add a session the way OpenCode would: it exists, then it grows. */
+    async createSession(id = `ses_${sessions.size}`, { updated = 1 } = {}) {
+      sessions.set(id, { created: 1, updated, exported: openCodeExport(id, 1) });
+      await writeState();
+      return id;
+    },
+    /** A turn happened: OpenCode's own revision for the session moves. */
+    async appendTurn(id, turn) {
+      const session = sessions.get(id);
+      session.updated = turn;
+      session.exported = openCodeExport(id, turn);
+      await writeState();
+    },
+    async removeSession(id) {
+      sessions.delete(id);
+      await writeState();
+    },
+    /** An OpenCode build that does not report a session revision at all. */
+    async forgetSessionRevision(id) {
+      sessions.get(id).updated = undefined;
+      await writeState();
+    },
+    /** Every `opencode <command>` this fixture has answered. */
+    async invocations() {
+      return (await readFile(logFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    },
+    async resetInvocations() {
+      await writeFile(logFile, "");
+    },
+  };
+
+  try {
+    await run(helpers);
+  } finally {
+    await removeTree(root);
+  }
+}
+
+/**
  * Build a temp HOME + project, seed native Claude history for this workspace,
  * and hand the caller a set of helpers. Always removes the tree afterwards.
  */

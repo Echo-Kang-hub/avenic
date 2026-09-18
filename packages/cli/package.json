@@ -4,6 +4,24 @@
   "private": false,
   "license": "MIT",
   "description": "Portable Skills, runtime configuration, and sessions for coding agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Echo-Kang-hub/avenic.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/Echo-Kang-hub/avenic#readme",
+  "bugs": {
+    "url": "https://github.com/Echo-Kang-hub/avenic/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "opencode",
+    "agents",
+    "sessions",
+    "skills",
+    "cli"
+  ],
   "type": "module",
   "imports": {
     "#core": "./vendor/core-src/index.mjs",
