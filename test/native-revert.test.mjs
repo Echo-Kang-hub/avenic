@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +46,30 @@ test("reverting discards run writes and restores changed files", async () => {
 
     assert.equal(await readFile(path.join(native, "a.jsonl"), "utf8"), "before\n");
     await assert.rejects(() => readFile(path.join(native, "new.jsonl"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+// Claude Code creates the project's session directory when it starts and fills
+// it once the first message goes out, so "the directory exists and holds
+// nothing" is the normal state of a project the agent has only been opened in.
+// Snapshotting it must terminate: an empty tree copies no file, and a code path
+// that only creates the destination as a side effect of copying one then never
+// creates it.
+test("snapshotting an empty native tree terminates", { timeout: 5000 }, async () => {
+  await withTree(async ({ native, snapshot }) => {
+    await mkdir(native, { recursive: true });
+    await snapshotInto(native, snapshot);
+    assert.equal((await stat(snapshot)).isDirectory(), true, "the snapshot must exist as a directory");
+    assert.deepEqual(await readdir(snapshot), []);
+  });
+});
+
+test("reverting an empty snapshot terminates", { timeout: 5000 }, async () => {
+  await withTree(async ({ native, snapshot }) => {
+    await mkdir(snapshot, { recursive: true });
+    await mkdir(native, { recursive: true });
+    await revertFrom(snapshot, native);
+    assert.deepEqual(await readdir(native), []);
   });
 });
 

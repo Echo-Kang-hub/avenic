@@ -361,9 +361,12 @@ async function mirrorInto(source, destination) {
     await copyFile(from, to);
   }
   if (!(await stat(destination).catch(() => null))?.isDirectory()) {
-    // The destination held a file where the source has a directory.
+    // Either the destination held a file where the source has a directory, or
+    // the source was empty so nothing above created the destination. Both are
+    // resolved by making the destination an empty directory — recursing here
+    // would never make progress on the second case.
     await rm(destination, { recursive: true, force: true });
-    return mirrorInto(source, destination);
+    await mkdir(destination, { recursive: true });
   }
   const keep = new Set(wanted);
   for (const relative of await listFiles(destination)) {
