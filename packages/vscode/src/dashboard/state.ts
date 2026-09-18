@@ -1,4 +1,4 @@
-import { agentExecutableAvailable, agentStatus, listAgents } from "../services/agents.ts";
+import { agentInstalled, agentStatus, listAgents } from "../services/agents.ts";
 import { cachedRevision, defaultSpec } from "../services/catalog.ts";
 import { readSkillsSnapshot } from "../services/skills.ts";
 import type { DashboardData } from "./protocol.ts";
@@ -46,7 +46,7 @@ export async function buildDashboardData(projectRoot: string | null, environment
         id: a.id,
         label: a.displayName,
         statusText: "未打开项目",
-        executableAvailable: agentExecutableAvailable(a.id),
+        executableAvailable: agentInstalled(a.id),
         iconHint: "circle-outline",
       })),
       catalog: null,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { detectAgentInstallation } from "../packages/core/src/index.mjs";
+import { agentNpmPackage, classifyAgentExecutable, compareCliVersions, detectAgentInstallation, parseCliVersion } from "../packages/core/src/index.mjs";
 
 function probe(options) {
   const files = new Set(options.files ?? []);
@@ -29,6 +29,46 @@ function probeAgent(agentId, options) {
     runVersion: () => "1.2.3",
   });
 }
+
+test("version facts are parsed once, for every host that displays them", () => {
+  // 本机 `--version` 的三种输出形态：带后缀、带前缀、带换行
+  assert.equal(parseCliVersion("2.1.238 (Claude Code)"), "2.1.238");
+  assert.equal(parseCliVersion("codex-cli 0.150.1"), "0.150.1");
+  assert.equal(parseCliVersion("0.15.13\n"), "0.15.13");
+  assert.equal(parseCliVersion("not-a-version"), null);
+  assert.equal(parseCliVersion(""), null);
+  // 逐段数值比较，不是字典序（0.9.0 < 0.150.1）
+  assert.equal(compareCliVersions("2.1.238", "2.1.238"), 0);
+  assert.equal(compareCliVersions("2.2.0", "2.1.238"), 1);
+  assert.equal(compareCliVersions("0.150.1", "0.9.0"), 1);
+  assert.equal(compareCliVersions("2.1.238", "2.2.0"), -1);
+  assert.equal(agentNpmPackage("claude"), "@anthropic-ai/claude-code");
+  assert.equal(agentNpmPackage("opencode"), "opencode-ai");
+  assert.throws(() => agentNpmPackage("nope"), /Unknown Agent/);
+});
+
+// 面板的「CLI 是否安装」不该跑子进程：同一份分类逻辑同步回答，且与完整探测
+// 得出一致的 executable/installMethod。
+test("classifying an installation never runs the executable it classifies", () => {
+  const options = {
+    platform: "linux",
+    environment: { PATH: "/usr/local/bin" },
+    cwd: "/workspace/project",
+    fileExists: (file) => file === "/usr/local/bin/codex",
+    realpath: (file) => file,
+    runVersion: () => {
+      throw new Error("no child process may be started to classify an installation");
+    },
+  };
+  const classified = classifyAgentExecutable("codex", options);
+  assert.equal(classified.executable, "/usr/local/bin/codex");
+  assert.equal(classified.installMethod, "binary");
+  assert.equal("version" in classified, false);
+  assert.deepEqual(
+    { ...detectAgentInstallation("codex", options), version: undefined },
+    { ...classified, version: undefined },
+  );
+});
 
 test("detectAgentInstallation follows the first active Codex binary on PATH", () => {
   const installation = probe({

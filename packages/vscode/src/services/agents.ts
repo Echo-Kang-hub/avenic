@@ -2,10 +2,10 @@ import path from "node:path";
 import {
   AGENTS,
   agentEnvironment,
-  agentExecutableAvailable as coreAgentExecutableAvailable,
+  classifyAgentExecutable,
   clearLocalAuth,
   applyProjectConfiguration,
-  detectAgentInstallation,
+  detectAgentInstallationAsync,
   deinitializeAgent,
   effectiveAgentConfig,
   finishLaunch,
@@ -49,13 +49,15 @@ export function listAgents(): Agent[] {
   return Object.keys(AGENTS).map((id) => getAgent(id)); // AGENTS 值不含 id，getAgent 补齐
 }
 
-// dashboard 专用薄包装（cwd 域，无 environment 参数——与 agentStatus 一致）
-export function agentExecutableAvailable(agentId: string): boolean {
-  return coreAgentExecutableAvailable(agentId);
+// dashboard 专用薄包装（cwd 域，无 environment 参数——与 agentStatus 一致）。
+// 只看 CLI 是否在 PATH 上：不运行子进程，因此可以在渲染路径上同步回答。
+export function agentInstalled(agentId: string): boolean {
+  return classifyAgentExecutable(agentId).executable !== null;
 }
 
-export function detectInstallation(agentId: string): AgentInstallation {
-  return detectAgentInstallation(agentId);
+// 面板的安装/升级入口同样不该阻塞事件循环：探测一次即拿到 executable 与 version。
+export async function detectInstallation(agentId: string): Promise<AgentInstallation> {
+  return detectAgentInstallationAsync(agentId);
 }
 
 export async function agentStatus(projectRoot: string, agentId: string): Promise<AgentStatus> {
@@ -70,16 +72,19 @@ export async function agentStatus(projectRoot: string, agentId: string): Promise
 async function readAgentStatus(projectRoot: string, agentId: string): Promise<AgentStatus> {
   const state = await loadRuntime(projectRoot);
   const agent = getAgent(agentId);
-  const installation = detectAgentInstallation(agentId);
-  // 探测并行化：本机 --version 与 npm registry 查询互不依赖；单次失败容错为 null
-  const [executableAvailable, cli] = await Promise.all([
-    Promise.resolve(coreAgentExecutableAvailable(agentId)),
-    cliVersionStatus(agentId, agent, undefined, installation),
+  // 一次异步探测回答三件事：CLI 是否安装（PATH 判定）、本机版本、以及「这条安装怎么
+  // 升级」（core 的安装分类）。此前这里是三次同步 spawn（PATH 探测 + 两次 --version），
+  // 每个 agent 每次刷新都会冻结扩展宿主。
+  const [installation, mode] = await Promise.all([
+    detectAgentInstallationAsync(agentId),
+    getAgentRuntimeMode(projectRoot, agentId),
   ]);
-  return { agent, executableAvailable, effective: effectiveAgentConfig(state, agentId), mode: await getAgentRuntimeMode(projectRoot, agentId), cli, installation };
+  // registry 版本是异步网络查询，10 分钟内命中缓存；单次失败容错为 null
+  const cli = await cliVersionStatus(agentId, agent, undefined, installation);
+  return { agent, executableAvailable: installation.executable !== null, effective: effectiveAgentConfig(state, agentId), mode, cli, installation };
 }
 
-export { invalidateCliVersionCache, npmPackage } from "./agent-versions.ts";
+export { invalidateCliVersionCache } from "./agent-versions.ts";
 
 export function initialize(projectRoot: string, agentId: string, authMode: "global" | "project", sessionsMode: "global" | "project") {
   return initializeAgent(projectRoot, agentId, authMode, sessionsMode).finally(invalidateAgentStatusCache);

@@ -92,7 +92,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (busy()) return;
     const target = await agentTarget(treeItem);
     if (target === null) return;
-    const command = updateCommandForInstallation(target.id, agents.detectInstallation(target.id));
+    const command = updateCommandForInstallation(target.id, await agents.detectInstallation(target.id));
     if (command === null) {
       await vscode.window.showWarningMessage(`Avenic detected a manual or unknown ${target.id} installation. It will not update a different npm copy; use that installation's updater.`);
       return;

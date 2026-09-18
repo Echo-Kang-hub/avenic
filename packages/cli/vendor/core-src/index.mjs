@@ -1,6 +1,20 @@
 // Public API of @avenic/core.
 
-export { AGENTS, agentExecutableAvailable, detectAgentInstallation, getAgent } from "./runtime/agents.mjs";
+export {
+  AGENTS,
+  agentExecutableAvailable,
+  agentNpmPackage,
+  classifyAgentExecutable,
+  compareCliVersions,
+  detectAgentInstallation,
+  getAgent,
+  parseCliVersion,
+} from "./runtime/agents.mjs";
+export {
+  detectAgentInstallationAsync,
+  installedCliVersion,
+  latestPublishedVersion,
+} from "./runtime/versions.mjs";
 export {
   clearLocalAuth,
   configureProject,

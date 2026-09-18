@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { spawnExecutableSync } from "#core";
+import { parseCliVersion, spawnExecutableSync } from "#core";
 
 function output(result) {
   return String(result?.stdout ?? "").trim();
@@ -8,7 +8,7 @@ function output(result) {
 
 function probeVersion(spawn, executable = "avenic") {
   const result = spawn(executable, ["--version"], { stdio: "pipe", windowsHide: true, encoding: "utf8" });
-  return result?.status === 0 ? output(result).split(/\s+/).find((value) => /^\d+\.\d+\.\d+/.test(value)) ?? null : null;
+  return result?.status === 0 ? parseCliVersion(output(result)) : null;
 }
 
 function registryVersion(spawn, spec) {

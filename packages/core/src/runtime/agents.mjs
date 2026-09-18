@@ -55,6 +55,30 @@ const INSTALL_PROFILES = {
   opencode: { npmPackage: "opencode-ai" },
 };
 
+// The registry package an agent is installed from. Hosts that offer to install
+// or upgrade one need the same spelling the installation profiles use.
+export function agentNpmPackage(agentId) {
+  const profile = INSTALL_PROFILES[agentId];
+  if (!profile) throw new Error(`Unknown Agent: ${agentId}`);
+  return profile.npmPackage;
+}
+
+// The first semantic version in whatever an executable prints for `--version`:
+// `2.1.238 (Claude Code)` and `codex-cli 0.150.1` both answer.
+export function parseCliVersion(text) {
+  return String(text ?? "").match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+}
+
+export function compareCliVersions(left, right) {
+  const a = String(left).split(".").map(Number);
+  const b = String(right).split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
 function pathApi(platform) {
   return platform === "win32" ? path.win32 : path.posix;
 }
@@ -127,9 +151,11 @@ function classifyInstallation(profile, resolvedExecutable, cwd, platform, fileEx
 /**
  * Detect the executable that would actually run for an agent, then classify
  * its installation provenance. This never consults global npm state, because
- * it can differ from the first executable selected by PATH.
+ * it can differ from the first executable selected by PATH. Nothing here runs
+ * a child process: a host that only needs to know whether a CLI is installed
+ * asks this and gets an answer immediately.
  */
-export function detectAgentInstallation(agentId, options = {}) {
+export function classifyAgentExecutable(agentId, options = {}) {
   const agent = getAgent(agentId);
   const profile = INSTALL_PROFILES[agentId];
   const platform = options.platform ?? process.platform;
@@ -143,7 +169,6 @@ export function detectAgentInstallation(agentId, options = {}) {
     return {
       executable: null,
       resolvedExecutable: null,
-      version: null,
       installMethod: "unknown",
       packageManager: null,
       updateStrategy: updateStrategy(profile, "unknown", platform),
@@ -151,23 +176,37 @@ export function detectAgentInstallation(agentId, options = {}) {
   }
   const resolvedExecutable = resolveRealpath(executable);
   const installMethod = classifyInstallation(profile, resolvedExecutable, options.cwd ?? process.cwd(), platform, fileExists);
-  let version = null;
-  try {
-    const output = options.runVersion
-      ? options.runVersion(executable)
-      : spawnExecutableSync(executable, ["--version"], { env: environment, stdio: "pipe", windowsHide: true, encoding: "utf8" });
-    const text = typeof output === "string" ? output : (output.status === 0 ? output.stdout ?? "" : "");
-    const match = text.match(/\d+\.\d+\.\d+/);
-    version = match?.[0] ?? null;
-  } catch {
-    // Path provenance remains useful even when the binary cannot report a version.
-  }
   return {
     executable,
     resolvedExecutable,
-    version,
     installMethod,
     packageManager: installMethod.startsWith("npm-") ? "npm" : installMethod === "brew" ? "brew" : null,
     updateStrategy: updateStrategy(profile, installMethod, platform),
   };
+}
+
+/**
+ * The full installation record, including the version the executable reports.
+ * This is the form a terminal host wants: it may block its thread for as long
+ * as the CLI takes to answer.
+ */
+export function detectAgentInstallation(agentId, options = {}) {
+  const classified = classifyAgentExecutable(agentId, options);
+  let version = null;
+  if (classified.executable) {
+    try {
+      const output = options.runVersion
+        ? options.runVersion(classified.executable)
+        : spawnExecutableSync(classified.executable, ["--version"], {
+          env: options.environment ?? process.env,
+          stdio: "pipe",
+          windowsHide: true,
+          encoding: "utf8",
+        });
+      version = parseCliVersion(typeof output === "string" ? output : (output.status === 0 ? output.stdout ?? "" : ""));
+    } catch {
+      // Path provenance remains useful even when the binary cannot report a version.
+    }
+  }
+  return { ...classified, version };
 }

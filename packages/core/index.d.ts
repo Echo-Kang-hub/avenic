@@ -20,6 +20,9 @@ export interface Io {
 export const AGENTS: Record<string, Agent>;
 export function getAgent(agentId: string): Agent;
 export function agentExecutableAvailable(agentId: string, environment?: ProcessEnvLike): boolean;
+export function agentNpmPackage(agentId: string): string;
+export function parseCliVersion(text: string): string | null;
+export function compareCliVersions(left: string, right: string): number;
 export type AgentInstallMethod = "standalone" | "npm-global" | "npm-local" | "brew" | "binary" | "source" | "unknown";
 export interface AgentUpdateStrategy {
   kind: "standalone" | "npm-global" | "npm-local" | "brew" | "manual";
@@ -33,7 +36,14 @@ export interface AgentInstallation {
   packageManager: "npm" | "brew" | null;
   updateStrategy: AgentUpdateStrategy;
 }
+export type AgentExecutableClassification = Omit<AgentInstallation, "version">;
+// No child process: a host that only needs "is this CLI installed?" gets an answer immediately.
+export function classifyAgentExecutable(agentId: string, options?: { environment?: ProcessEnvLike; cwd?: string }): AgentExecutableClassification;
 export function detectAgentInstallation(agentId: string, options?: { environment?: ProcessEnvLike; cwd?: string }): AgentInstallation;
+// The same record for a host that must not block its event loop (the extension host).
+export function detectAgentInstallationAsync(agentId: string, options?: { environment?: ProcessEnvLike; cwd?: string }): Promise<AgentInstallation>;
+export function installedCliVersion(executable: string, options?: { environment?: ProcessEnvLike }): Promise<string | null>;
+export function latestPublishedVersion(agentId: string, options?: { packageSpec?: string; environment?: ProcessEnvLike; timeoutMs?: number }): Promise<string | null>;
 
 // ---- runtime: config ----
 

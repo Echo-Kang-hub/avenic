@@ -1,27 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { cliVersionStatus, compareVersions, invalidateCliVersionCache, npmPackage, parseVersion, updateCommandForInstallation } from "../src/services/agent-versions.ts";
+import { cliVersionStatus, invalidateCliVersionCache, updateCommandForInstallation } from "../src/services/agent-versions.ts";
 
-test("parseVersion extracts the first semver from CLI version outputs", () => {
-  assert.equal(parseVersion("2.1.238 (Claude Code)"), "2.1.238");
-  assert.equal(parseVersion("codex-cli 0.150.1"), "0.150.1");
-  assert.equal(parseVersion("0.15.13\n"), "0.15.13");
-  assert.equal(parseVersion("not-a-version"), null);
-  assert.equal(parseVersion(""), null);
-});
-
-test("compareVersions compares semantic versions numerically", () => {
-  assert.equal(compareVersions("2.1.238", "2.1.238"), 0);
-  assert.equal(compareVersions("2.2.0", "2.1.238"), 1); // 逐段数值比较，非字典序
-  assert.equal(compareVersions("0.150.1", "0.9.0"), 1);
-  assert.equal(compareVersions("2.1.238", "2.2.0"), -1);
-});
-
-test("npmPackage maps known agents to their npm packages", () => {
-  assert.equal(npmPackage("claude"), "@anthropic-ai/claude-code");
-  assert.equal(npmPackage("codex"), "@openai/codex");
-  assert.equal(npmPackage("opencode"), "opencode-ai");
-  assert.throws(() => npmPackage("nope"), /Unknown npm package/);
+// 未检测到 CLI 时没有「现有安装的升级命令」可用，唯一入口是 registry 上的官方
+// npm 包；包名来自 core，面板不再自带一份包名表。
+test("an undetected CLI is installed from the registry package core names", () => {
+  assert.equal(updateCommandForInstallation("claude", null), "npm install --global @anthropic-ai/claude-code@latest");
+  assert.equal(updateCommandForInstallation("opencode", {
+    executable: null,
+    resolvedExecutable: null,
+    version: null,
+    installMethod: "unknown",
+    packageManager: null,
+    updateStrategy: { kind: "manual", command: null },
+  }), "npm install --global opencode-ai@latest");
 });
 
 test("Codex update commands follow the active installation provenance", () => {
