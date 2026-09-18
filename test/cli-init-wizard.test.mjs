@@ -92,6 +92,31 @@ test("avenic init writes exactly what the wizard asked for", async () => {
   });
 });
 
+test("a wizard that is cancelled leaves no half-written configuration", async () => {
+  await withWizardProject(async ({ projectRoot, wizard }) => {
+    const configPath = path.join(projectRoot, ".agents", "runtime.json");
+    // Esc while choosing agents.
+    const escaped = wizard("init");
+    await waitFor(() => /◇ {2}Select agents/.test(escaped.stdout.text()), "the agent picker");
+    keys(escaped.stdin, " ", "\x1b");
+    assert.equal(await escaped.promise, 0);
+    assert.ok(!existsSync(configPath), "cancelling mid-wizard writes nothing");
+
+    // Esc at the confirmation, after every question was answered.
+    const declined = wizard("init");
+    await waitFor(() => /◇ {2}Select agents/.test(declined.stdout.text()), "the agent picker");
+    keys(declined.stdin, " ", "\r");
+    for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
+      await waitFor(() => new RegExp(`◇ {2}${title}`).test(declined.stdout.text()), title);
+      keys(declined.stdin, "\r");
+    }
+    await waitFor(() => /◇ {2}Apply configuration\?/.test(declined.stdout.text()), "the confirmation");
+    keys(declined.stdin, "n");
+    assert.equal(await declined.promise, 0);
+    assert.ok(!existsSync(configPath), "declining the confirmation writes nothing");
+  });
+});
+
 test("avenic change adds an agent and switches history mode from the wizard", async () => {
   await withWizardProject(async ({ projectRoot, logged, wizard, config }) => {
     const initialized = await runCli({

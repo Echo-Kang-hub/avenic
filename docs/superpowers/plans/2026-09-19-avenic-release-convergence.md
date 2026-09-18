@@ -1414,9 +1414,9 @@ suite runs from changes underneath it).
 
 - `test/cli-init-wizard.test.mjs` — `avenic init` writes exactly what the
   wizard asked for (two agents, per-agent auth and session storage, history
-  mode, confirmation), and `avenic change` adds an agent and switches
-  history to Isolated, asserting the persisted configuration and what the
-  user was told.
+  mode, confirmation), `avenic change` adds an agent and switches history to
+  Isolated, and a wizard that is cancelled — mid-flow or at the
+  confirmation — leaves no configuration behind at all.
 - `test/cli-sessions-menu.test.mjs` — the menu offers exactly the actions
   the mode allows, Esc changes nothing, and "Set active session" sets the
   pointer to the row the cursor was on.
@@ -1485,7 +1485,7 @@ Run on this machine, in this order, after the release commit:
 
 | Gate | Result |
 |---|---|
-| `npm test` (root) | 496 tests, 493 pass, 3 skipped, 0 fail |
+| `npm test` (root) | 497 tests, 494 pass, 3 skipped, 0 fail |
 | `npm run test:install` | passed (tarball + repo-root global install, agent runtime, Skills) |
 | `npm run test:release` | passed (the smoke above, Hub and self-update included) |
 | `npm run pack:cli` (`npm pack --dry-run --json`) | 60 files, `vendor/core-src/skills/uninstall.mjs` present |
@@ -1545,7 +1545,7 @@ authorization), upload the 0.3.0 VSIX, and then
 | 22 | CLI / VS Code parity | PASS | both hosts call the same core (`test/vendor.test.mjs` keeps the vendored copy identical); version rules, unmanaged-Skill detection, catalog layout and path containment live only in core |
 | 23 | Code consolidation | PASS | duplicated-orchestration table above; no `Manager`/`Controller`/`Coordinator`/`Engine` module exists |
 | 24 | Quantified LOC / duplication improvement | PASS | LOC table above (+935 net for this release's feature work, both hosts net negative) |
-| 25 | root / VS Code / package suites | PASS | 496 / 154 / `npm run package`, 0 failures |
+| 25 | root / VS Code / package suites | PASS | 497 / 154 / `npm run package`, 0 failures |
 | 26 | Real tarball install | PASS | `npm run test:install`, and both release tarballs installed into a temp global prefix and run |
 | 27 | Real VSIX install | PASS | `code --install-extension …vsix` → `echokang.avenic-agent-manager@0.3.0` in the real editor |
 | 28 | Release docs and changelog | PASS | README (end-user UX), CHANGELOG 1.5.2 / 1.4.2 dated 2026-09-19, this plan's results |
