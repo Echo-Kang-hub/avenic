@@ -157,6 +157,12 @@ async function main() {
     }
   };
 
+  // Seeding thousands of files makes the first spawn of the run pay for the
+  // operating system inspecting them, which lands on whichever measurement
+  // happens first — usually this one, at ten times its real cost. A real
+  // machine has nothing to inspect on a command it has run before.
+  spawnSync(process.execPath, [cliEntry, "--version"], { cwd: projectRoot, env: environment });
+
   launch(["--version"], "avenic --version");
   launch(["init", "--agents", "claude,codex,opencode", "--auth", "global", "--sessions", "project", "--history", "shared"], "avenic init (shared)");
   launch(["claude"], "avenic claude (cold)");
