@@ -28,16 +28,29 @@ export {
   setSessionsGitIgnored,
 } from "./runtime/gitignore.mjs";
 export { locateProjectRoot } from "./runtime/project-root.mjs";
+export {
+  agentCursors,
+  cachedCwd,
+  cursorFilePath,
+  loadCursors,
+  rememberCwd,
+  sameStamp,
+  saveCursors,
+  stampOf,
+} from "./runtime/cursors.mjs";
 export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export { spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
   reconcileCanonicalSession,
   setSessionInteropMode,
+  applyProjectConfiguration,
   completeCanonicalContinuation,
   continueCanonicalSession,
   ensureNativeProjection,
   importProjectSessions,
+  observeSharedNativeSessions,
+  recoverSharedNativeSessions,
   continuationLaunchArguments,
   prepareCanonicalContinuation,
   projectCanonicalSession,
