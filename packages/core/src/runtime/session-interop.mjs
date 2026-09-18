@@ -21,6 +21,33 @@ function canonicalRevision(stored) {
     ?? canonicalSessionRevision(stored.events);
 }
 
+// The one capture primitive for foreground exits, crash watchdogs and startup
+// recovery. Canonical event identity makes repeated captures idempotent, so no
+// second inventory/cache layer or background polling is required.
+export async function observeSharedNativeSessions(projectRoot, agentId, options = {}) {
+  const adapter = getSessionAdapter(agentId);
+  const captured = await adapter.capture(projectRoot, options);
+  const mode = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
+  const imported = mode === "shared"
+    ? await importProjectSessions(projectRoot, agentId, { ...options, skipCapture: true, setActive: options.setActive })
+    : { imported: 0, diagnostics: [] };
+  return { changed: Boolean(captured.changed || imported.imported), imported: imported.imported ?? 0, diagnostics: [...(captured.diagnostics ?? []), ...(imported.diagnostics ?? [])] };
+}
+
+export async function recoverSharedNativeSessions(projectRoot, agentIds, options = {}) {
+  const results = [];
+  for (const agentId of agentIds) {
+    try {
+      results.push({ agentId, ...(await observeSharedNativeSessions(projectRoot, agentId, {
+        environment: typeof options.environmentForAgent === "function" ? options.environmentForAgent(agentId) : options.environment,
+      })) });
+    } catch (error) {
+      results.push({ agentId, changed: false, diagnostic: error.message });
+    }
+  }
+  return results;
+}
+
 async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
   if (!captured?.events) return { added: 0, duplicate: 0 };
   return appendCanonicalEvents(projectRoot, canonicalSessionId, captured.events);
@@ -30,7 +57,9 @@ async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
 export async function importProjectSessions(projectRoot, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);
   const portable = path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
-  const captured = await adapter.capture(projectRoot, options);
+  const captured = options.skipCapture
+    ? { count: 0, changed: false, diagnostics: [] }
+    : await adapter.capture(projectRoot, options);
   let discovered = 0; let imported = 0; let unchanged = 0; let failed = 0;
   const diagnostics = [...(captured.diagnostics ?? [])];
   for (const relative of await listFiles(portable)) {
@@ -96,6 +125,21 @@ export async function setSessionInteropMode(projectRoot, mode, options = {}) {
     }
   }
   return { previous, mode, imported, config: configured.config };
+}
+
+// The single project-settings commit used by every host UI. Keeping this
+// decision here prevents CLI and VS Code from drifting on the same-mode path.
+export async function applyProjectConfiguration(projectRoot, draft, options = {}) {
+  const before = await loadRuntime(projectRoot);
+  const previous = projectConfig(before).sessionInterop;
+  if (previous === draft.sessionInterop) {
+    const configured = await configureProject(projectRoot, draft);
+    return { previous, mode: draft.sessionInterop, imported: [], config: configured.config };
+  }
+  return setSessionInteropMode(projectRoot, draft.sessionInterop, {
+    agents: draft.agents,
+    environmentForAgent: options.environmentForAgent,
+  });
 }
 
 // The service owns mapping updates. Adapters only understand one native format,
@@ -298,18 +342,29 @@ export async function continueCanonicalSession({ projectRoot, canonicalId, targe
 // Handoff remains visible to the user/model as an explicit continuation prompt.
 export function continuationLaunchArguments({ agentId, mode, nativeSessionId, handoff }) {
   if (!handoff?.markdown) throw new Error("Continuation launch requires a handoff");
+  // npm-style Windows .cmd shims pass command lines through cmd.exe. A newline
+  // terminates that command even inside a quoted argument, so keep the
+  // model-visible handoff a single argument on every platform. Canonical
+  // history is untrusted input, so neutralize cmd metacharacters here only;
+  // the stored handoff remains lossless.
+  const replacements = { "&": " and ", "|": " / ", "^": "", "<": "‹", ">": "›", "(": "[", ")": "]", "%": "％", "!": "！", "\"": "'" };
+  const prompt = handoff.markdown
+    .replace(/\r?\n+/g, " ")
+    .replace(/[&|^<>()%!\"]/g, (character) => replacements[character])
+    .replace(/\s{2,}/g, " ")
+    .trim();
   const launchers = {
     claude: () => {
       if (!nativeSessionId) throw new Error("Claude continuation requires a session id");
       return mode === "resume"
-        ? ["--resume", nativeSessionId, handoff.markdown]
-        : ["--session-id", nativeSessionId, handoff.markdown];
+        ? ["--resume", nativeSessionId, prompt]
+        : ["--session-id", nativeSessionId, prompt];
     },
     // The foreground command must remain the official interactive TUI. Handoff
     // is an initial prompt argument; stdin/stdout stay attached to the user.
     codex: () => mode === "resume"
-      ? ["resume", nativeSessionId, handoff.markdown]
-      : [handoff.markdown],
+      ? ["resume", nativeSessionId, prompt]
+      : [prompt],
   };
   const createArguments = launchers[agentId];
   if (!createArguments) throw new Error(`No semantic continuation launcher for ${agentId}`);

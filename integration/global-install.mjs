@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -42,6 +42,34 @@ function pack(directory, environment) {
   return path.join(root, JSON.parse(result.stdout)[0].filename);
 }
 
+async function codexResumeFallbackFixture(environment) {
+  const fixtureRoot = await mkdtemp(path.join(root, "codex-fallback-"));
+  const bin = path.join(fixtureRoot, "bin");
+  const codexHome = path.join(fixtureRoot, "home");
+  const sessions = path.join(codexHome, "sessions", "2026", "09", "18");
+  const log = path.join(fixtureRoot, "arguments.jsonl");
+  await mkdir(sessions, { recursive: true });
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(sessions, "parent.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: projectRoot } })}\n`);
+  await writeFile(path.join(sessions, "child.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "child", parent_thread_id: "parent", multi_agent_version: "v2", cwd: projectRoot } })}\n${JSON.stringify({ type: "response_item", timestamp: "2026-09-18T00:00:00.000Z", payload: { id: "a", type: "message", role: "user", content: [{ type: "input_text", text: "A" }] } })}\n${JSON.stringify({ type: "response_item", timestamp: "2026-09-18T00:00:01.000Z", payload: { id: "b", type: "message", role: "assistant", content: [{ type: "output_text", text: "B" }] } })}\n`);
+  const probe = path.join(bin, "codex-probe.mjs");
+  await writeFile(probe, `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"; import path from "node:path"; const args = process.argv.slice(2); appendFileSync(process.env.AVENIC_FAKE_LOG, JSON.stringify(args) + "\\n"); if (args[0] === "resume") process.exit(1); const file = path.join(process.env.CODEX_HOME, "sessions", "2026", "09", "18", "bootstrap.jsonl"); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: "bootstrap", cwd: process.cwd() } }) + "\\n");`);
+  const executable = process.platform === "win32" ? path.join(bin, "codex.cmd") : path.join(bin, "codex");
+  await writeFile(executable, process.platform === "win32" ? `@echo off\r\nnode "${probe}" %*\r\n` : `#!/bin/sh\nexec node "${probe}" "$@"\n`);
+  if (process.platform !== "win32") await chmod(executable, 0o755);
+  const inheritedPath = environment.PATH ?? environment.Path ?? process.env.PATH ?? process.env.Path ?? "";
+  return {
+    log,
+    environment: {
+      ...environment,
+      CODEX_HOME: codexHome,
+      AVENIC_FAKE_LOG: log,
+      PATH: `${bin}${path.delimiter}${inheritedPath}`,
+      Path: `${bin}${path.delimiter}${inheritedPath}`,
+    },
+  };
+}
+
 async function verifyInstall(archive, environment) {
   const installed = spawnSync(
     process.execPath,
@@ -60,6 +88,15 @@ async function verifyInstall(archive, environment) {
   const launched = runLauncher(launcher, ["codex", "init", "--auth", "global"], projectRoot, environment);
   assert.match(launched.stdout, /Changed:/);
   assert.equal(existsSync(path.join(projectRoot, ".agents", "runtime.json")), true);
+  const fallback = await codexResumeFallbackFixture(environment);
+  const imported = runLauncher(launcher, ["codex", "sessions", "import"], projectRoot, fallback.environment);
+  assert.match(imported.stdout, /imported/);
+  const continued = runLauncher(launcher, ["sessions", "continue", "codex-child", "--agent", "codex"], projectRoot, fallback.environment);
+  assert.match(continued.stdout, /could not be resumed; starting a new native thread/);
+  const calls = (await readFile(fallback.log, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  assert.deepEqual(calls[0].slice(0, 2), ["resume", "parent"]);
+  assert.match(calls[1][0], /- user: A/);
+  assert.match(calls[1][0], /- assistant: B/);
   const deinitialized = runLauncher(launcher, ["codex", "deinit", "--purge"], projectRoot, environment);
   assert.match(deinitialized.stdout, /Runtime   Removed/);
   assert.match(deinitialized.stdout, /Data      Purged/);

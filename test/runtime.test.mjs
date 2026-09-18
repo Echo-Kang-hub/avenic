@@ -22,11 +22,12 @@ import {
   ensureRuntimeGitignore,
   sessionsGitIgnored,
 } from "../packages/core/src/runtime/gitignore.mjs";
-import { agentExecutableAvailable, listCanonicalSessions, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
+import { agentExecutableAvailable, applyProjectConfiguration, listCanonicalSessions, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
 import { locateProjectRoot } from "../packages/core/src/runtime/project-root.mjs";
 import * as claudeSessions from "../packages/core/src/runtime/adapters/claude.mjs";
 import * as codexSessions from "../packages/core/src/runtime/adapters/codex.mjs";
 import * as opencodeSessions from "../packages/core/src/runtime/adapters/opencode.mjs";
+import { observeSharedNativeSessions } from "../packages/core/src/runtime/session-interop.mjs";
 import { avenicPackageSpec, updateAvenic } from "../packages/cli/src/cli/self-update.mjs";
 import {
   PROJECT_ROOT_TOKEN,
@@ -108,6 +109,23 @@ test("initialization is incremental and idempotent", async () => {
     assert.equal(state.runtime.agents.claude.sessions, "project");
     assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "claude")), true);
     assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "codex")), false);
+  });
+});
+
+test("applyProjectConfiguration owns same-mode project configuration", async () => {
+  await withTempProject(async (projectRoot) => {
+    const result = await applyProjectConfiguration(projectRoot, {
+      agents: { codex: { auth: "global", sessions: "project" } },
+      sessionInterop: "isolated",
+    });
+    assert.equal(result.previous, "shared");
+    assert.equal(result.mode, "isolated");
+    const repeated = await applyProjectConfiguration(projectRoot, {
+      agents: { codex: { auth: "project", sessions: "project" } },
+      sessionInterop: "isolated",
+    });
+    assert.deepEqual(repeated.imported, []);
+    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.auth, "project");
   });
 });
 
@@ -555,6 +573,7 @@ const lease = await acquireSessionLease("codex", projectRoot, {
   onFirst: async () => { await codex.snapshotNative(projectRoot, snapshotRoot, { environment }); },
   onLast: async () => { await codex.revertNative(snapshotRoot, projectRoot, { environment }); },
 });
+
 await writeFile(path.join(lease.stateDir, "watchdog.json"), JSON.stringify({
   member: lease.member,
   parentPid: process.pid,
@@ -589,8 +608,27 @@ process.exit(0);
     }
     const captured = path.join(projectRoot, ".agents", "sessions", "codex", "sessions", "fake", "session.jsonl");
     assert.equal(existsSync(captured), true, "watchdog must capture the interrupted session into the project");
+    const canonical = path.join(projectRoot, ".agents", "sessions", "canonical", "codex-sess-new", "session.json");
+    assert.equal(existsSync(canonical), true, "watchdog must commit an unmapped interrupted native session into canonical history");
     assert.equal(existsSync(path.join(codexHome, "sessions", "fake")), false, "watchdog must revert native storage");
     assert.equal(existsSync(leaseState), false, "watchdog must remove the launch group state");
+  });
+});
+
+test("shared native capture commits an unmapped Codex rollout idempotently without an inventory cache", async () => {
+  await withTempProject(async (projectRoot) => {
+    const codexHome = path.join(projectRoot, "codex-observe-home");
+    const rollout = path.join(codexHome, "sessions", "2026", "09", "18", "rollout.jsonl");
+    await initializeAgent(projectRoot, "codex", "global");
+    await mkdir(path.dirname(rollout), { recursive: true });
+    await writeFile(rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "new-rollout", cwd: projectRoot } })}\n${JSON.stringify({ timestamp: "2026-09-18T00:00:00.000Z", type: "response_item", payload: { id: "message-a", type: "message", role: "user", content: [{ type: "input_text", text: "A" }] } })}\n`);
+    const environment = { CODEX_HOME: codexHome };
+    const first = await observeSharedNativeSessions(projectRoot, "codex", { environment });
+    const second = await observeSharedNativeSessions(projectRoot, "codex", { environment });
+    assert.equal(first.imported, 1);
+    assert.equal(second.imported, 0);
+    assert.deepEqual((await listCanonicalSessions(projectRoot)).map((session) => session.id), ["codex-new-rollout"]);
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "native-inventory.json")), false);
   });
 });
 
@@ -741,6 +779,7 @@ test("global sessions leave native storage untouched on launch", async () => {
     assert.equal(launched.status, 0, launched.stderr);
     const portable = path.join(projectRoot, ".agents", "sessions", "codex");
     assert.equal((await listFiles(portable)).length, 0, "global sessions must not create portable copies");
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "native-inventory.json")), false, "global sessions must not create shared native inventory");
 
     // Switching back to project sessions restores the portable sync on launch.
     runCli(projectRoot, "skills.mjs", ["codex", "init", "--sessions", "project"], environment);

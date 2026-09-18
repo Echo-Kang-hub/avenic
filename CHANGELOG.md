@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.2 / 1.4.2 - 2026-09-18
+
+- Make the shared init/change agent selector require at least one selection,
+  without changing generic optional multi-select behavior.
+- Add the compact interactive Avenic terminal banner and complete the Sessions
+  menu's active-session and Shared-mode transition actions.
+- Keep Codex v2 parent-thread recovery, crash-safe canonical capture, and
+  malformed native-history diagnostics on the single core lifecycle path.
+
+## 1.5.1 / 1.4.1 - 2026-09-18
+
+- Keep global native sessions outside project portable/shared capture during
+  ordinary launches.
+- Keep crash recovery and shared capture idempotent without a background
+  native-history poller or an additional inventory cache.
+- Resolve nested Codex multi-agent v2 child threads to their resumable parent
+  before calling the official resume path, with cycle-safe fallback.
+- If the Codex app-server still rejects a resume, rehydrate a new official
+  thread from the complete canonical handoff instead of dropping an empty delta.
+- Keep continuation prompts one command-line argument for Windows npm `.cmd`
+  shims, preserving cross-agent handoffs containing line breaks.
+- Neutralize command-shell metacharacters only in the Windows launch prompt;
+  canonical event and handoff artifacts remain unchanged.
+
 ## 1.4.8 / 1.3.6 - 2026-09-17
 
 - Tolerate malformed Claude JSONL records and continue importing valid records.

@@ -58,7 +58,7 @@ async function withRig(run) {
   // 留着它们则"未绑定/坏绑定 → 不注入"的否定断言永远为假，且断言会随开发机漂移。
   const spawnEnv = { ...sanitizedHostEnv(), ...environment };
   try {
-    await run({ projectRoot, environment, spawnEnv, probeFile });
+    await run({ projectRoot, environment, spawnEnv, probeFile, binDir });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -163,6 +163,19 @@ test("launching an unbound project injects nothing", async () => {
     assert.equal(probe.env.ANTHROPIC_AUTH_TOKEN, null, "未绑定不得注入密钥");
     assert.equal(probe.env.ANTHROPIC_MODEL, null, "未绑定不得注入模型");
     assert.equal(probe.env.AVENIC_LAUNCH_SENTINEL, "preserved-9c3f", "宿主环境照常传给子进程");
+  });
+});
+
+test("a malformed native session capture never turns a successful normal launch into an error", async () => {
+  await withRig(async ({ projectRoot, spawnEnv, binDir }) => {
+    assert.equal(launch(spawnEnv, projectRoot, "opencode", ["init", "--auth", "global", "--sessions", "project"]).status, 0);
+    const nativeProbe = path.join(binDir, "malformed-opencode.mjs");
+    await writeFile(nativeProbe, `const args = process.argv.slice(2); if (args[0] === "session") console.log(JSON.stringify([{ id: "broken", directory: process.cwd() }])); else if (args[0] === "export") console.log("{");`);
+    const executable = process.platform === "win32" ? path.join(binDir, "opencode.cmd") : path.join(binDir, "opencode");
+    await writeFile(executable, process.platform === "win32" ? `@echo off\r\nnode "${nativeProbe}" %*\r\n` : `#!/bin/sh\nexec node "${nativeProbe}" "$@"\n`);
+    if (process.platform !== "win32") await chmod(executable, 0o755);
+    const run = launch(spawnEnv, projectRoot, "opencode");
+    assert.equal(run.status, 0, run.stderr);
   });
 });
 

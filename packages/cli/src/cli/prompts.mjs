@@ -19,6 +19,10 @@ export function isInteractive({ stdin = process.stdin, stdout = process.stdout }
 
 // ---- 基础输出 ----
 
+export function banner(stdout = process.stdout) {
+  stdout.write("\n  _   ___   _______ _   _______\n / | / / | / / ____/ | / /  _/\n/  |/ /  |/ / /   /  |/ // /  \n/ /|  / /|  / /___/ /|  // /   \n/_/ |_/_/ |_/_____/_/ |_/___/  AVENIC\n\n");
+}
+
 /** ◆ 标题行（帧内首个提示的顶部行；clack intro 同款）。 */
 export function intro(stdout, title) {
   stdout.write(`◆  ${title}\n`);
@@ -137,12 +141,15 @@ export function multiselect(options = {}) {
   const entries = options.options; // [{ value, label }]
   const title = options.title;
   const checked = new Set(options.initial ?? []);
+  const minSelected = Math.max(0, options.minSelected ?? 0);
+  const emptyMessage = options.emptyMessage ?? "Select at least one item";
   const cancelLabel = options.cancelLabel ?? "cancel";
   const footer = options.footer ?? "↑↓ move · space toggle · a all · n none · enter confirm · esc cancel";
   return new Promise((resolve) => {
     const count = entries.length;
     const cursorRow = count;
     let cursor = 0;
+    let validationMessage = "";
     const titleLine = () =>
       checked.size > 0 ? `◇  ${title} (${checked.size} checked)` : `◇  ${title}`;
     const optionRows = () => {
@@ -165,6 +172,7 @@ export function multiselect(options = {}) {
       rows.push(`│  ${cursor === cursorRow ? "▸" : " "}  ○  ${cancelLabel}`);
       rows.push(frameSeparator());
       rows.push(footer);
+      if (validationMessage) rows.push(validationMessage);
       return rows;
     };
     const session = startFrame(stdin, stdout, paint);
@@ -208,6 +216,11 @@ export function multiselect(options = {}) {
         checked.clear();
         session.refresh();
       } else if (key.name === "return" || key.name === "enter") {
+        if (cursor < count && checked.size < minSelected) {
+          validationMessage = emptyMessage;
+          session.refresh();
+          return;
+        }
         finish(cursor >= count ? null : [...checked]);
       } else if (key.name === "escape") {
         finish(null);

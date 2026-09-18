@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { listCanonicalSessions } from "@avenic/core";
 import { agentStatus, deinitialize, initialize, prepareAgentLaunch, setAuthMode, setSessionsMode } from "../src/services/agents.ts";
 import { select } from "../src/services/catalog.ts";
 import { installPacks, repairLinks } from "../src/services/skills.ts";
@@ -56,6 +57,30 @@ test("prepareAgentLaunch returns avenic runtime environment and scoped sessions"
     assert.equal(path.resolve(configDir!), path.resolve(dir, ".agents", "local", "claude"), "项目域认证环境指向项目内目录");
     await prepared.finishRun();
     await prepared.finishRun(); // 幂等：第二次 no-op
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("prepareAgentLaunch commits a Shared native session through core on exit", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-shared-launch-"));
+  try {
+    await initialize(dir, "claude", "project", "project");
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const native = path.join(
+      dir,
+      ".agents",
+      "local",
+      "claude",
+      "projects",
+      path.resolve(dir).replace(/[^a-zA-Z0-9]/g, "-"),
+      `${sessionId}.jsonl`,
+    );
+    await mkdir(path.dirname(native), { recursive: true });
+    await writeFile(native, `${JSON.stringify({ type: "user", uuid: "u", sessionId, cwd: dir, timestamp: "2026-09-18T00:00:00.000Z", message: { role: "user", content: "A" } })}\n`);
+    const prepared = await prepareAgentLaunch(dir, "claude");
+    await prepared.finishRun();
+    assert.deepEqual((await listCanonicalSessions(dir)).map((session) => session.id), [`claude-${sessionId}`]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

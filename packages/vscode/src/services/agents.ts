@@ -6,7 +6,7 @@ import {
   bindProject,
   buildLaunchInjection,
   clearLocalAuth,
-  configureProject as configureProjectCore,
+  applyProjectConfiguration,
   detectAgentInstallation,
   deinitializeAgent,
   effectiveAgentConfig,
@@ -16,12 +16,13 @@ import {
   initializeAgent,
   importProjectSessions,
   loadRuntime,
+  observeSharedNativeSessions,
   projectAuthEnvironment,
   projectConfig,
   projectModelStatus,
   resolveProjectProfile,
+  recoverSharedNativeSessions,
   sessionLeasePath,
-  setSessionInteropMode,
   setLocalAuth,
   type Agent,
   type AgentInstallation,
@@ -99,10 +100,7 @@ export async function readProjectConfiguration(projectRoot: string) {
 // The extension only collects choices. Core validates, commits, and imports
 // isolated native histories when switching into Shared mode.
 export async function configureProjectRuntime(projectRoot: string, agents: ProjectAgentSettings, sessionInterop: "shared" | "isolated") {
-  const current = await readProjectConfiguration(projectRoot);
-  const result = current.sessionInterop === sessionInterop
-    ? { config: (await configureProjectCore(projectRoot, { agents, sessionInterop })).config, imported: [] }
-    : await setSessionInteropMode(projectRoot, sessionInterop, { agents });
+  const result = await applyProjectConfiguration(projectRoot, { agents, sessionInterop });
   invalidateAgentStatusCache();
   return result;
 }
@@ -210,6 +208,17 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
   }
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions === "project";
+  const sharedSessions = projectConfig(state).sessionInterop === "shared";
+  if (portableSessions && sharedSessions) {
+    await recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), {
+      environmentForAgent: (sourceAgent: string) => {
+        const source = effectiveAgentConfig(state, sourceAgent);
+        return source?.auth === "project"
+          ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
+          : process.env;
+      },
+    });
+  }
   const { snapshotNative, revertNative } = adapter;
   let leaveLaunchGroup: (() => Promise<unknown>) | null = null;
   if (portableSessions && snapshotNative && revertNative) {
@@ -218,7 +227,8 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
       onFirst: async (recovering) => {
         // 上次启动组未能正常收官（终端/窗口被杀）：先收回运行产物进项目，再还原启动前原生存储
         if (recovering) {
-          await adapter.capture(projectRoot, { environment });
+          if (sharedSessions) await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: false });
+          else await adapter.capture(projectRoot, { environment });
           await revertNative(snapshotRoot, projectRoot, { environment });
         }
         await snapshotNative(projectRoot, snapshotRoot, { environment });
@@ -253,7 +263,8 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
     done = true;
     try {
       if (portableSessions) {
-        await adapter.capture(projectRoot, { environment });
+        if (sharedSessions) await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: true });
+        else await adapter.capture(projectRoot, { environment });
       }
     } finally {
       if (leaveLaunchGroup) {

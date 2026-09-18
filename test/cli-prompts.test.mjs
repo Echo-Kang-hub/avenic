@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   boxLines,
+  banner,
   cancel,
   confirm,
   displayWidth,
@@ -113,16 +114,19 @@ test("multiselect toggles with space, a selects all, n clears, enter confirms", 
   assert.match(stdout.text(), /◇  3 selected/);
 });
 
-test("multiselect n clears the selection; escaping cancels", async () => {
+test("a required multiselect keeps an empty selection open; escaping cancels", async () => {
   const { stdin, stdout, promise } = await runPrompt((s, o) => multiselect({
     stdin: s,
     stdout: o,
     title: "Select Packs",
     options: [{ value: "common", label: "Common" }],
     initial: ["common"],
+    minSelected: 1,
   }));
-  keys(stdin, "n", "\r"); // 清空后确认
-  assert.deepEqual(await promise, []);
+  keys(stdin, "n", "\r");
+  assert.match(stdout.text(), /Select at least one item/);
+  keys(stdin, " ", "\r");
+  assert.deepEqual(await promise, ["common"]);
   const escaped = await runPrompt((s, o) => multiselect({
     stdin: s,
     stdout: o,
@@ -180,6 +184,13 @@ test("intro, outro, cancel, and boxLines render deterministic frames", () => {
   const widths = cjk.map((line) => displayWidth(line));
   assert.equal(widths[0], widths[1]);
   assert.equal(widths[0], widths[2]);
+});
+
+test("banner is compact, branded, and contains no terminal control sequence", () => {
+  const stdout = fakeStdout();
+  banner(stdout);
+  assert.match(stdout.text(), /AVENIC/);
+  assert.doesNotMatch(stdout.text(), /\x1b/);
 });
 
 test("isInteractive requires both ends to be TTY", () => {

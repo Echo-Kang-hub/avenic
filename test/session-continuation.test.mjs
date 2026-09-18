@@ -51,13 +51,22 @@ test("resume-catalog materialization creates one stable native mapping", async (
 
 test("continuation launch arguments use official resume commands and handoff as an explicit prompt", () => {
   const handoff = { markdown: "# Avenic continuation\nNew shared events since your last sync:\n- assistant: D" };
+  const prompt = "# Avenic continuation New shared events since your last sync: - assistant: D";
   const claude = continuationLaunchArguments({ agentId: "claude", mode: "resume", nativeSessionId: "123e4567-e89b-12d3-a456-426614174000", handoff });
-  assert.deepEqual(claude.argumentsList, ["--resume", "123e4567-e89b-12d3-a456-426614174000", handoff.markdown]);
+  assert.deepEqual(claude.argumentsList, ["--resume", "123e4567-e89b-12d3-a456-426614174000", prompt]);
   assert.equal(claude.input, undefined);
   const codex = continuationLaunchArguments({ agentId: "codex", mode: "resume", nativeSessionId: "thread-1", handoff });
-  assert.deepEqual(codex.argumentsList, ["resume", "thread-1", handoff.markdown]);
+  assert.deepEqual(codex.argumentsList, ["resume", "thread-1", prompt]);
   const newClaude = continuationLaunchArguments({ agentId: "claude", mode: "bootstrap", handoff, nativeSessionId: "123e4567-e89b-12d3-a456-426614174001" });
-  assert.deepEqual(newClaude.argumentsList, ["--session-id", "123e4567-e89b-12d3-a456-426614174001", handoff.markdown]);
+  assert.deepEqual(newClaude.argumentsList, ["--session-id", "123e4567-e89b-12d3-a456-426614174001", prompt]);
+});
+
+test("continuation prompt keeps untrusted cmd metacharacters out of Windows shim arguments", () => {
+  const handoff = { markdown: "User text: A & B \"quoted\" %PATH% | cmd < input > output ^ ! (test)" };
+  const prompt = continuationLaunchArguments({ agentId: "codex", mode: "bootstrap", handoff }).argumentsList[0];
+  assert.doesNotMatch(prompt, /[&|^<>()%!\"]/);
+  assert.match(prompt, /User text: A/);
+  assert.match(prompt, /quoted/);
 });
 
 test("native capture metadata does not erase the continuation cursor", async () => {
@@ -257,6 +266,24 @@ test("Codex v2 sub-agent mappings resolve to their resumable parent thread", asy
       const continuation = await prepareCanonicalContinuation(projectRoot, "v2", "codex", { environment: { CODEX_HOME: codexHome } });
       assert.equal(continuation.mode, "resume");
       assert.equal(continuation.nativeSessionId, "parent");
+      assert.deepEqual(continuationLaunchArguments(continuation).argumentsList.slice(0, 2), ["resume", "parent"]);
+    } finally {
+      await (await import("node:fs/promises")).rm(codexHome, { recursive: true, force: true });
+    }
+  });
+});
+
+test("Codex v2 nested sub-agent mappings resolve the resumable root without looping", async () => {
+  await withProject(async (projectRoot) => {
+    const codexHome = await mkdtemp(path.join(os.tmpdir(), "avenic-v2-codex-chain-"));
+    try {
+      const directory = path.join(codexHome, "sessions", "2026", "09", "18");
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "parent.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: projectRoot } })}\n`);
+      await writeFile(path.join(directory, "child.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "child", parent_thread_id: "parent", multi_agent_version: "v2", cwd: projectRoot } })}\n`);
+      await writeFile(path.join(directory, "grandchild.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "grandchild", parent_thread_id: "child", multi_agent_version: "v2", cwd: projectRoot } })}\n`);
+      const { resolveResumableSession } = await import("../packages/core/src/runtime/adapters/codex.mjs");
+      assert.equal(await resolveResumableSession(projectRoot, "grandchild", { environment: { CODEX_HOME: codexHome } }), "parent");
     } finally {
       await (await import("node:fs/promises")).rm(codexHome, { recursive: true, force: true });
     }

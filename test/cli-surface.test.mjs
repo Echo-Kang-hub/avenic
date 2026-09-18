@@ -6,6 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import {
+  appendCanonicalEvents,
+  completeCanonicalContinuation,
+  createCanonicalSession,
+  initializeAgent,
+  setSessionInteropMode,
+} from "../packages/core/src/index.mjs";
 
 // End-to-end coverage of the full CLI command surface. Every command position
 // (main, agent runtime, skills, catalog, maintenance) is exercised through the
@@ -124,6 +131,15 @@ test("bare invocation and help positions exit cleanly without touching the catal
   });
 });
 
+test("version output identifies Avenic without contacting the registry", async () => {
+  await withTempDirectory("avenic-version-", async (projectRoot) => {
+    const result = runAgent(projectRoot, ["--version"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout.trim(), /^Avenic \d+\.\d+\.\d+$/);
+    assert.equal(result.stderr, "");
+  });
+});
+
 test("unknown commands fail with a clear error", async () => {
   await withTempDirectory("avenic-unknown-", async (projectRoot) => {
     // Point at a local fixture so the Pack-vs-typo catalog check stays offline.
@@ -202,6 +218,45 @@ test("unified sessions status explains an empty canonical store", async () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Canonical session status/);
     assert.match(result.stdout, /No canonical sessions/);
+  });
+});
+
+test("Codex resume rejection rehydrates a fresh official thread from complete canonical history", async () => {
+  await withTempDirectory("avenic-codex-rehydrate-", async (projectRoot) => {
+    const bin = path.join(projectRoot, "bin");
+    const codexHome = path.join(projectRoot, "codex-home");
+    const log = path.join(projectRoot, "codex-arguments.jsonl");
+    await mkdir(path.join(codexHome, "sessions", "2026", "09", "18"), { recursive: true });
+    await mkdir(bin, { recursive: true });
+    await initializeAgent(projectRoot, "codex", "global", "global");
+    await setSessionInteropMode(projectRoot, "shared");
+    await createCanonicalSession(projectRoot, { id: "shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [
+      { id: "a", role: "user", createdAt: "2026-09-18T00:00:00.000Z", content: [{ type: "text", text: "A" }] },
+      { id: "b", role: "assistant", createdAt: "2026-09-18T00:00:01.000Z", content: [{ type: "text", text: "B" }] },
+    ]);
+    await completeCanonicalContinuation(projectRoot, "shared", "codex", { nativeSessionId: "child" });
+    const sessions = path.join(codexHome, "sessions", "2026", "09", "18");
+    await writeFile(path.join(sessions, "parent.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: projectRoot } })}\n`);
+    await writeFile(path.join(sessions, "child.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "child", parent_thread_id: "parent", multi_agent_version: "v2", cwd: projectRoot } })}\n`);
+    const probe = path.join(bin, "codex-probe.mjs");
+    await writeFile(probe, `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"; import path from "node:path"; const args = process.argv.slice(2); appendFileSync(process.env.AVENIC_FAKE_LOG, JSON.stringify(args) + "\\n"); if (args[0] === "resume") process.exit(1); const file = path.join(process.env.CODEX_HOME, "sessions", "2026", "09", "18", "bootstrap.jsonl"); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: "bootstrap", cwd: process.cwd() } }) + "\\n");`);
+    const shim = process.platform === "win32" ? path.join(bin, "codex.cmd") : path.join(bin, "codex");
+    await writeFile(shim, process.platform === "win32" ? `@echo off\r\nnode "${probe}" %*\r\n` : `#!/bin/sh\nexec node "${probe}" "$@"\n`);
+    if (process.platform !== "win32") await chmod(shim, 0o755);
+    const environment = {
+      CODEX_HOME: codexHome,
+      AVENIC_FAKE_LOG: log,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      Path: `${bin}${path.delimiter}${process.env.PATH}`,
+    };
+    const result = runAgent(projectRoot, ["sessions", "continue", "shared", "--agent", "codex"], environment);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /could not be resumed; starting a new native thread/);
+    const calls = (await readFile(log, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.deepEqual(calls[0].slice(0, 2), ["resume", "parent"]);
+    assert.match(calls[1][0], /- user: A/);
+    assert.match(calls[1][0], /- assistant: B/);
   });
 });
 

@@ -80,10 +80,19 @@ export async function discoverNativeSession(projectRoot, options = {}) {
 export async function resolveResumableSession(projectRoot, nativeSessionId, options = {}) {
   const { nativeSessions } = locations(projectRoot, options.environment);
   const matches = await matchingRollouts(nativeSessions, projectRoot);
-  const child = matches.find((item) => item.id === nativeSessionId);
-  const parent = child?.parentThreadId;
-  if (!parent || child.multiAgentVersion === undefined) return nativeSessionId;
-  return parent;
+  const byId = new Map(matches.filter((item) => item.id).map((item) => [item.id, item]));
+  const seen = new Set([nativeSessionId]);
+  let resumable = nativeSessionId;
+  while (true) {
+    const rollout = byId.get(resumable);
+    const parent = rollout?.parentThreadId;
+    if (!parent || rollout.multiAgentVersion === undefined) return resumable;
+    // A corrupt/cyclic native rollout must not hang or change the stored
+    // mapping. The official CLI can still give its normal diagnostic.
+    if (seen.has(parent)) return nativeSessionId;
+    seen.add(parent);
+    resumable = parent;
+  }
 }
 
 function locations(projectRoot, environment = process.env) {

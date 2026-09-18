@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import {
   AGENTS,
   acquireSessionLease,
+  applyProjectConfiguration,
   agentExecutableAvailable,
   bindProject,
   buildHandoff,
   clearLocalAuth,
-  configureProject,
   createInstallContext,
   deinitializeAgent,
   effectiveAgentConfig,
@@ -21,6 +21,8 @@ import {
   getSessionAdapter,
   initializeAgent,
   importProjectSessions,
+  observeSharedNativeSessions,
+  recoverSharedNativeSessions,
   loadRuntime,
   locateProjectRoot,
   logConflicts,
@@ -29,6 +31,7 @@ import {
   reconcileCanonicalSession,
   continueCanonicalSession,
   continuationLaunchArguments,
+  prepareCanonicalContinuation,
   managedSkillNames,
   projectCanonicalSession,
   readCanonicalSession,
@@ -42,7 +45,6 @@ import {
   setLocalAuth,
   setSessionsGitIgnored,
   setActiveCanonicalSession,
-  setSessionInteropMode,
   spawnExecutableSync,
   validateAuthMode,
   validateSessionInteropMode,
@@ -52,7 +54,7 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { spawnSessionWatchdog } from "./watchdog.mjs";
-import { confirm, isInteractive, multiselect, select } from "./prompts.mjs";
+import { banner, confirm, isInteractive, multiselect, select } from "./prompts.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")).version;
@@ -124,6 +126,7 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
     title: editing ? "Select enabled agents" : "Select agents",
     options: Object.values(AGENTS).map((agent) => ({ value: agent.id, label: agent.displayName })),
     initial: Object.keys(current.agents),
+    minSelected: 1,
   });
   if (selected === null) return null;
   if (selected.length === 0) throw new Error("Select at least one agent");
@@ -163,18 +166,14 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
 }
 
 async function applyProjectDraft(projectRoot, draft) {
-  const current = projectConfig(await loadRuntime(projectRoot));
-  if (draft.sessionInterop !== current.sessionInterop) {
-    return setSessionInteropMode(projectRoot, draft.sessionInterop, { agents: draft.agents });
-  }
-  const configured = await configureProject(projectRoot, { agents: draft.agents, sessionInterop: draft.sessionInterop });
-  return { previous: current.sessionInterop, mode: draft.sessionInterop, imported: [], config: configured.config };
+  return applyProjectConfiguration(projectRoot, draft);
 }
 
 async function dispatchProjectSetup(argumentsList, editing = false) {
   const projectRoot = locateProjectRoot();
   let draft;
   if (argumentsList.length === 0 && isInteractive()) {
+    banner();
     draft = await interactiveProjectDraft(projectRoot, editing);
     if (!draft) return 0;
     console.log(`\nAvenic project configuration\n${configurationSummary(draft).map((line) => `  ${line}`).join("\n")}\n`);
@@ -444,6 +443,16 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
+  if (portableSessions && sharedSessions && !options.skipCanonical) {
+    await recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), {
+      environmentForAgent: (sourceAgent) => {
+        const source = effectiveAgentConfig(state, sourceAgent);
+        return source?.auth === "project"
+          ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
+          : process.env;
+      },
+    });
+  }
   // A plain agent launch is intentionally transparent: storage scope does not
   // imply a launch target. Shared-session continuation is opt-in via
   // `sessions continue`, while this path preserves the agent's native new/
@@ -533,12 +542,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   } finally {
     if (portableSessions) {
       try {
-        await adapter.capture(projectRoot, { environment });
-        // Reconcile ordinary launches as well. This observes sessions created
-        // or selected inside the native TUI without choosing one beforehand.
-        if (!options.skipCanonical && sharedSessions) {
-          await importProjectSessions(projectRoot, agentId, { environment });
-        }
+        await observeSharedNativeSessions(projectRoot, agentId, {
+          environment,
+          setActive: !options.skipCanonical && sharedSessions,
+          force: true,
+        });
         if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
       } finally {
         if (leaveLaunchGroup) {
@@ -598,17 +606,32 @@ async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
   if (!command && isInteractive()) {
+    banner();
     const interop = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
     const action = await select({
       title: `Sessions (${interop})`,
       options: [
         ...(interop === "shared" ? [{ value: ["continue"], label: "Continue shared session" }] : []),
         { value: ["list"], label: "List sessions" },
-        { value: ["sync"], label: "Sync native histories" },
+        { value: ["sync"], label: "Import histories" },
+        ...(interop === "shared" ? [{ value: ["active"], label: "Set active session" }] : []),
+        ...(interop === "isolated" ? [{ value: ["migrate"], label: "Switch to Shared" }] : []),
         { value: ["status"], label: "Status" },
+        { value: ["back"], label: "Back" },
       ],
     });
     if (!action) return 0;
+    if (action[0] === "back") return 0;
+    if (action[0] === "migrate") return dispatchProjectSetup([], true);
+    if (action[0] === "active") {
+      const sessions = await listCanonicalSessions(projectRoot);
+      if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
+      const sessionId = await select({ title: "Set active session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+      if (!sessionId) return 0;
+      await setActiveCanonicalSession(projectRoot, sessionId);
+      console.log(`Active shared session: ${sessionId}`);
+      return 0;
+    }
     if (action[0] !== "continue") return dispatchSessions(action, options);
     const sessions = await listCanonicalSessions(projectRoot);
     if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
@@ -713,6 +736,7 @@ async function dispatchSessions(argumentsList, options = {}) {
         return targetAdapter.readCanonical(projectRoot, nativeSessionId, { environment });
       },
       launch: async (continuation) => {
+        let launchedContinuation = continuation;
         let nativeSessionId = continuation.nativeSessionId
           ?? (agentId === "claude" ? randomUUID() : null);
         const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
@@ -733,14 +757,20 @@ async function dispatchSessions(argumentsList, options = {}) {
         if (continuation.mode === "resume") {
           const statusFromInteractiveResume = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
           if (statusFromInteractiveResume !== 0 && agentId === "codex") {
-            const fallbackNativeSessionId = agentId === "claude" ? randomUUID() : null;
-            const bootstrap = continuationLaunchArguments({
-              ...continuation,
-              mode: "bootstrap",
-              nativeSessionId: fallbackNativeSessionId,
+            // A Codex v2 sub-agent may be known to canonical history but be
+            // unresumable by the current app-server. Rebuild from canonical,
+            // rather than reusing an incremental (possibly empty) handoff.
+            const fallbackContinuation = await prepareCanonicalContinuation(projectRoot, mode, agentId, {
+              environment,
+              forceBootstrap: true,
             });
-            nativeSessionId = fallbackNativeSessionId;
-            console.log(`${getAgent(agentId).displayName} session is already active; starting a new native thread from the shared canonical history.`);
+            launchedContinuation = fallbackContinuation;
+            const bootstrap = continuationLaunchArguments({
+              ...fallbackContinuation,
+              nativeSessionId: null,
+            });
+            nativeSessionId = null;
+            console.log(`${getAgent(agentId).displayName} session could not be resumed; starting a new native thread from shared canonical history.`);
             status = await dispatchAgent(agentId, bootstrap.argumentsList, {
               ...launchOptions,
               input: bootstrap.input,
@@ -754,7 +784,7 @@ async function dispatchSessions(argumentsList, options = {}) {
         if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
         const discoveredId = nativeSessionId
           ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
-        return { nativeSessionId: discoveredId, projectionHash: continuation.handoff.hash, capturedDuringLaunch };
+        return { nativeSessionId: discoveredId, projectionHash: launchedContinuation.handoff.hash, capturedDuringLaunch };
       },
     });
     for (const diagnostic of result.diagnostics ?? []) console.warn(diagnostic);
@@ -818,7 +848,7 @@ export async function runCli(options = {}) {
   }
   const [command, ...remainingArguments] = argumentsList;
   if (command === "--version" || command === "-v" || command === "version") {
-    console.log(packageVersion);
+    console.log(`Avenic ${packageVersion}`);
     return 0;
   }
   if (!command || command === "help" || command === "--help" || command === "-h") {

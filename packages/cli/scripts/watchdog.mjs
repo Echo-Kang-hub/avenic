@@ -10,6 +10,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   getSessionAdapter,
+  observeSharedNativeSessions,
   processAlive,
   releaseSessionLease,
   sessionLeasePath,
@@ -22,7 +23,11 @@ const adapter = getSessionAdapter(config.agentId);
 async function finish() {
   // Capture first so the interrupted session is not lost, then leave the
   // launch group; the last one to leave restores the native storage.
-  await adapter.capture(config.projectRoot, { environment: config.environment });
+  await observeSharedNativeSessions(config.projectRoot, config.agentId, {
+    environment: config.environment,
+    setActive: false,
+    force: true,
+  });
   await releaseSessionLease(config.agentId, config.projectRoot, config.member, {
     onLast: async () => {
       // A snapshot marker means the group's snapshot completed: only then is
