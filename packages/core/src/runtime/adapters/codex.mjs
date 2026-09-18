@@ -236,8 +236,11 @@ async function restoreIndex(portable, codexHome) {
 export async function restore(projectRoot, options = {}) {
   const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
   const sourceRoot = path.join(portable, "sessions");
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
   const result = await restoreInto(sourceRoot, await listFiles(sourceRoot), nativeSessions,
-    projectRootTransform(projectRoot, { field: ["payload", "cwd"], restore: true }));
+    projectRootTransform(projectRoot, { field: ["payload", "cwd"], restore: true }), { cursors, agentId });
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
   // The index only lists the rollouts that were written back.
   if (result.count > 0) await restoreIndex(portable, codexHome);
   return result;

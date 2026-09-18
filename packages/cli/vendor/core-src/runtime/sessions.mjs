@@ -15,7 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { agentCursors, sameStamp, stampOf } from "./cursors.mjs";
+import { agentCursors, restoreStamps, sameStamp, stampOf } from "./cursors.mjs";
 
 export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 
@@ -319,10 +319,38 @@ export function projectRootTransform(projectRoot, options = {}) {
 // Write portable copies back into native storage. Project records are the
 // source of truth: on conflict they overwrite the native copy (explicit
 // `sessions writeback` semantics).
-export async function restoreInto(portable, files, native, transform) {
+export async function restoreInto(portable, files, native, transform, options = {}) {
   if (files.length === 0) return { count: 0, added: 0, updated: 0, unchanged: 0 };
-  const result = await mergeFiles(portable, files, native, transform, { onConflict: "keep-source" });
-  return { count: files.length, ...result };
+  const stamps = options.cursors ? restoreStamps(options.cursors, options.agentId) : null;
+  const pending = [];
+  const next = {};
+  let skipped = 0;
+  for (const relative of files) {
+    const recorded = stamps?.[relative];
+    if (recorded) {
+      const source = await stampOf(path.join(portable, relative));
+      const target = await stampOf(path.join(native, relative));
+      if (sameStamp(recorded.source, source) && sameStamp(recorded.target, target)) {
+        next[relative] = recorded;
+        skipped += 1;
+        continue;
+      }
+    }
+    pending.push(relative);
+  }
+  const result = await mergeFiles(portable, pending, native, transform, { onConflict: "keep-source" });
+  if (stamps) {
+    for (const relative of pending) {
+      next[relative] = {
+        source: await stampOf(path.join(portable, relative)),
+        target: await stampOf(path.join(native, relative)),
+      };
+    }
+    // 整表替换：删掉的会话不该把它的条目永远留在游标里。
+    for (const key of Object.keys(stamps)) delete stamps[key];
+    Object.assign(stamps, next);
+  }
+  return { count: files.length, ...result, unchanged: result.unchanged + skipped };
 }
 
 export function hashContent(content) {
@@ -348,15 +376,16 @@ async function copyFile(from, to) {
 // it replaces the file stamp that incremental capture reads, so an unchanged
 // native tree would be re-copied and re-parsed on the next launch. Both paths
 // may also be single files, which is how Codex snapshots its session index.
-async function mirrorInto(source, destination) {
+async function mirrorInto(source, destination, skip) {
   if (!(await stat(source)).isDirectory()) {
     if (!(await sameContent(source, destination))) await copyFile(source, destination);
-    return;
+    return null;
   }
   const wanted = await listFiles(source);
   for (const relative of wanted) {
     const from = path.join(source, relative);
     const to = path.join(destination, relative);
+    if (skip && (await skip(relative, to))) continue;
     if (await sameContent(from, to)) continue;
     await copyFile(from, to);
   }
@@ -375,6 +404,24 @@ async function mirrorInto(source, destination) {
     await rm(target, { force: true });
     await removeEmptyDirectories(path.dirname(target), destination);
   }
+  return wanted;
+}
+
+// The stamps the snapshot was taken from. A revert reads them to answer "did
+// the run touch this file?" from one stat instead of comparing every session's
+// bytes in both trees — which, on a project with a real history, is the whole
+// cost of the exit path.
+function mirrorManifest(destination) {
+  return `${destination}.mirror.json`;
+}
+
+async function readMirrorManifest(destination) {
+  try {
+    const parsed = JSON.parse(await readFile(mirrorManifest(destination), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null; // 没有清单只是退回到逐字节比较，不是错误
+  }
 }
 
 // The destination ends up holding the source; when the source is absent the
@@ -383,19 +430,32 @@ async function mirrorInto(source, destination) {
 export async function snapshotInto(source, destination) {
   if (!existsSync(source)) {
     await rm(destination, { recursive: true, force: true });
+    await rm(mirrorManifest(destination), { force: true });
     return;
   }
-  await mirrorInto(source, destination);
+  const wanted = await mirrorInto(source, destination);
+  if (wanted === null) return; // 单文件快照（Codex 的索引）不值得为一次比较建清单
+  const stamps = {};
+  for (const relative of wanted) {
+    stamps[relative] = await stampOf(path.join(source, relative));
+  }
+  await writeFile(mirrorManifest(destination), `${JSON.stringify(stamps)}\n`, "utf8");
 }
 
 // Restore the pre-launch state saved by snapshotInto: the source path returns
 // to its snapshot content, or disappears entirely when the snapshot is absent.
+// A file whose stamp still matches the snapshot's is already that snapshot's
+// content — the only writer in between is the agent, and it appends.
 export async function revertFrom(snapshot, source) {
   if (!existsSync(snapshot)) {
     await rm(source, { recursive: true, force: true });
     return;
   }
-  await mirrorInto(snapshot, source);
+  const stamps = await readMirrorManifest(snapshot);
+  await mirrorInto(snapshot, source, async (relative, target) => {
+    const recorded = stamps?.[relative];
+    return recorded ? sameStamp(recorded, await stampOf(target)) : false;
+  });
 }
 
 export function processAlive(pid) {

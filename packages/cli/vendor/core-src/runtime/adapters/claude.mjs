@@ -181,7 +181,12 @@ export async function capture(projectRoot, options = {}) {
 
 export async function restore(projectRoot, options = {}) {
   const { native, portable } = locations(projectRoot, options.environment);
-  return restoreInto(portable, await listFiles(portable), native, projectRootTransform(projectRoot, { restore: true }));
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  const result = await restoreInto(portable, await listFiles(portable), native,
+    projectRootTransform(projectRoot, { restore: true }), { cursors, agentId });
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  return result;
 }
 
 export async function status(projectRoot) {

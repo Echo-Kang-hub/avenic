@@ -73,6 +73,18 @@ export function agentCursors(cursors, agentId) {
   return cursors.agents[agentId].files;
 }
 
+// Writing the project's sessions back into native storage is a launch step,
+// and native storage is put back the way it was when the run ends — so the
+// same files are written again and again with the same bytes. A restored file
+// is identified by both stamps: the portable copy that was read and the native
+// copy that was produced. Deleting or rewriting either side brings the file
+// back, so a lost or stale cursor costs one re-render and cannot lose history.
+export function restoreStamps(cursors, agentId) {
+  cursors.agents[agentId] ??= { files: {}, heads: {} };
+  cursors.agents[agentId].restores ??= {};
+  return cursors.agents[agentId].restores;
+}
+
 // The native directories discovery matched for this project last time. A
 // background capture during a run must not re-enumerate an agent's entire
 // history root to rediscover them; the full walk belongs to the exit and
