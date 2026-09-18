@@ -1,3 +1,5 @@
+import { isInside } from "@avenic/core";
+
 export const PROJECT_ROOT_STATE_KEY = "avenic.projectRoot";
 
 export interface WorkspaceFolderLike {
@@ -39,22 +41,20 @@ export function rememberedProjectRoot(folders: readonly WorkspaceFolderLike[], s
 
 // 多根时优先用 active editor 所属的 workspace folder（用户当下正在编辑哪个项目，就用哪个）。
 // 绝不静默取 folders[0]；匹配不到返回 null，由调用方继续走"记忆根 → QuickPick"。
+//
+// 归属判定交给 core 的 isInside，不再手写前缀比较：手写的版本在尾分隔符根（/work/b/）
+// 与文件系统根（/ 与 C:\）上都会漏判——它取根后面的第一个字符做分隔符判断，而那里的
+// 字符属于下一级路径名。大小写由宿主路径语义决定（win32 不敏感），因此不再注入 platform。
 export function projectRootForActiveEditor(
   folders: readonly WorkspaceFolderLike[],
   activeUri: string | undefined,
-  platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (activeUri === undefined || folders.length === 0) return null;
-  const separator = platform === "win32" ? /[\\/]/ : /\//;
-  const normalizedFile = platform === "win32" ? activeUri.toLowerCase() : activeUri;
   let best: string | null = null;
   for (const folder of folders) {
     const root = folder.uri.fsPath;
-    const normalizedRoot = platform === "win32" ? root.toLowerCase() : root;
-    if (normalizedFile === normalizedRoot) return root;
-    if (!normalizedFile.startsWith(normalizedRoot)) continue;
-    const rest = normalizedFile.slice(normalizedRoot.length, normalizedRoot.length + 1);
-    if (separator.test(rest) && (best === null || root.length > best.length)) best = root;
+    const owns = sameRootPath(root, activeUri, process.platform) || isInside(root, activeUri);
+    if (owns && (best === null || root.length > best.length)) best = root;
   }
   return best;
 }

@@ -67,7 +67,20 @@ test("projectRootForActiveEditor picks the folder that owns the active editor", 
   assert.equal(projectRootForActiveEditor(folders, "/work/b/src/index.ts"), "/work/b");
   assert.equal(projectRootForActiveEditor(folders, "/elsewhere/file.ts"), null);
   assert.equal(projectRootForActiveEditor(folders, undefined), null);
-  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "C:\\work\\A" } }], "c:\\work\\a\\src\\x.ts", "win32"), "C:\\work\\A");
+});
+
+// 归属判定用 core 的 isInside（path.relative）：尾分隔符根与文件系统根都算命中。
+// 手写前缀比较在这两种根上会漏判——根后面的第一个字符属于下一级路径名，不是分隔符。
+test("projectRootForActiveEditor accepts roots that end in a separator", () => {
+  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "/work/b/" } }], "/work/b/src/x.ts"), "/work/b/");
+  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "/" } }], "/work/b/x.ts"), "/");
+});
+
+// win32 的大小写不敏感来自宿主路径语义（path.win32.relative），不能在别的平台上注入复现。
+test("projectRootForActiveEditor matches case-insensitively on Windows", { skip: process.platform !== "win32" }, () => {
+  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "C:\\work\\A" } }], "c:\\work\\a\\src\\x.ts"), "C:\\work\\A");
+  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "C:\\" } }], "C:\\work\\x.ts"), "C:\\");
+  assert.equal(projectRootForActiveEditor([{ uri: { fsPath: "C:\\work\\A" } }], "C:\\work\\A"), "C:\\work\\A");
 });
 
 test("projectRootForActiveEditor prefers the longest matching root and never guesses", () => {
