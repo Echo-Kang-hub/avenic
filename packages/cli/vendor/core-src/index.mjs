@@ -41,6 +41,7 @@ export {
   stampOf,
 } from "./runtime/cursors.mjs";
 export { WATCH_INTERVAL_MS, flushNativeSessions, startNativeWatch } from "./runtime/native-watch.mjs";
+export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
 export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export { spawnExecutableSync } from "./runtime/process.mjs";
 export {

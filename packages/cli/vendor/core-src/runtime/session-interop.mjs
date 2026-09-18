@@ -85,12 +85,12 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
     try { native = adapter.toCanonical(await readFile(absolute, "utf8")); }
     catch (error) {
       failed += 1;
-      diagnostics.push(`Could not parse ${agentId} session ${relative}: ${error.message}`);
+      diagnostics.push({ agentId, file: relative, kind: "unreadable-session", message: error.message });
       continue;
     }
     if (!native?.nativeSessionId || native.nativeSessionId === "unknown") {
       failed += 1;
-      diagnostics.push(`Could not identify ${agentId} session id in ${relative}.`);
+      diagnostics.push({ agentId, file: relative, kind: "unidentified-session" });
       continue;
     }
     discovered += 1;

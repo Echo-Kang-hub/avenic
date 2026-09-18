@@ -115,7 +115,7 @@ async function discoverNativeProjectDirectories(projectRoot, environment = proce
   const { native: hinted } = locations(projectRoot, environment);
   const projectsRoot = path.dirname(hinted);
   if (!existsSync(projectsRoot)) {
-    return { directories: [], diagnostics: [`Claude session root not found: ${projectsRoot}`] };
+    return { directories: [], diagnostics: [{ kind: "missing-root", message: `Claude session root not found: ${projectsRoot}` }] };
   }
   // A capture that runs while the agent is working only has to re-read the
   // directories this project already matched; rediscovering them means
@@ -155,10 +155,12 @@ async function discoverNativeProjectDirectories(projectRoot, environment = proce
   if (options.cursors) rememberDirectories(options.cursors, agentId, matches);
   if (matches.length > 0) return { directories: matches, diagnostics: [] };
   if (candidateSessions > 0) {
+    // Sessions that belong to other workspaces are not a problem to report:
+    // this project simply has no Claude history yet.
     const suffix = unreadable > 0 ? `; ${unreadable} session file(s) had no readable cwd metadata` : "";
-    return { directories: [], diagnostics: [`Found ${candidateSessions} Claude session(s), but none matched this workspace${suffix}.`] };
+    return { directories: [], diagnostics: unreadable > 0 ? [{ kind: "missing-root", message: `Found ${candidateSessions} Claude session(s) for other workspaces, but none matched this one${suffix}.` }] : [] };
   }
-  return { directories: [], diagnostics: [`No Claude sessions were found under ${projectsRoot}.`] };
+  return { directories: [], diagnostics: [] };
 }
 
 function rewriteCwd(content, projectRoot, restore) {

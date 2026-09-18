@@ -197,9 +197,10 @@ export async function capture(projectRoot, options = {}) {
     return {
       count: 0,
       changed: false,
-      diagnostics: [existsSync(nativeSessions)
-        ? "Found Codex session data, but none matched this workspace."
-        : `Codex session root not found: ${nativeSessions}`],
+      // Codex data belonging to other workspaces is not a problem to report.
+      diagnostics: existsSync(nativeSessions)
+        ? []
+        : [{ kind: "missing-root", message: `Codex session root not found: ${nativeSessions}` }],
     };
   }
   const ids = new Set(rollouts.map(({ id }) => id).filter(Boolean));

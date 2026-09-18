@@ -17,6 +17,7 @@ import {
   effectiveAgentConfig,
   ensureSkillLinks,
   formatLinkSummary,
+  formatSessionDiagnostics,
   getAgent,
   getActiveCanonicalSessionId,
   getSessionAdapter,
@@ -435,9 +436,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     console.log(`Project   ${projectRoot}`);
     console.log(`Sessions  ${action === "import" ? `${result.discovered} discovered; ${result.imported} imported; ${result.unchanged} unchanged; ${result.failed} failed` : result.count}`);
     console.log(action === "import" ? `Portable  ${result.changed ? "Updated" : "Unchanged"}` : `Written back  ${result.added + result.updated}`);
-    if (action === "import" && result.discovered === 0 && result.diagnostics?.length) {
-      console.log(`Note      ${result.diagnostics[0]}`);
-    }
+    if (action === "import") reportSessionDiagnostics(result.diagnostics);
     if (result.conflicts > 0) {
       console.log(`Conflicts ${result.conflicts} (project sessions overwrote native storage)`);
     }
@@ -556,10 +555,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       // same tree at once.
       markLaunchClosing(agentId, projectRoot);
       try {
-        await observeSharedNativeSessions(projectRoot, agentId, {
+        const captured = await observeSharedNativeSessions(projectRoot, agentId, {
           environment,
           setActive: !options.skipCanonical && sharedSessions,
         });
+        reportSessionDiagnostics(captured.diagnostics);
         if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
       } finally {
         if (leaveLaunchGroup) {
@@ -637,9 +637,15 @@ async function reconcileSharedHistory(projectRoot, state) {
 
 async function reportReconciliation(projectRoot) {
   const { diagnostics } = await reconcileSharedHistory(projectRoot, await loadRuntime(projectRoot));
-  for (const diagnostic of diagnostics) {
-    console.warn(typeof diagnostic === "string" ? diagnostic : JSON.stringify(diagnostic));
-  }
+  reportSessionDiagnostics(diagnostics);
+}
+
+// The outermost layer is the only place that reports what could not be read
+// from native history: one line per problem, once per command.
+function reportSessionDiagnostics(diagnostics) {
+  const { warnings, notes } = formatSessionDiagnostics(diagnostics);
+  for (const note of notes) console.log(note);
+  for (const warning of warnings) console.warn(`⚠ ${warning}`);
 }
 
 // The environment one agent normally runs with. Sessions never manufacture or
@@ -836,7 +842,7 @@ async function dispatchSessions(argumentsList, options = {}) {
         return { nativeSessionId: discoveredId, projectionHash: launchedContinuation.handoff.hash, capturedDuringLaunch };
       },
     });
-    for (const diagnostic of result.diagnostics ?? []) console.warn(diagnostic);
+    reportSessionDiagnostics(result.diagnostics);
     await setActiveCanonicalSession(projectRoot, mode);
     return result.launched.status ?? 0;
   }
@@ -848,6 +854,7 @@ async function dispatchSessions(argumentsList, options = {}) {
       results.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
     }
     console.log(`Synced ${results.reduce((total, item) => total + (item.imported ?? 0), 0)} native session(s).`);
+    reportSessionDiagnostics(results.flatMap((result) => result.diagnostics ?? []));
     return 0;
   }
   if (command !== "git") {

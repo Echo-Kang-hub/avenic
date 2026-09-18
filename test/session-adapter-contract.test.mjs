@@ -102,7 +102,7 @@ test("Claude discovery reports a missing configured session root instead of sile
       environment: { CLAUDE_CONFIG_DIR: path.join(root, "missing-config") },
     });
     assert.equal(result.count, 0);
-    assert.match(result.diagnostics[0], /session root not found/i);
+    assert.match(result.diagnostics[0].message, /session root not found/i);
   } finally {
     await (await import("node:fs/promises")).rm(root, { recursive: true, force: true });
   }
@@ -115,7 +115,7 @@ test("Codex discovery reports a missing configured session root instead of silen
       environment: { CODEX_HOME: path.join(root, "missing-home") },
     });
     assert.equal(result.count, 0);
-    assert.match(result.diagnostics[0], /session root not found/i);
+    assert.match(result.diagnostics[0].message, /session root not found/i);
   } finally {
     await (await import("node:fs/promises")).rm(root, { recursive: true, force: true });
   }
