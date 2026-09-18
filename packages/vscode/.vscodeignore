@@ -3,6 +3,8 @@ node_modules/**
 test/**
 tsconfig.json
 build.mjs
+build-options.mjs
+build-options.d.mts
 build-tests.mjs
 .test-out/**
 .gitignore

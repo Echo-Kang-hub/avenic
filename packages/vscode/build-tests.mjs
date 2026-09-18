@@ -11,7 +11,9 @@ await build({
   platform: "node",
   outdir: ".test-out",
   entryPoints,
-  external: ["vscode"], // 测试不 import vscode；显式声明以防未来误引入时快速失败
+  // 测试不 import vscode；显式声明以防未来误引入时快速失败。esbuild 自身是 CJS + 动态
+  // require，bundled 成 ESM 会在运行时炸掉，所以它也必须留作外部依赖。
+  external: ["vscode", "esbuild"],
 });
 // 传显式产物路径而非目录：`node --test <dir>` 在 Node 24（Windows）上会把目录当入口模块执行并报 MODULE_NOT_FOUND
 const testFiles = entryPoints.map((f) => path.join(".test-out", path.basename(f).replace(/\.ts$/, ".js")));

@@ -227,8 +227,41 @@ async function main() {
   assert.match(switched, new RegExp(`claude-${claudeSession}`));
   assert.match(switched, new RegExp(`codex-${codexSession}`));
 
+  await verifyHub(environment);
   await verifySelfUpdate(environment);
-  console.log("Release smoke passed: tarball install, init, launch, sessions, change, Shared/Isolated, self-update");
+  console.log("Release smoke passed: tarball install, init, launch, sessions, change, Shared/Isolated, Hub, self-update");
+}
+
+// A Hub is a git repository with a skills tree, its Packs and a source lock.
+// Syncing it is the one path that talks to git with the user's own credentials
+// — Avenic creates no tokens of its own — so the artifact is exercised against
+// a real repository, and against one that is not there.
+async function verifyHub(environment) {
+  const hub = path.join(root, "hub");
+  await mkdir(path.join(hub, "skills", "demo"), { recursive: true });
+  await mkdir(path.join(hub, "packs"), { recursive: true });
+  await writeFile(path.join(hub, "skills", "demo", "SKILL.md"), "---\nname: demo\n---\nv1\n");
+  await writeFile(path.join(hub, "packs", "common.json"), `${JSON.stringify({ schemaVersion: 1, id: "common", name: "Common", sources: [{ source: "demo", skills: ["demo"] }] })}\n`);
+  await writeFile(path.join(hub, "sources.lock.json"), `${JSON.stringify({ schemaVersion: 1, sources: [] })}\n`);
+  for (const argumentsList of [["init", "--quiet", "-b", "main"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@e", "commit", "--quiet", "-m", "one"]]) {
+    const result = spawnSync("git", ["-C", hub, ...argumentsList], { encoding: "utf8", windowsHide: true });
+    assert.equal(result.status, 0, result.stderr);
+  }
+
+  const added = avenic(["hub", "add", hub], environment);
+  assert.match(added.stdout, /Default Hub:/);
+  assert.match(added.stdout, /Packs · 1/);
+  const synced = avenic(["hub", "sync"], environment);
+  assert.match(synced.stdout, /Syncing /);
+  assert.match(synced.stdout, /Synced · [0-9a-f]{7} · \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
+  assert.match(avenic(["hub", "list"], environment).stdout, /Registered Hubs/);
+
+  // A Hub that is not there must name the missing repository. "Check your
+  // authentication" is the advice that sends users down the wrong path.
+  avenic(["hub", "add", path.join(root, "no-such-hub")], environment);
+  const missing = avenic(["hub", "sync"], environment, { allowFailure: true });
+  assert.notEqual(missing.status, 0, "syncing a Hub that is not there must fail");
+  assert.match(`${missing.stdout}${missing.stderr}`, /Hub repository was not found/);
 }
 
 // self-update is verified against a stub npm and a stub `avenic` on PATH, so
