@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
@@ -20,46 +19,7 @@ import {
   spinner,
 } from "../packages/cli/src/cli/prompts.mjs";
 import { dispatchSkills } from "../packages/cli/src/cli/skills-cli.mjs";
-
-// ---- 假 TTY：假 stdin（PassThrough + isTTY/setRawMode）与假 stdout（写入捕获） ----
-
-class FakeTTY extends PassThrough {
-  constructor() {
-    super();
-    this.isTTY = true;
-    this.raw = false;
-  }
-
-  setRawMode(flag) {
-    this.raw = flag;
-  }
-}
-
-function fakeStdout() {
-  const parts = [];
-  return {
-    isTTY: true,
-    write(chunk) {
-      parts.push(String(chunk));
-      return true;
-    },
-    text() {
-      return parts.join("");
-    },
-  };
-}
-
-/** 同步驱动：先创建提示（监听器已挂），再逐键写入。 */
-async function runPrompt(factory) {
-  const stdin = new FakeTTY();
-  const stdout = fakeStdout();
-  const promise = factory(stdin, stdout);
-  return { stdin, stdout, promise };
-}
-
-function keys(stdin, ...sequence) {
-  for (const key of sequence) stdin.write(key);
-}
+import { FakeTTY, fakeStdout, keys, runPrompt } from "./helpers/fake-tty.mjs";
 
 // ---- prompts 单元 ----
 

@@ -1296,6 +1296,15 @@ sessions inside the project. On this fixture that copy is 200–450 ms, and
 it is I/O the operating system's file inspection dominates rather than the
 8 MB itself.
 
+Re-measured after the OpenCode and interactive-surface changes, on the same
+fixture and the same machine: `avenic --version` 114 ms, `avenic claude`
+(cold) 1 001 ms, `avenic claude` (warm) 977 ms, `avenic codex` (warm)
+515 ms, `avenic opencode` (warm) 250 ms, `avenic sessions status` 867 ms,
+`avenic status` 152 ms. Two of those runs sit just above
+one second on a loaded machine; the unchanged harness on an idle one is the
+780–1 037 ms spread above, and the two surfaces this release added are on
+the interactive path, which the harness does not enter.
+
 ### Production LOC
 
 Counted over production sources only:
@@ -1345,6 +1354,82 @@ The two predicates that stayed separate answer different questions: "is
 this a conversation event" for canonical import, and "can OpenCode read
 this role back" for its projection. The two role sets are the reason a
 system event is reported rather than silently dropped.
+
+### OpenCode continuation
+
+OpenCode is the one agent whose history is reachable only through its own
+CLI, so a continuation is `opencode import` followed by `opencode
+--session`, and two things become Avenic's business that are nobody
+else's: the model the projected session will run on, and what to do when it
+will not run at all.
+
+Three defects were found against the real `opencode` 1.18.30 on this
+machine and fixed:
+
+- A session's own revision is a flat millisecond stamp (`updated`), not
+  `time.updated`. Reading the wrong shape made every OpenCode session look
+  moved on every pass, so a repeat capture re-exported the whole history.
+  Two capture tests were changed to the shape the CLI actually prints
+  first, watched fail, and then fixed.
+- A projection carried each message's original `providerID`/`modelID`,
+  so a Claude-sourced session was stamped `anthropic`/`claude-sonnet-5`.
+  This machine's OpenCode offers only `opencode/*` models; `opencode
+  import` accepted the file and the session then refused to start. A
+  message Avenic did not see OpenCode produce now claims OpenCode's own
+  resolved model.
+- The projection had to carry *a* model at all: `opencode import` rejects
+  an envelope whose `info.model` is missing. Avenic resolves it with
+  `opencode debug config` — the model the user's own OpenCode resolves for
+  this environment, including the per-auth-scope XDG layout Avenic passes
+  — and falls back to OpenCode's built-in default only when it cannot be
+  read. A model the caller passed explicitly is kept as-is, foreign or not.
+
+When a projected session still will not start, the launch does not fail:
+the shared history is intact, so the run continues in a fresh official
+OpenCode session handed the canonical delta, and the new session becomes
+the mapping. This is deliberately the *same* sequence Claude and Codex use
+(`runCanonicalContinuation` with `forceBootstrap: true`), not a second
+implementation of it.
+
+Covered by `test/opencode-continuation.test.mjs` (5 tests: the resolved
+model, a caller-chosen model, discovery of the session a fresh launch
+created, the fallback, and that a session which starts is left alone) plus
+the launch-argument test in `test/session-continuation.test.mjs`.
+
+One limitation, recorded rather than claimed: on this machine `opencode run
+--session <id>` hangs until timeout, because there is no working provider
+endpoint configured. A control run of a brand-new session hangs the same
+way, so this is the environment rather than a projection defect, and it is
+the reason the fallback path is exercised through a stub instead.
+
+### Interactive surfaces (init / change / sessions)
+
+`avenic init`, `avenic change` and `avenic sessions` are the three screens a
+user actually operates, and until this pass none of them was driven by a
+test — each was reachable only through a real terminal. They are now driven
+key by key, in-process, through the same prompt code the CLI ships, with a
+fake TTY (`test/helpers/fake-tty.mjs`) and a temp project
+(`test/helpers/host-project.mjs`, which fails the test if the project the
+suite runs from changes underneath it).
+
+- `test/cli-init-wizard.test.mjs` — `avenic init` writes exactly what the
+  wizard asked for (two agents, per-agent auth and session storage, history
+  mode, confirmation), and `avenic change` adds an agent and switches
+  history to Isolated, asserting the persisted configuration and what the
+  user was told.
+- `test/cli-sessions-menu.test.mjs` — the menu offers exactly the actions
+  the mode allows, Esc changes nothing, and "Set active session" sets the
+  pointer to the row the cursor was on.
+
+Driving them found a real defect that had shipped: both pickers built their
+options from `agent.id`, but the registry's entries carry only
+`displayName` and `executable`. Every option's value was `undefined`, so
+the init/change wizard could not be completed at all (an empty selection
+never satisfies "at least one agent") and the Sessions menu's "Continue
+with" threw `Unknown Agent: undefined` after the user had picked a session.
+Both now use one `agentChoices()` built from the registry's keys. The
+`test/cli-prompts.test.mjs` helpers moved to `test/helpers/fake-tty.mjs` so
+the three interactive suites share one fake terminal instead of three.
 
 ### Versions
 
@@ -1400,14 +1485,17 @@ Run on this machine, in this order, after the release commit:
 
 | Gate | Result |
 |---|---|
-| `npm test` (root) | 486 tests, 483 pass, 3 skipped, 0 fail |
+| `npm test` (root) | 496 tests, 493 pass, 3 skipped, 0 fail |
 | `npm run test:install` | passed (tarball + repo-root global install, agent runtime, Skills) |
 | `npm run test:release` | passed (the smoke above, Hub and self-update included) |
 | `npm run pack:cli` (`npm pack --dry-run --json`) | 60 files, `vendor/core-src/skills/uninstall.mjs` present |
+| real tarballs (`npm pack` in both packages) | `avenic-1.5.2.tgz` 139 651 B, `avenic-core-1.4.2.tgz` 106 728 B; installed together into a temp global prefix: `avenic --version` → `Avenic 1.5.2`, `avenic --help`, `avenic sessions status` |
+| `npm run perf` | re-measured, table above |
 | `npm run typecheck` (VS Code) | clean |
 | `npm test` (VS Code) | 154 tests, 0 fail |
-| `npm run package` (VS Code) | `dist/avenic-agent-manager.vsix`, 19 files, 208 KB |
+| `npm run package` (VS Code) | `dist/avenic-agent-manager.vsix`, 19 files, 208.67 KB |
 | `code --install-extension dist/avenic-agent-manager.vsix` | installed into the real VS Code, 0.2.0 → 0.3.0 |
+| real `avenic self-update` (packed 1.5.2, on a machine whose `PATH` runs 1.5.1) | `Current: 1.5.1 / Latest: 1.5.1 / Source: avenic@latest / Avenic is already up to date (1.5.1).` — it reports the executable `PATH` would run, not the one it was launched as |
 
 Two gates found something and were fixed rather than waived:
 
@@ -1428,6 +1516,49 @@ authorization), upload the 0.3.0 VSIX, and then
 `npm view avenic version` / `npm install -g avenic@latest` /
 `avenic --version` / `npm list -g avenic --depth=0` / `where.exe avenic` /
 `avenic self-update`.
+
+### The 33 release gates, item by item
+
+| # | Gate | Result | Evidence |
+|---|---|---|---|
+| 1 | AVENIC brand TUI | PASS | `banner()` paints the wordmark; `test/cli-prompts.test.mjs` asserts it is branded and control-sequence free; the wizard and the Sessions menu paint it |
+| 2 | Multi-select control | PASS | space toggles, `a` all, `n` none, Enter confirms (`test/cli-prompts.test.mjs`), and the wizard drives the same control |
+| 3 | Enter with zero selections is invalid | PASS | "a required multiselect keeps an empty selection open; escaping cancels"; the wizard passes `minSelected: 1` |
+| 4 | `init` | PASS | `test/cli-init-wizard.test.mjs`: key-driven wizard, persisted config asserted; flag path in `test/cli-surface.test.mjs` |
+| 5 | `change` | PASS | same file: adds an agent and switches history to Isolated; scope tests in `test/cli-surface.test.mjs` |
+| 6 | `sessions` TUI | PASS | `test/cli-sessions-menu.test.mjs`: mode-correct actions, Esc changes nothing, "Set active session" follows the cursor |
+| 7 | Auth × Session, four combinations | PASS | `test/runtime-mode-matrix.test.mjs` — all four reversible, auth and storage independent |
+| 8 | Shared | PASS | release smoke: a real launch lands in shared history and `sessions list`/`status` show it with its cursor |
+| 9 | Isolated | PASS | runtime-mode-matrix: isolated history is imported only when asked; smoke: an isolated Codex run stays out of the shared workspace |
+| 10 | Mode round trip loses nothing | PASS | "shared to isolated preserves canonical history and rejoining captures the isolated delta" |
+| 11 | Claude L3a | PASS | `test/session-continuation.test.mjs` (resume args, delta handoff, stale-mapping rehydration) |
+| 12 | Codex L3a | PASS | same file, plus v2 sub-agent parent resolution and bootstrap fallback |
+| 13 | OpenCode reliable continuation or explicit fallback | PASS | `test/opencode-continuation.test.mjs`; section above |
+| 14 | Runtime incremental durability | PASS | `test/native-watch.test.mjs` — a running session becomes durable, never writes native storage, survives a half-written record |
+| 15 | Abnormal-exit recovery | PASS | `test/launch-group.test.mjs` — a group that died last run is salvaged before the next snapshot |
+| 16 | Unmapped-session recovery | PASS | `test/session-recovery.test.mjs` — listing picks up native history no capture has seen, once |
+| 17 | Malformed JSONL | PASS | `test/session-diagnostics.test.mjs` (one warning per problem, once) and the adapter contract's "skips malformed records without losing later history"; native files are never modified |
+| 18 | Manual `/resume` capture | PASS | resume-catalog projection (`ensureNativeProjection`) plus `launch-group` capturing what a manually resumed run produced |
+| 19 | No-target projection | PASS | "resume-catalog materialization creates one stable native mapping" — idempotent, one mapping |
+| 20 | Plain launches are fast | PASS | `npm run perf`, table above |
+| 21 | Private SkillsHub | PASS | `test/hub-sync.test.mjs` (failure kinds classified) and a real sync against the private repo: `git ls-remote` HEAD `f48b49ac…`, `hub sync` → `Synced · f48b49a` in 3.97 s using system git credentials |
+| 22 | CLI / VS Code parity | PASS | both hosts call the same core (`test/vendor.test.mjs` keeps the vendored copy identical); version rules, unmanaged-Skill detection, catalog layout and path containment live only in core |
+| 23 | Code consolidation | PASS | duplicated-orchestration table above; no `Manager`/`Controller`/`Coordinator`/`Engine` module exists |
+| 24 | Quantified LOC / duplication improvement | PASS | LOC table above (+935 net for this release's feature work, both hosts net negative) |
+| 25 | root / VS Code / package suites | PASS | 496 / 154 / `npm run package`, 0 failures |
+| 26 | Real tarball install | PASS | `npm run test:install`, and both release tarballs installed into a temp global prefix and run |
+| 27 | Real VSIX install | PASS | `code --install-extension …vsix` → `echokang.avenic-agent-manager@0.3.0` in the real editor |
+| 28 | Release docs and changelog | PASS | README (end-user UX), CHANGELOG 1.5.2 / 1.4.2 dated 2026-09-19, this plan's results |
+| 29 | npm artifact ready | PASS | `dist/release-20260919-0315/avenic-1.5.2.tgz` (139 651 B) and `avenic-core-1.4.2.tgz` (106 728 B) |
+| 30 | VSIX artifact ready | PASS | `packages/vscode/dist/avenic-agent-manager.vsix`, 0.3.0, 19 files, 208.67 KB |
+| 31 | Post-publish registry / global install verified | **NOT YET** | requires the publish itself (owner: npm OTP / browser authorization); the verification commands are listed above |
+| 32 | `avenic --version` prints `Avenic <version>` | PASS | the packed install prints `Avenic 1.5.2` from `package.json`; release smoke asserts it is not a constant |
+| 33 | `self-update` | PASS | three-way stub coverage in `npm run test:release`, plus the real run above reporting Current / Latest / Source for the executable `PATH` would run |
+
+32 of 33 are satisfied on this machine. The one that is not, gate 31, is
+satisfiable only by publishing, which is the owner's step — so the honest
+status is: **the release is ready to publish**, and the only remaining
+actions are the two owner-only ones.
 
 The interactive click-through of the extension — Initialize, Configure,
 Launch, Sessions, Hub Sync, Shared/Isolated — is the one part of this

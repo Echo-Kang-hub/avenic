@@ -112,12 +112,18 @@ function configurationSummary(config) {
   return lines;
 }
 
-async function interactiveProjectDraft(projectRoot, editing = false) {
+// The registry is keyed by agent id; a picker needs the id next to the name.
+function agentChoices() {
+  return Object.entries(AGENTS).map(([id, agent]) => ({ value: id, label: agent.displayName }));
+}
+
+async function interactiveProjectDraft(projectRoot, editing = false, prompts = {}) {
   const state = await loadRuntime(projectRoot);
   const current = projectConfig(state);
   const selected = await multiselect({
+    ...prompts,
     title: editing ? "Select enabled agents" : "Select agents",
-    options: Object.values(AGENTS).map((agent) => ({ value: agent.id, label: agent.displayName })),
+    options: agentChoices(),
     initial: Object.keys(current.agents),
     minSelected: 1,
   });
@@ -127,6 +133,7 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
   for (const agentId of selected) {
     const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
     const auth = await select({
+      ...prompts,
       title: `${getAgent(agentId).displayName} authentication`,
       options: [
         { value: "global", label: "Global" },
@@ -136,6 +143,7 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
     });
     if (auth === null) return null;
     const sessions = await select({
+      ...prompts,
       title: `${getAgent(agentId).displayName} session storage`,
       options: [
         { value: "global", label: "Global" },
@@ -147,6 +155,7 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
     agents[agentId] = { auth, sessions };
   }
   const sessionInterop = await select({
+    ...prompts,
     title: "Session history",
     options: [
       { value: "shared", label: "Shared — selected agents can continue the same Avenic history" },
@@ -158,15 +167,16 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
   return { agents, sessionInterop };
 }
 
-async function dispatchProjectSetup(argumentsList, editing = false) {
-  const projectRoot = locateProjectRoot();
+async function dispatchProjectSetup(argumentsList, editing = false, options = {}) {
+  const prompts = options.prompts ?? {};
+  const projectRoot = options.projectRootOverride ?? locateProjectRoot();
   let draft;
-  if (argumentsList.length === 0 && isInteractive()) {
-    banner();
-    draft = await interactiveProjectDraft(projectRoot, editing);
+  if (argumentsList.length === 0 && isInteractive(prompts)) {
+    banner(prompts.stdout);
+    draft = await interactiveProjectDraft(projectRoot, editing, prompts);
     if (!draft) return 0;
     console.log(`\nAvenic project configuration\n${configurationSummary(draft).map((line) => `  ${line}`).join("\n")}\n`);
-    if (await confirm({ title: "Apply configuration?" }) !== true) return 0;
+    if (await confirm({ ...prompts, title: "Apply configuration?" }) !== true) return 0;
   } else {
     const values = [...argumentsList];
     const replaceAgentsIndex = values.indexOf("--replace-agents");
@@ -696,11 +706,13 @@ async function runCanonicalContinuation({ projectRoot, state, environment, mode,
 
 async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
+  const prompts = options.prompts ?? {};
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
-  if (!command && isInteractive()) {
-    banner();
+  if (!command && isInteractive(prompts)) {
+    banner(prompts.stdout);
     const interop = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
     const action = await select({
+      ...prompts,
       title: `Sessions (${interop})`,
       options: [
         ...(interop === "shared" ? [{ value: ["continue"], label: "Continue shared session" }] : []),
@@ -714,14 +726,14 @@ async function dispatchSessions(argumentsList, options = {}) {
     });
     if (!action) return 0;
     if (action[0] === "back") return 0;
-    if (action[0] === "migrate") return dispatchProjectSetup([], true);
+    if (action[0] === "migrate") return dispatchProjectSetup([], true, options);
     // Continue and Set active list shared history directly, so reconcile
     // before the choices are drawn.
     if (action[0] === "active" || action[0] === "continue") await reportReconciliation(projectRoot);
     if (action[0] === "active") {
       const sessions = await listCanonicalSessions(projectRoot);
       if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
-      const sessionId = await select({ title: "Set active session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+      const sessionId = await select({ ...prompts, title: "Set active session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
       if (!sessionId) return 0;
       await setActiveCanonicalSession(projectRoot, sessionId);
       console.log(`Active shared session: ${sessionId}`);
@@ -730,9 +742,9 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (action[0] !== "continue") return dispatchSessions(action, options);
     const sessions = await listCanonicalSessions(projectRoot);
     if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
-    const sessionId = await select({ title: "Continue shared session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+    const sessionId = await select({ ...prompts, title: "Continue shared session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
     if (!sessionId) return 0;
-    const agentId = await select({ title: "Continue with", options: Object.values(AGENTS).map((agent) => ({ value: agent.id, label: agent.displayName })) });
+    const agentId = await select({ ...prompts, title: "Continue with", options: agentChoices() });
     if (!agentId) return 0;
     return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
   }
@@ -855,6 +867,14 @@ async function dispatchSkillsCommand(argumentsList) {
   });
 }
 
+// The interactive surfaces (the project wizard and the Sessions menu) draw on
+// whatever terminal the caller hands them, and resolve the project from the
+// caller's root. Production passes neither; a test drives the real prompts
+// with a fake TTY this way instead of re-implementing them.
+function terminalOptions(options) {
+  return { prompts: options.prompts, projectRootOverride: options.projectRootOverride };
+}
+
 export async function runCli(options = {}) {
   const argumentsList = options.argumentsList ?? process.argv.slice(2);
   const forcedAgent = options.forcedAgent;
@@ -874,10 +894,10 @@ export async function runCli(options = {}) {
     return dispatchAgent(command, remainingArguments);
   }
   if (command === "init") {
-    return dispatchProjectSetup(remainingArguments);
+    return dispatchProjectSetup(remainingArguments, false, terminalOptions(options));
   }
   if (command === "change") {
-    return dispatchProjectSetup(remainingArguments, true);
+    return dispatchProjectSetup(remainingArguments, true, terminalOptions(options));
   }
   if (command === "skills") {
     return dispatchSkillsCommand(remainingArguments);
@@ -899,7 +919,7 @@ export async function runCli(options = {}) {
     });
   }
   if (command === "sessions") {
-    return dispatchSessions(remainingArguments);
+    return dispatchSessions(remainingArguments, terminalOptions(options));
   }
   if (command === "update") {
     if (remainingArguments.length > 0) {

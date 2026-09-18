@@ -50,6 +50,9 @@
   without changing generic optional multi-select behavior.
 - Add the compact interactive Avenic terminal banner and complete the Sessions
   menu's active-session and Shared-mode transition actions.
+- Name the agents in the interactive pickers: the init/change wizard could not
+  be completed, and the Sessions menu's "Continue with" could not start
+  anything, because both offered the registry's entries without their ids.
 - Keep Codex v2 parent-thread recovery, crash-safe canonical capture, and
   malformed native-history diagnostics on the single core lifecycle path.
 
