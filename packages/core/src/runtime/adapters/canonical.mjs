@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
 
+// The roles a canonical conversation can hold. A native record with any other
+// role (a tool result, an internal marker) is not a conversation event.
+export const CONVERSATION_ROLES = new Set(["user", "assistant", "system", "tool"]);
+
+export function isConversationRole(role) {
+  return typeof role === "string" && CONVERSATION_ROLES.has(role);
+}
+
 function timestamp(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number") return new Date(value).toISOString();

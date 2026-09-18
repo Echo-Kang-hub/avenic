@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { getSessionAdapter, samePath } from "../packages/core/src/index.mjs";
+import { getSessionAdapter, importProjectSessions, readFirstJsonLine, samePath } from "../packages/core/src/index.mjs";
 import { pathToFileURL } from "node:url";
 
 const CLAUDE = `${JSON.stringify({ type: "user", uuid: "u1", sessionId: "claude-1", timestamp: "2026-09-14T00:00:00.000Z", message: { role: "user", content: "A" } })}\n${JSON.stringify({ type: "assistant", uuid: "a1", sessionId: "claude-1", timestamp: "2026-09-14T00:00:01.000Z", message: { role: "assistant", model: "claude-test", content: [{ type: "text", text: "B" }], future: "retained" } })}\n`;
@@ -113,6 +113,52 @@ test("repeatedly comparing the same two identities never revisits the filesystem
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
   assert.equal(consistent, true);
   assert.ok(ms < 50, `5000 repeated identity comparisons took ${ms.toFixed(0)} ms`);
+});
+
+// A native session file is identified from its first line, so the read stops
+// at the head. Only a head that is one enormous single line falls back to the
+// whole file, and every shape must still answer with that first line.
+test("the first record of a native session file is read whatever the file size", async () => {
+  const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "avenic-head-read-"));
+  try {
+    const header = JSON.stringify({ type: "session_meta", payload: { id: "codex-1", cwd: "/project" } });
+    const body = `${JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [] } })}\n`;
+    const cases = {
+      "huge-body.jsonl": `${header}\n${body.repeat(20000)}`,
+      "long-header.jsonl": `${JSON.stringify({ type: "session_meta", payload: { id: "codex-1", cwd: "/project", instructions: "x".repeat(80 * 1024) } })}\n${body}`,
+      "single-line.jsonl": header,
+    };
+    for (const [name, content] of Object.entries(cases)) {
+      const file = path.join(root, name);
+      await writeFile(file, content);
+      assert.equal((await readFirstJsonLine(file)).type, "session_meta", name);
+    }
+  } finally {
+    await (await import("node:fs/promises")).rm(root, { recursive: true, force: true });
+  }
+});
+
+// An agent's history root also holds derived lookups — Codex's
+// `session_index.jsonl`, Claude's `sessions-index.json`. Copying one into the
+// project is harmless, but importing it as a conversation is not: it is not a
+// session, and reporting it as a failed import would train the user to ignore
+// the count that does matter.
+test("derived session indexes are never imported as conversations", async () => {
+  const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "avenic-portable-index-"));
+  try {
+    const projectRoot = path.join(root, "project");
+    const portable = path.join(projectRoot, ".agents", "sessions", "claude");
+    await mkdir(portable, { recursive: true });
+    await writeFile(path.join(portable, "claude-1.jsonl"), CLAUDE.replace('"timestamp"', `"cwd":${JSON.stringify(projectRoot)},"timestamp"`));
+    await writeFile(path.join(portable, "sessions-index.json"), `${JSON.stringify({ version: 1, entries: [{ sessionId: "claude-1" }] }, null, 2)}\n`);
+
+    const result = await importProjectSessions(projectRoot, "claude", { skipCapture: true, environment: {} });
+    assert.equal(result.failed, 0);
+    assert.equal(result.imported, 1);
+    assert.deepEqual(result.diagnostics, []);
+  } finally {
+    await (await import("node:fs/promises")).rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Claude discovery reports a missing configured session root instead of silently returning zero", async () => {

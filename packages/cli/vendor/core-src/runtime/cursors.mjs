@@ -104,3 +104,18 @@ export function cachedHead(cursors, agentId, file, stamp) {
   if (!entry || !("head" in entry) || !sameStamp(entry.stamp, stamp)) return undefined;
   return entry.head;
 }
+
+// One fact read out of the head of one native file, through the cache above.
+// The reader returns the fact, or null when the head holds nothing readable —
+// which is a fact too, and is cached as such so an unreadable session is not
+// reopened on every later pass. Callers without a cursor store read every time.
+export async function cachedFileHead(cursors, agentId, file, read) {
+  const stamp = cursors ? await stampOf(file) : null;
+  if (cursors && stamp) {
+    const cached = cachedHead(cursors, agentId, file, stamp);
+    if (cached !== undefined) return cached;
+  }
+  const head = await read();
+  if (cursors && stamp) rememberHead(cursors, agentId, file, stamp, head);
+  return head;
+}

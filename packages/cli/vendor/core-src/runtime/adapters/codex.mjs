@@ -1,22 +1,21 @@
 import { existsSync } from "node:fs";
-import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { runtimePaths } from "../config.mjs";
-import { agentCursors, cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
+import { agentSessionsRoot } from "../config.mjs";
+import { agentCursors, cachedFileHead, loadCursors, saveCursors } from "../cursors.mjs";
 import {
-  PROJECT_ROOT_TOKEN,
+  hashContent,
   listFiles,
-  mergeFiles,
+  projectRootTransform,
   readFirstJsonLine,
+  restoreInto,
   revertFrom,
   samePath,
   snapshotInto,
   syncDirectory,
-  transformJsonLines,
 } from "../sessions.mjs";
-import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
+import { eventTimestamp, isConversationRole, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
 
 export const agentId = "codex";
 
@@ -27,7 +26,7 @@ export function toCanonical(content, options = {}) {
   const events = records.flatMap((record, index) => {
     if (record.type !== "response_item" || record.payload?.type !== "message") return [];
     const role = record.payload.role;
-    if (!new Set(["user", "assistant", "system", "tool"]).has(role)) return [];
+    if (!isConversationRole(role)) return [];
     return [{
       id: nativeEventId(agentId, nativeSessionId, record.payload.id, index, record),
       role,
@@ -53,7 +52,7 @@ export async function readCanonical(projectRoot, nativeSessionId, options = {}) 
   if (match) {
     const content = await readFile(path.join(nativeSessions, match.relative), "utf8");
     const parsed = toCanonical(content);
-    return { ...parsed, revision: createHash("sha256").update(content).digest("hex") };
+    return { ...parsed, revision: hashContent(content) };
   }
   throw new Error(`Codex native session is unavailable: ${nativeSessionId}`);
 }
@@ -101,44 +100,27 @@ function locations(projectRoot, environment = process.env) {
   return {
     codexHome,
     nativeSessions: path.join(codexHome, "sessions"),
-    portable: path.join(runtimePaths(projectRoot).sessionsRoot, "codex"),
+    portable: agentSessionsRoot(projectRoot, "codex"),
   };
-}
-
-function rewriteCwd(content, projectRoot, restore) {
-  return transformJsonLines(content.toString("utf8"), (record) => {
-    const cwd = record.payload?.cwd;
-    if (restore ? typeof cwd === "string" : samePath(cwd, projectRoot)) {
-      record.payload.cwd = restore ? projectRoot : PROJECT_ROOT_TOKEN;
-    }
-    return record;
-  });
 }
 
 // The rollout's identity lives in its first line and never changes while that
 // line is intact, so the parsed head is cached against the file's stamp.
-async function rolloutMeta(file, cursors) {
-  const stamp = cursors ? await stampOf(file) : null;
-  if (cursors && stamp) {
-    const cached = cachedHead(cursors, agentId, file, stamp);
-    if (cached !== undefined) return cached;
-  }
-  let meta = null;
-  try {
-    const first = await readFirstJsonLine(file);
-    if (first?.type === "session_meta") {
-      meta = {
+function rolloutMeta(file, cursors) {
+  return cachedFileHead(cursors, agentId, file, async () => {
+    try {
+      const first = await readFirstJsonLine(file);
+      if (first?.type !== "session_meta") return null;
+      return {
         cwd: first.payload?.cwd ?? null,
         id: first.payload?.id ?? first.payload?.session_id ?? null,
         parentThreadId: first.payload?.parent_thread_id,
         multiAgentVersion: first.payload?.multi_agent_version,
       };
+    } catch {
+      return null;
     }
-  } catch {
-    meta = null;
-  }
-  if (cursors && stamp) rememberHead(cursors, agentId, file, stamp, meta);
-  return meta;
+  });
 }
 
 async function matchingRollouts(root, projectRoot, options = {}) {
@@ -207,7 +189,7 @@ export async function capture(projectRoot, options = {}) {
   const result = await syncDirectory(
     rollouts.map(({ relative }) => ({ relative, source: path.join(nativeSessions, relative) })),
     path.join(portable, "sessions"),
-    (content) => rewriteCwd(content, projectRoot, false),
+    projectRootTransform(projectRoot, { field: ["payload", "cwd"] }),
     cursors,
     agentId,
   );
@@ -254,18 +236,11 @@ async function restoreIndex(portable, codexHome) {
 export async function restore(projectRoot, options = {}) {
   const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
   const sourceRoot = path.join(portable, "sessions");
-  const files = await listFiles(sourceRoot);
-  if (files.length === 0) {
-    return { count: 0, added: 0, updated: 0, unchanged: 0 };
-  }
-  // Project portable sessions are the source of truth: on conflict they
-  // overwrite the native copy (explicit `sessions writeback` semantics).
-  const result = await mergeFiles(sourceRoot, files, nativeSessions, (content, relative) =>
-    relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, true) : content,
-    { onConflict: "keep-source" },
-  );
-  await restoreIndex(portable, codexHome);
-  return { count: files.length, ...result };
+  const result = await restoreInto(sourceRoot, await listFiles(sourceRoot), nativeSessions,
+    projectRootTransform(projectRoot, { field: ["payload", "cwd"], restore: true }));
+  // The index only lists the rollouts that were written back.
+  if (result.count > 0) await restoreIndex(portable, codexHome);
+  return result;
 }
 
 export async function status(projectRoot) {

@@ -1,14 +1,18 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runtimePaths } from "../config.mjs";
+import { agentSessionsRoot, runtimePaths } from "../config.mjs";
 import { loadCursors, saveCursors } from "../cursors.mjs";
 import { hashContent, listFiles, samePath, syncDirectory } from "../sessions.mjs";
 import { spawnExecutableSync } from "../process.mjs";
-import { eventTimestamp, nativeEventId } from "./canonical.mjs";
+import { eventTimestamp, isConversationRole, nativeEventId } from "./canonical.mjs";
 import { createHash } from "node:crypto";
 
 export const agentId = "opencode";
+
+// OpenCode's export format carries more roles than it can read back: a
+// projection is a conversation, so only these two become messages.
+const PROJECTABLE_ROLES = new Set(["user", "assistant"]);
 
 function canonicalBlocks(parts) {
   if (!Array.isArray(parts)) return [];
@@ -31,7 +35,7 @@ export function toCanonical(content, options = {}) {
   const events = messages.flatMap((message, index) => {
     const info = message?.info ?? message;
     const role = info?.role;
-    if (!new Set(["user", "assistant", "system", "tool"]).has(role)) return [];
+    if (!isConversationRole(role)) return [];
     const provenance = (message.parts ?? info.parts ?? []).find((part) => part?.metadata?._avenic)?.metadata?._avenic;
     const canonicalEventId = provenance && provenance.canonicalSessionId === options.canonicalSessionId
       && typeof provenance.canonicalEventId === "string"
@@ -71,7 +75,7 @@ export function fromCanonical(events, options = {}) {
   const messages = [];
   const nativeMessageIds = new Map();
   for (const [index, event] of events.entries()) {
-    if (!new Set(["user", "assistant"]).has(event.role)) {
+    if (!PROJECTABLE_ROLES.has(event.role)) {
       diagnostics.push({ eventId: event.id, code: "unsupported_role", message: `OpenCode export does not project ${event.role} as a conversation message` });
       continue;
     }
@@ -172,7 +176,7 @@ function run(argumentsList, projectRoot, options = {}) {
 }
 
 function portableRoot(projectRoot) {
-  return path.join(runtimePaths(projectRoot).sessionsRoot, "opencode");
+  return agentSessionsRoot(projectRoot, "opencode");
 }
 
 function projectionFile(projectRoot, canonicalSessionId) {

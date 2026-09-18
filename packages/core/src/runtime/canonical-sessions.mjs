@@ -4,11 +4,11 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runtimePaths } from "./config.mjs";
 import { deriveState } from "./handoff.mjs";
+import { CONVERSATION_ROLES } from "./adapters/canonical.mjs";
 
 export const CANONICAL_SESSION_SCHEMA_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const SECRET_KEY = /(?:api[_-]?key|authorization|auth(?:entication)?|cookie|credential|password|secret|token)/i;
-const EVENT_ROLES = new Set(["user", "assistant", "system", "tool"]);
 
 function now() {
   return new Date().toISOString();
@@ -62,7 +62,7 @@ function normalizeContent(content) {
 function normalizeEvent(event) {
   if (!event || typeof event !== "object") throw new Error("Canonical event must be an object");
   if (typeof event.id !== "string" || !event.id) throw new Error("Canonical event requires an id");
-  if (!EVENT_ROLES.has(event.role)) throw new Error(`Unknown canonical event role: ${event.role}`);
+  if (!CONVERSATION_ROLES.has(event.role)) throw new Error(`Unknown canonical event role: ${event.role}`);
   if (typeof event.createdAt !== "string") throw new Error("Canonical event requires createdAt");
   if (event.parentId !== undefined && typeof event.parentId !== "string") throw new Error("Canonical event parentId must be a string");
   return {

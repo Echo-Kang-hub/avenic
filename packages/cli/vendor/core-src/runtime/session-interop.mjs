@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  agentSessionsRoot,
   configureProject,
   effectiveAgentConfig,
   loadRuntime,
@@ -18,6 +19,7 @@ import {
 } from "./config.mjs";
 import {
   acquireSessionLease,
+  isConversationFile,
   listFiles,
   releaseSessionLease,
   sessionLeasePath,
@@ -144,7 +146,7 @@ async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
 // read at all; only genuine native deltas cost a parse.
 export async function importProjectSessions(projectRoot, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);
-  const portable = path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
+  const portable = agentSessionsRoot(projectRoot, agentId);
   const ownsCursors = options.cursors === undefined;
   const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
   const files = agentCursors(cursors, agentId);
@@ -154,7 +156,7 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
   let discovered = 0; let imported = 0; let unchanged = 0; let skipped = 0; let failed = 0;
   const diagnostics = [...(captured.diagnostics ?? [])];
   for (const relative of await listFiles(portable)) {
-    if (!isImportableSession(relative)) continue;
+    if (!isConversationFile(relative)) continue;
     const absolute = path.join(portable, relative);
     const bookmark = files[relative];
     // The bookmark records the portable file as it was when it was last
@@ -201,14 +203,6 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
   }
   if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
   return { ...captured, discovered, imported, unchanged, skipped, failed, diagnostics };
-}
-
-// Portable entries that carry conversation history. The Codex index is a
-// derived lookup, not a session; subagent transcripts belong to their parent.
-function isImportableSession(relative) {
-  if (!(relative.endsWith(".jsonl") || relative.endsWith(".json"))) return false;
-  if (relative.includes(`${path.sep}subagents${path.sep}`)) return false;
-  return path.basename(relative) !== "session_index.jsonl";
 }
 
 // Switching policy never rewrites or deletes native history. Moving into

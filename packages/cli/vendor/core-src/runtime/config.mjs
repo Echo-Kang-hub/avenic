@@ -59,6 +59,13 @@ export function runtimePaths(projectRoot) {
   };
 }
 
+// Where one agent's portable session copies live inside the project. Every
+// adapter and the import path derive it, and a mistyped join would silently
+// grow a second history.
+export function agentSessionsRoot(projectRoot, agentId) {
+  return path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
+}
+
 export async function loadRuntime(projectRoot) {
   const paths = runtimePaths(projectRoot);
   const runtime = await readJsonIfExists(paths.runtimeFile, { schemaVersion: 1, agents: {} });

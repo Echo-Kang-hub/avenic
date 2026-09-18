@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import {
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -249,10 +250,79 @@ export async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, tra
   return { added, conflicts, updated, unchanged };
 }
 
+// Session headers are one short line; conversation bodies are arbitrarily
+// long. Nothing here needs a body to identify a session, so reads stop at the
+// head and only fall back to the whole file when a head is all one line.
+const HEAD_BYTES = 64 * 1024;
+
+async function readHead(file, bytes) {
+  const handle = await open(file, "r");
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return { text: buffer.subarray(0, bytesRead).toString("utf8"), truncated: bytesRead === bytes };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readFileHead(file, bytes = HEAD_BYTES) {
+  return (await readHead(file, bytes)).text;
+}
+
 export async function readFirstJsonLine(file) {
-  const content = await readFile(file, "utf8");
-  const line = content.split(/\r?\n/, 1)[0];
+  const { text, truncated } = await readHead(file, HEAD_BYTES);
+  const line = truncated && !text.includes("\n")
+    ? (await readFile(file, "utf8")).split(/\r?\n/, 1)[0]
+    : text.split(/\r?\n/, 1)[0];
   return JSON.parse(line.replace(/^\uFEFF/, ""));
+}
+
+// A portable entry that carries conversation history. An index is a derived
+// lookup rather than a session, and a subagent transcript belongs to its
+// parent, so neither is one.
+const INDEX_BASENAMES = new Set(["session_index.jsonl", "sessions-index.json"]);
+
+export function isConversationFile(relative) {
+  if (!(relative.endsWith(".jsonl") || relative.endsWith(".json"))) return false;
+  if (relative.includes(`${path.sep}subagents${path.sep}`)) return false;
+  return !INDEX_BASENAMES.has(path.basename(relative));
+}
+
+// Every native record that names the workspace names it in the same field the
+// agent uses, and the portable copy stores the same field as a token so the
+// checkout can move; only where that field lives differs between agents, so
+// that is the argument. `restore` writes the real root back.
+export function rewriteProjectRoot(content, projectRoot, options = {}) {
+  const field = options.field ?? ["cwd"];
+  const restore = options.restore === true;
+  return transformJsonLines(content.toString("utf8"), (record) => {
+    let holder = record;
+    for (const key of field.slice(0, -1)) {
+      holder = holder?.[key];
+      if (holder === null || typeof holder !== "object") return record;
+    }
+    const leaf = field.at(-1);
+    if (restore ? typeof holder[leaf] === "string" : samePath(holder[leaf], projectRoot)) {
+      holder[leaf] = restore ? projectRoot : PROJECT_ROOT_TOKEN;
+    }
+    return record;
+  });
+}
+
+// The transform a native <-> portable copy applies to each file: only the
+// agent's own JSONL records carry the root path.
+export function projectRootTransform(projectRoot, options = {}) {
+  return (content, relative) => (relative.endsWith(".jsonl") ? rewriteProjectRoot(content, projectRoot, options) : content);
+}
+
+// Write portable copies back into native storage. Project records are the
+// source of truth: on conflict they overwrite the native copy (explicit
+// `sessions writeback` semantics).
+export async function restoreInto(portable, files, native, transform) {
+  if (files.length === 0) return { count: 0, added: 0, updated: 0, unchanged: 0 };
+  const result = await mergeFiles(portable, files, native, transform, { onConflict: "keep-source" });
+  return { count: files.length, ...result };
 }
 
 export function hashContent(content) {
