@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createInstallContext, ensureSkillLinks, installPacks, installedPackIds, resolveInstallSource, setDefaultCatalogSpec, skillsInstallationStatus, uninstallPacks } from "../packages/core/src/index.mjs";
+import { createInstallContext, ensureSkillLinks, installPacks, installedPackIds, resolveInstallSource, setDefaultCatalogSpec, skillsInstallationStatus, unmanagedSkillNames, uninstallPacks } from "../packages/core/src/index.mjs";
 import { readJson, writeJson } from "../packages/core/src/util/json.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -233,6 +233,31 @@ test("skillsInstallationStatus reports manifest packs and target presence", asyn
     assert.equal(optimized.targets[0].counts.fallback, 0);
     assert.equal(optimized.operational, true);
     assert.equal(optimized.state, "optimized");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// 未托管 = 磁盘上有、受管集合里没有。受管集合（Pack + adopted + 直装）与展示用
+// names（Pack + adopted）不是同一个集合：主机自己用 names 做减法，会把 Avenic 直装的
+// 技能报成「未托管」，让用户去接管自己刚装上的东西。
+test("unmanaged detection subtracts the managed set, not the display set", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "skills-unmanaged-"));
+  try {
+    const context = createInstallContext(false, { cwd: root, environment: process.env });
+    await writeJson(context.lockFile, {
+      schemaVersion: 3,
+      packs: [],
+      sources: [],
+      adopted: ["adopted-skill"],
+      directSources: [{ id: "d-1", name: "Direct", skills: ["direct-skill"] }],
+    });
+    const status = await skillsInstallationStatus(context);
+    assert.deepEqual(status.names, ["adopted-skill"], "展示集合只含 Pack + adopted");
+    assert.deepEqual(status.managedNames.sort(), ["adopted-skill", "direct-skill"]);
+    assert.deepEqual(unmanagedSkillNames(status, ["adopted-skill", "direct-skill", "stray"]), ["stray"]);
+    // 没有安装记录时，磁盘上的一切都属于「未托管」
+    assert.deepEqual(unmanagedSkillNames(null, ["stray", "other"]), ["stray", "other"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

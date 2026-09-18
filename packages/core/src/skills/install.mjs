@@ -606,6 +606,16 @@ async function countUnmanagedEntries(directory, managedNames) {
   return unmanaged;
 }
 
+// Skills found on disk that no install record claims: installed by another
+// tool, copied by hand, or left by an older Avenic. The managed set decides
+// this — Packs, adopted names and direct installs — never the display set,
+// which deliberately omits direct installs; subtracting that one would report
+// a skill Avenic itself installed directly as unmanaged.
+export function unmanagedSkillNames(status, detected) {
+  const managed = new Set(status?.managedNames ?? []);
+  return (detected ?? []).filter((name) => !managed.has(name));
+}
+
 // Structured `skills status` data (spec §8): the manifest's packs, per-target
 // presence and the share-target verdict counts. Returns null when nothing is
 // installed. Read-only and cheap: a real copy at a share target is `fallback`
@@ -705,6 +715,9 @@ export async function skillsInstallationStatus(context) {
     groups,
     packs: manifestPacks,
     names,
+    // 受管集合（Pack + adopted + 直装）与展示用 names 分开返回：主机要用它判断
+    // 「磁盘上有什么不属于 Avenic」，而 names 故意不含直装名。
+    managedNames: [...managedNames],
     targets,
     // 汇总：optimized = 全部链接；degraded = 可用但存在降级副本；incomplete = 有缺失或冲突。
     state: optimized ? "optimized" : degraded ? "degraded" : "incomplete",

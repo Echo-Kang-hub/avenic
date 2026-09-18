@@ -200,6 +200,7 @@ export {
   createInstallContext,
   detectedSkillNames,
   planAdoptSkills,
+  unmanagedSkillNames,
   installCopies,
   installPacks,
   installedPackIds,

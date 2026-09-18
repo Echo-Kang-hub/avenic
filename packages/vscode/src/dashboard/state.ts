@@ -1,3 +1,4 @@
+import { unmanagedSkillNames } from "@avenic/core";
 import { agentInstalled, agentStatus, listAgents } from "../services/agents.ts";
 import { cachedRevision, defaultSpec } from "../services/catalog.ts";
 import { readSkillsSnapshot } from "../services/skills.ts";
@@ -70,7 +71,7 @@ export async function buildDashboardData(projectRoot: string | null, environment
   const skills = skillSnapshot?.status ?? null;
   // 磁盘检测（未托管内容：旧版/外部工具安装、手工拷贝）——只读，任何错误降级为空
   const detected = skillSnapshot?.detected ?? [];
-  const untracked = skills === null ? detected : detected.filter((name) => !skills.names.includes(name));
+  const untracked = unmanagedSkillNames(skills, detected);
   const untrackedRow = { label: "Skills", ok: false, details: `${untracked.length} 个 Skill 未托管` };
   return {
     projectRoot,

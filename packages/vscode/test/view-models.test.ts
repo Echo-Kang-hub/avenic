@@ -14,6 +14,8 @@ const statusFixture = (partial: Pick<InstallStatus, "names"> & Partial<InstallSt
   groups: [],
   packs: [],
   targets: [],
+  // 受管集合默认为展示集合；直装等「受管但不在 names」的场景在用例里显式给出
+  managedNames: partial.names,
   state: "optimized",
   operational: true,
   optimized: true,
@@ -188,6 +190,14 @@ test("fully managed status adds no detected group", () => {
   const groups = skillsToViewModels(status, ["managed-one"], PROJECT_EMPTY_HINT);
   assert.equal(groups.length, 2);
   assert.ok(groups.every((g) => g.item.kind === "group"));
+});
+
+// 直装（avenic skills add <源>）的 Skill 在受管集合里、但不在 names 展示集合里。
+// 用 names 做减法会把它报成「未托管」，等于让用户去接管自己刚装上的技能。
+test("a directly installed skill is never reported as unmanaged", () => {
+  const status = statusFixture({ names: ["pack-skill"], managedNames: ["pack-skill", "direct-skill"] });
+  const groups = skillsToViewModels(status, ["pack-skill", "direct-skill"], PROJECT_EMPTY_HINT);
+  assert.equal(groups.some((group) => group.item.kind === "detected"), false);
 });
 
 test("catalog packs map to sorted pack rows with id", () => {

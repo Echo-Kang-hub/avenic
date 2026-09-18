@@ -1,4 +1,4 @@
-import type { InstallStatus, KnownCatalogEntry, Pack } from "@avenic/core";
+import { unmanagedSkillNames, type InstallStatus, type KnownCatalogEntry, type Pack } from "@avenic/core";
 import type { AgentStatus } from "../services/agents.ts";
 
 // 行状态驱动菜单键位（icons 键，无文字按钮）：
@@ -146,9 +146,11 @@ function packLayerRows(layers: InstalledPackLayerView[], installed: Set<string>)
 }
 
 export function skillsToViewModels(status: InstallStatus | null, detected: string[] = [], emptyHint: string = PROJECT_EMPTY_HINT, layers: InstalledPackLayerView[] = []): SkillsViewGroup[] {
-  // 磁盘检测（core detectedSkillNames）减去托管记录 = 未托管内容（旧版/外部工具安装、手工拷贝）
+  // 磁盘检测（core detectedSkillNames）减去受管集合 = 未托管内容（旧版/外部工具安装、
+  // 手工拷贝）。减法在 core（unmanagedSkillNames）：受管集合比展示用 names 多出直装名，
+  // 自己减会把 Avenic 直装的技能报成「未托管」。
+  const untracked = unmanagedSkillNames(status, detected);
   const managed = status === null ? [] : status.names;
-  const untracked = detected.filter((name) => !managed.includes(name));
   const groups: SkillsViewGroup[] = [];
   if (untracked.length > 0) {
     groups.push({

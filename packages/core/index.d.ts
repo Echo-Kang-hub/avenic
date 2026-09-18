@@ -520,6 +520,8 @@ export interface InstallStatus {
   groups: SkillGroup[];
   packs: Array<{ id?: string; name?: string } | string>;
   names: string[];
+  // 受管集合（Pack + adopted + 直装）；names 是展示集合，不含直装名。
+  managedNames: string[];
   targets: InstallTargetStatus[];
   state: "optimized" | "degraded" | "incomplete";
   operational: boolean;
@@ -529,6 +531,7 @@ export interface InstallStatus {
 }
 export function skillsInstallationStatus(context: InstallContext): Promise<InstallStatus | null>;
 export function detectedSkillNames(context: InstallContext): Promise<string[]>;
+export function unmanagedSkillNames(status: Pick<InstallStatus, "managedNames"> | null, detected: string[]): string[];
 export function adoptSkills(
   context: InstallContext,
   skillNames: string[],

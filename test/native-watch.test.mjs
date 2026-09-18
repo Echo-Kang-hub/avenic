@@ -57,7 +57,9 @@ test("the watch keeps capturing while the agent runs and stops on request", asyn
       let events = 0;
       while (Date.now() < deadline) {
         await delay(50);
-        events = (await readCanonicalSession(projectRoot, canonicalId)).events.length;
+        // 第一次轮询可能早于 watcher 的首趟导入：会话尚不存在＝还没有事件，
+        // 而不是失败（与下面的实时会话用例同一处理）。
+        events = (await readCanonicalSession(projectRoot, canonicalId).catch(() => ({ events: [] }))).events.length;
         if (events >= 9) break;
       }
       assert.ok(events >= 9, `the watch must capture the appended records (saw ${events})`);
