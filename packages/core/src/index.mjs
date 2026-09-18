@@ -42,7 +42,7 @@ export {
 } from "./runtime/cursors.mjs";
 export { WATCH_INTERVAL_MS, flushNativeSessions, startNativeWatch } from "./runtime/native-watch.mjs";
 export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
-export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
+export { agentEnvironment, resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export { spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
@@ -207,6 +207,7 @@ export {
   createSkillLink,
   ensureSkillLinks,
   formatLinkSummary,
+  linkSummaryChanged,
   logConflicts,
   normalizeLinkTarget,
   readLinkTarget,

@@ -196,6 +196,13 @@ export function formatLinkSummary(counts) {
   return `Linked ${counts.linked} · Migrated ${counts.migrated} · Repaired ${counts.repaired} · Fallback ${counts.fallback} · Conflict ${counts.conflict}`;
 }
 
+// A repair that changed nothing is the common case, and every host says so
+// instead of listing zeros. Which counters count as change is one rule, so the
+// CLI launch path and the extension cannot disagree about what "no news" means.
+export function linkSummaryChanged(counts) {
+  return counts.linked > 0 || counts.repaired > 0 || counts.migrated > 0;
+}
+
 export function logConflicts(io, conflicts) {
   const labels = {
     "content-differs": "a copy exists and differs from the shared version",

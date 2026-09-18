@@ -49,6 +49,7 @@ test("git failures are told apart by what git actually said", () => {
     ["fatal: unable to access 'https://github.com/owner/private.git/': The requested URL returned error: 403", "authentication"],
     ["remote: Repository not found.\nfatal: repository 'https://github.com/owner/gone.git/' not found", "repo-missing"],
     ["fatal: '/tmp/nothing-here' does not appear to be a git repository", "repo-missing"],
+    ["fatal: not a git repository (or any of the parent directories): .git", "repo-missing"],
     ["fatal: couldn't find remote ref release", "ref-missing"],
     ["fatal: unable to access 'https://github.com/owner/hub.git/': Could not resolve host: github.com", "network"],
     ["fatal: unable to access 'https://github.com/owner/hub.git/': SSL certificate problem: unable to get local issuer certificate", "network"],

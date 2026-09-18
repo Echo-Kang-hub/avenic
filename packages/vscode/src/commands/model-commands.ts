@@ -1,5 +1,5 @@
-import path from "node:path";
 import * as vscode from "vscode";
+import { claudeSettingsFile } from "@avenic/core";
 import * as model from "../services/model.ts";
 import { ModelPanel } from "../dashboard/model-panel.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
@@ -115,6 +115,6 @@ export function registerModelCommands(context: vscode.ExtensionContext, deps: Mo
   register("openSettingsFile", async () => {
     const projectRoot = await deps.resolveRoot();
     if (projectRoot === null) return void vscode.window.showWarningMessage("未选择项目文件夹");
-    await vscode.window.showTextDocument(vscode.Uri.file(path.join(projectRoot, ".claude", "settings.local.json")), { preview: false });
+    await vscode.window.showTextDocument(vscode.Uri.file(claudeSettingsFile(projectRoot)), { preview: false });
   });
 }

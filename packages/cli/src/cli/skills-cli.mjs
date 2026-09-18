@@ -3,6 +3,7 @@ import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { takeOption } from "./options.mjs";
 import {
   box,
   cancel,
@@ -76,19 +77,6 @@ import {
 import { updateAvenic } from "./self-update.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-
-function takeOption(argumentsList, option) {
-  const index = argumentsList.indexOf(option);
-  if (index === -1) {
-    return null;
-  }
-  const value = argumentsList[index + 1];
-  if (!value || value.startsWith("--")) {
-    fail(`${option} requires a value`);
-  }
-  argumentsList.splice(index, 2);
-  return value;
-}
 
 function parseScopeArguments(argumentsList) {
   const globalFlags = new Set(["-g", "--global"]);

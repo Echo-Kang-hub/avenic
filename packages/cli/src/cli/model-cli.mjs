@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
+import { takeOption } from "./options.mjs";
 import { isInteractive, select } from "./prompts.mjs";
 import {
   bindProject,
@@ -20,15 +21,6 @@ import {
   testConnection,
   upsertProfile,
 } from "#core";
-
-function takeOption(argumentsList, option) {
-  const index = argumentsList.indexOf(option);
-  if (index === -1) return null;
-  const value = argumentsList[index + 1];
-  if (!value || value.startsWith("--")) fail(`${option} requires a value`);
-  argumentsList.splice(index, 2);
-  return value;
-}
 
 // normalizeProfile 是「白名单化」：没传的字段不留原值、而是取默认值。所以凡是 flags
 // 表达不了的字段都必须从 existing 逐项带过（语义＝不修改）——否则 `model edit <id> --name X`

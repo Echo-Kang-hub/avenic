@@ -1,4 +1,4 @@
-import { API_TYPES, AUTH_FIELDS, MODEL_ROLES, TOGGLE_KEYS } from "@avenic/core";
+import { API_TYPES, AUTH_FIELDS, CODEX_EFFORTS, MODEL_ROLES, TOGGLE_KEYS } from "@avenic/core";
 import type { ApiType, ModelProfile } from "@avenic/core";
 
 // 面板消息白名单（仿 dashboard/protocol.ts）：webview 永远不能指定路径或命令，
@@ -174,7 +174,6 @@ export type ModelSenderMessage =
 const MAX_TEXT = 20_000;
 const MAX_ROWS = 100;
 const MAX_OVERRIDE_AGENTS = ["codex", "opencode"];
-const CODEX_EFFORT = ["minimal", "low", "medium", "high"];
 
 function isText(value: unknown, max: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max;
@@ -256,7 +255,7 @@ function isDraft(value: unknown): value is ProfileDraft {
 
   if (!isPlainObject(value.codex)) return false;
   if (!isEmptyableText(value.codex.providerId, 32) || !isEmptyableText(value.codex.envKey, 64)) return false;
-  if (typeof value.codex.reasoningEffort !== "string" || !CODEX_EFFORT.includes(value.codex.reasoningEffort)) return false;
+  if (typeof value.codex.reasoningEffort !== "string" || !CODEX_EFFORTS.includes(value.codex.reasoningEffort)) return false;
 
   if (!isPlainObject(value.opencode)) return false;
   if (!isEmptyableText(value.opencode.providerId, 32) || !isEmptyableText(value.opencode.npmAdapter, 200)) return false;

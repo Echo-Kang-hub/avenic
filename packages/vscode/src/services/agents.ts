@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   AGENTS,
+  agentEnvironment,
   agentExecutableAvailable as coreAgentExecutableAvailable,
   clearLocalAuth,
   applyProjectConfiguration,
@@ -15,7 +16,6 @@ import {
   importProjectSessions,
   joinLaunchGroup,
   loadRuntime,
-  projectAuthEnvironment,
   projectConfig,
   resolveEffectiveAgentRuntime,
   setLocalAuth,
@@ -171,10 +171,8 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
   if (!config) {
     throw new Error(`${agent.displayName} 尚未初始化，请先执行「Avenic: 初始化 Agent」`);
   }
-  const environment: Record<string, string> = { ...process.env } as Record<string, string>;
-  if (config.auth === "project") {
-    Object.assign(environment, projectAuthEnvironment(agentId, projectRoot));
-  }
+  // 与 CLI 启动同一个作用域判定：project auth 是作用域，不是登录。
+  const environment = agentEnvironment(state, projectRoot, agentId) as Record<string, string>;
   // 项目绑定的模型配置：dangling 先安全回滚（幂等），指纹不一致先刷新 Claude 投影；
   // 注入内容全部由 core 生成，插件侧零业务逻辑。任何异常都不阻断启动（spec §13）。
   // environment 本身保持不动（会话适配器/名册用的就是它，spec §5.2）——注入只作用于子进程。

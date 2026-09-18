@@ -114,6 +114,7 @@ export interface EffectiveAgentRuntime {
   environment: ProcessEnvLike;
   note: string | null;
 }
+export function agentEnvironment(state: RuntimeState, projectRoot: string, agentId: string): ProcessEnvLike;
 export function resolveEffectiveAgentRuntime(
   projectRoot: string,
   agentId: string,
@@ -475,6 +476,7 @@ export function ensureSkillLinks(
   options?: { io?: Io; silent?: boolean; restoreCopy?: boolean; createLink?: (canonicalPath: string, linkPath: string) => Promise<void> },
 ): Promise<{ counts: LinkCounts; conflicts: LinkConflict[]; targets: Record<string, LinkCounts> }>;
 export function formatLinkSummary(counts: LinkCounts): string;
+export function linkSummaryChanged(counts: LinkCounts): boolean;
 export function logConflicts(io: Io, conflicts: LinkConflict[]): void;
 export function resolveInstallPacks(context: InstallContext, explicitPacks: string[]): Promise<string[]>;
 export function previousManagedState(context: InstallContext): Promise<Map<string, { sourceId: string; revision: string }>>;

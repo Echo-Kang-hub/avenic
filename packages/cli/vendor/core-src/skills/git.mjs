@@ -20,7 +20,10 @@ const GIT_FAILURE_KINDS = [
   {
     kind: "repo-missing",
     hint: "The Hub repository was not found. Check the owner/repo spelling, and that your account can see it.",
-    pattern: /repository not found|repository .* does not exist|does not appear to be a git repository|remote: not found|returned error: 404|\b404\b/i,
+    // The first three are a remote that is gone; the last is a local path that
+    // is not a checkout at all — same answer to the same question, and a caller
+    // can act on the kind without matching git's prose itself.
+    pattern: /repository not found|repository .* does not exist|does not appear to be a git repository|not a git repository|remote: not found|returned error: 404|\b404\b/i,
   },
   {
     kind: "ref-missing",

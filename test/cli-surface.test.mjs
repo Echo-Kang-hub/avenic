@@ -206,6 +206,35 @@ test("runtime overview and doctor cover all three agents", async () => {
   });
 });
 
+test("a flag is never taken as another flag's value", async () => {
+  // The three flag-parsing surfaces used to disagree about this, so a typo like
+  // `--agents --auth project` either swallowed the next flag or was refused
+  // depending on which command you typed.
+  await withTempDirectory("avenic-flag-values-", async (projectRoot) => {
+    const missingAgents = runAgent(projectRoot, ["init", "--agents", "--auth", "project"]);
+    assert.notEqual(missingAgents.status, 0);
+    assert.match(`${missingAgents.stdout}${missingAgents.stderr}`, /Missing value for --agents/);
+
+    const missingName = runAgent(projectRoot, ["model", "add", "--name", "--base-url", "https://example.com"]);
+    assert.notEqual(missingName.status, 0);
+    assert.match(`${missingName.stdout}${missingName.stderr}`, /Missing value for --name/);
+  });
+});
+
+test("sessions git off works in a project that is not a checkout", async () => {
+  // Avenic never requires git, so turning session sync off outside a
+  // repository has to be the same no-op as an empty index — not a failure of
+  // the git call underneath it.
+  await withTempDirectory("avenic-sessions-git-norepo-", async (projectRoot) => {
+    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "global"]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+
+    const off = runAgent(projectRoot, ["sessions", "git", "off"]);
+    assert.equal(off.status, 0, off.stderr);
+    assert.match(off.stdout, /Untracked\s+0/);
+  });
+});
+
 test("sessions git toggles on/off/status and rejects invalid modes", async () => {
   await withTempDirectory("avenic-sessions-git-", async (projectRoot) => {
     spawnSync("git", ["init", "--quiet"], { cwd: projectRoot, windowsHide: true });

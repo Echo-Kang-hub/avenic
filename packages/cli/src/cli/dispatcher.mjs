@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import {
   AGENTS,
   applyProjectConfiguration,
+  agentEnvironment,
   agentExecutableAvailable,
-  bindProject,
   buildHandoff,
   clearLocalAuth,
   createInstallContext,
@@ -20,8 +20,10 @@ import {
   getAgent,
   getActiveCanonicalSessionId,
   getSessionAdapter,
+  git,
   initializeAgent,
   importProjectSessions,
+  linkSummaryChanged,
   joinLaunchGroup,
   recoverSharedNativeSessions,
   loadRuntime,
@@ -36,10 +38,7 @@ import {
   managedSkillNames,
   projectCanonicalSession,
   readCanonicalSession,
-  projectAuthEnvironment,
   projectConfig,
-  projectModelStatus,
-  resolveProjectProfile,
   resolveEffectiveAgentRuntime,
   sessionLeasePath,
   sessionsGitIgnored,
@@ -54,6 +53,7 @@ import {
 import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
+import { takeOption } from "./options.mjs";
 import { spawnSessionWatchdog } from "./watchdog.mjs";
 import { banner, confirm, isInteractive, multiselect, select } from "./prompts.mjs";
 
@@ -94,23 +94,6 @@ function markLaunchClosing(agentId, projectRoot) {
   try {
     writeFileSync(path.join(sessionLeasePath(agentId, projectRoot), "closing"), "");
   } catch {}
-}
-
-function isActiveSessionError(output) {
-  return /active writer|already in use|already active|session lock|thread-store conflict/i.test(output);
-}
-
-function takeOption(argumentsList, option) {
-  const index = argumentsList.indexOf(option);
-  if (index === -1) {
-    return undefined;
-  }
-  const value = argumentsList[index + 1];
-  if (!value || value.startsWith("-")) {
-    throw new Error(`Missing value for ${option}`);
-  }
-  argumentsList.splice(index, 2);
-  return value;
 }
 
 function parseAgentList(value) {
@@ -319,25 +302,6 @@ function printAgentStatus(agent, projectRoot, state) {
   console.log(`Official CLI        ${agentExecutableAvailable(agent.id) ? "Available" : "Not found"}`);
 }
 
-// 启动前解析当前项目绑定的 profile：dangling 时先安全回滚并提示（幂等），
-// 然后按 agent 生成注入。任何异常都不阻断启动（配置问题不该让 Agent 打不开）。
-async function resolveActiveProfileForLaunch(projectRoot, environment) {
-  try {
-    const resolved = await resolveProjectProfile(projectRoot, environment, console);
-    if (resolved.message) console.log(resolved.message);
-    if (!resolved.profile) return null;
-    // Claude 的投影是项目内物化文件：指纹不一致时先刷新（事务写）
-    const status = await projectModelStatus(projectRoot, environment);
-    if (status.projection && !status.projection.fingerprintMatches) {
-      await bindProject(projectRoot, environment, resolved.profile.id);
-    }
-    return resolved.profile;
-  } catch (error) {
-    console.log(`Model configuration skipped: ${error.message}`);
-    return null;
-  }
-}
-
 async function dispatchAgent(agentId, argumentsList, options = {}) {
   const agent = getAgent(agentId);
   const projectRoot = options.projectRoot ?? locateProjectRoot();
@@ -522,7 +486,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     if (managed.size > 0) {
       const linkResult = await ensureSkillLinks(installContext, managed, { silent: true });
       const { counts } = linkResult;
-      if (counts.linked > 0 || counts.repaired > 0 || counts.migrated > 0) {
+      if (linkSummaryChanged(counts)) {
         console.log(`Skills shared: ${formatLinkSummary(counts)}`);
       }
       logConflicts(console, linkResult.conflicts);
@@ -591,21 +555,20 @@ async function dispatchDoctor() {
   return 0;
 }
 
-function untrackSessions(projectRoot) {
-  const tracked = spawnExecutableSync("git", ["ls-files", "--", ".agents/sessions"], {
+// Sessions leave the Git index through the same git Avenic uses everywhere
+// else, so a checkout with no git on PATH, or a locked index, is reported with
+// one of the classified failure kinds instead of a bare "unable to remove".
+async function untrackSessions(projectRoot) {
+  const tracked = await git(["ls-files", "--", ".agents/sessions"], { cwd: projectRoot })
+    // A project that is not a checkout has nothing tracked to remove — the same
+    // answer as an empty index, and not a failure worth stopping the command.
+    .catch((error) => (error.kind === "repo-missing" ? "" : Promise.reject(error)));
+  if (!tracked) return 0;
+  await git(["rm", "-r", "--cached", "--force", "--ignore-unmatch", "--", ".agents/sessions"], {
     cwd: projectRoot,
-    encoding: "utf8",
-    windowsHide: true,
+    stdio: "inherit",
   });
-  if (tracked.status !== 0 || !tracked.stdout.trim()) return 0;
-  const files = tracked.stdout.trim().split(/\r?\n/).filter(Boolean);
-  const result = spawnExecutableSync(
-    "git",
-    ["rm", "-r", "--cached", "--force", "--ignore-unmatch", "--", ".agents/sessions"],
-    { cwd: projectRoot, stdio: "inherit" },
-  );
-  if (result.status !== 0) throw new Error("Unable to remove sessions from the Git index");
-  return files.length;
+  return tracked.split(/\r?\n/).filter(Boolean).length;
 }
 
 // Shared history is reconciled when the user looks at it, never on the way
@@ -636,15 +599,6 @@ function reportSessionDiagnostics(diagnostics) {
   const { warnings, notes } = formatSessionDiagnostics(diagnostics);
   for (const note of notes) console.log(note);
   for (const warning of warnings) console.warn(`⚠ ${warning}`);
-}
-
-// The environment one agent normally runs with. Sessions never manufacture or
-// migrate credential directories: project auth is a scope, not a login.
-function agentEnvironment(state, projectRoot, agentId) {
-  const config = effectiveAgentConfig(state, agentId);
-  return config?.auth === "project"
-    ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-    : process.env;
 }
 
 async function dispatchSessions(argumentsList, options = {}) {
@@ -855,7 +809,7 @@ async function dispatchSessions(argumentsList, options = {}) {
   }
   if (mode === "off") {
     const changed = await setSessionsGitIgnored(projectRoot, true);
-    const untracked = untrackSessions(projectRoot);
+    const untracked = await untrackSessions(projectRoot);
     console.log("Session Git sync\n");
     console.log(`Project    ${projectRoot}`);
     console.log("Status     Off");

@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { linkSummaryChanged } from "@avenic/core";
 import * as skills from "../services/skills.ts";
 import type { Scope } from "../services/skills.ts";
 import { defaultSpec as catalogDefaultSpec } from "../services/catalog.ts";
@@ -209,7 +210,7 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
     const result = await runMutation(deps.queue, () => withProgress("修复 Skills 链接", async () => skills.repairLinks(scope, cwd)), () => deps.refresh());
     const { counts, conflicts } = result;
     await vscode.window.showInformationMessage(
-      counts.linked + counts.repaired + counts.migrated === 0
+      !linkSummaryChanged(counts)
         ? "Skills 链接已是最新"
         : `链接 ${counts.linked} · 迁移 ${counts.migrated} · 降级 ${counts.fallback} · 冲突 ${conflicts.length}`,
     );

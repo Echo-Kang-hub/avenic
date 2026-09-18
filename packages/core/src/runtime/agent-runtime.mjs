@@ -3,6 +3,18 @@ import { effectiveAgentConfig, loadRuntime, projectAuthEnvironment } from "./con
 import { bindProject, projectModelStatus, resolveProjectProfile } from "../model/binding.mjs";
 import { buildLaunchInjection } from "../model/inject.mjs";
 
+/**
+ * The environment one agent normally runs with. Sessions never manufacture or
+ * migrate credential directories: project auth is a scope, not a login, so this
+ * is the only place that decides which scope an agent's process sees.
+ */
+export function agentEnvironment(state, projectRoot, agentId) {
+  const config = effectiveAgentConfig(state, agentId);
+  return config?.auth === "project"
+    ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
+    : process.env;
+}
+
 // Resolve the exact runtime used by an ordinary agent launch. Session
 // continuation may add only session arguments; it must not select a model or
 // provider of its own.
@@ -10,9 +22,7 @@ export async function resolveEffectiveAgentRuntime(projectRoot, agentId, options
   const state = options.state ?? await loadRuntime(projectRoot);
   const config = effectiveAgentConfig(state, agentId);
   if (!config) throw new Error(`${getAgent(agentId).displayName} is not initialized`);
-  const environment = options.environment ?? (config.auth === "project"
-    ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-    : process.env);
+  const environment = options.environment ?? agentEnvironment(state, projectRoot, agentId);
   let profile = null;
   try {
     const resolved = await resolveProjectProfile(projectRoot, environment, options.io ?? console);
