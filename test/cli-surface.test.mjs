@@ -549,8 +549,8 @@ test("catalog add, default, and sync round-trip through the CLI", async () => {
 
         const synced = runAgent(projectRoot, ["hub", "sync"], environment);
         assert.equal(synced.status, 0, synced.stderr);
-        assert.match(synced.stdout, /Hub sync/);
-        assert.match(synced.stdout, /Revision\s+[0-9a-f]{40}/);
+        assert.match(synced.stdout, /^Syncing /m);
+        assert.match(synced.stdout, /^Synced · [0-9a-f]{7} · /m);
 
         const missingSpec = runAgent(projectRoot, ["hub", "add"], environment);
         assert.equal(missingSpec.status, 1);

@@ -62,6 +62,8 @@ test("core type declarations cover the extension contract", async () => {
     "readDirectState", "loadKnownCatalogs", "setDefaultCatalogSpec", "loadDefaultCatalogSpec",
     "registerCatalog", "ensureCatalog", "buildCatalog", "loadPacks", "resolvePacks",
     "cloneHead", "detectSkillRoot", "discoverSourceSkills", "locateProjectRoot",
+    // 扩展面板与 CLI 共用同一个缓存路径与同一句同步结果，不允许各自再算一遍。
+    "catalogCacheDirectory", "hubSyncSummary", "shortRevision", "spawnExecutable",
     // 扩展面板直接依赖的三个导出：开关清单/开关落点表（面板显示「实际写入的键名」）与
     // 测试请求地址解析（「将请求：<地址>」实时预览）。缺任何一个，面板就只能自己抄一份
     // 业务逻辑，而设计 §9.7 禁止那样做。

@@ -292,17 +292,26 @@ avenic hub doctor                                                         # 校�
 ```bash
 gh auth login                                            # 1. 登录 GitHub（或改用 SSH key，二选一，只需一次）
 avenic hub add Echo-Kang-hub/SkillsHub    # 2. 设置 Hub 源（换成 <你的用户名>/<你的仓库>），终端会打印 Pack 预览树
-avenic hub sync                                   # 3. 验证可拉取（输出 40 位 commit 即成功）
+avenic hub sync                                   # 3. 验证可拉取（成功后打印 Synced · <short sha> · <时间>）
 avenic skills install                                 # 4. 安装默认 Pack（common）
 ```
 
 - Windows 上 HTTPS 方式默认使用 Git Credential Manager（首次自动弹窗登录）；也可以使用 SSH 地址：`avenic hub add git@github.com:<owner>/<repo>.git`
 - `avenic skills add <owner/repo>` 从单个私有仓库安装 Skill，认证方式相同
 
+同步失败时，Avenic 会判断 git 报出的原因并只给出对应的下一步；六类互不混淆：
+
+| 类别 | 含义与处理 |
+|---|---|
+| `authentication` | 本机 git 被拒（含 403、`terminal prompts disabled`）。先运行 `gh auth status`、`ssh -T git@github.com`，或检查 credential helper |
+| `repo-missing` | 仓库不存在或你的账号看不到。核对 `owner/repo` 拼写与权限 |
+| `ref-missing` | `#` 后面的分支/引用不存在。核对 Hub spec 里的 ref |
+| `network` | DNS、连接超时、TLS（含 `schannel`、`SSL certificate problem`）。检查网络、代理或 VPN |
+| `git-missing` | PATH 上找不到 git。安装 git 后重试 |
+| `cache-filesystem` | 本机缓存目录不可用（权限、被同名文件占用、磁盘满）。错误里会带上具体路径 |
+
 | 现象 | 处理 |
 |---|---|
-| `schannel: failed to receive handshake / SSL/TLS connection failed` | 网络或代理阻断了到 github.com 的 TLS 连接，与认证无关；检查代理/VPN，或改用 SSH 地址 |
-| `Unable to fetch Hub` + `Check your GitHub authentication` | git 没有该私有仓库的访问权限；先运行 `gh auth status` 或 `ssh -T git@github.com` |
 | 换回其他 Hub | 已注册的直接 `avenic hub select` 切换；未注册的再次 `avenic hub add <spec>` |
 
 ### 共享与链接

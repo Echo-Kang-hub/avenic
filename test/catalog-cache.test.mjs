@@ -77,13 +77,16 @@ test("ensureCatalog clones once, reuses, and pins revisions", async () => {
   });
 });
 
-test("ensureCatalog failure message mentions gh auth login", async () => {
+test("ensureCatalog failure names the cause the user has to act on", async () => {
   await withTemp("catalog-fail-", async (root) => {
     const state = path.join(root, "state");
-    await assert.rejects(
-      () => ensureCatalog(path.join(root, "missing-repo"), { environment: { AVENIC_STATE_DIR: state } }),
-      /gh auth login/,
-    );
+    // A path that is not a repository is a spec problem. Telling the user to
+    // log in would send them to fix the one thing that is not wrong.
+    const missing = await ensureCatalog(path.join(root, "missing-repo"), { environment: { AVENIC_STATE_DIR: state } })
+      .then(() => null, (error) => error);
+    assert.equal(missing.kind, "repo-missing");
+    assert.match(missing.message, /not found/i);
+    assert.doesNotMatch(missing.message, /gh auth login/);
   });
 });
 

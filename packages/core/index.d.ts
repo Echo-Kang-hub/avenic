@@ -143,6 +143,17 @@ export function spawnExecutableSync(
     spawn?: (executable: string, argumentsList: string[], options: unknown) => unknown;
   },
 ): { status: number | null; stdout?: string; stderr?: string; error?: Error };
+export function spawnExecutable(
+  executable: string,
+  argumentsList: string[],
+  options?: {
+    cwd?: string;
+    env?: ProcessEnvLike;
+    stdio?: "pipe" | "inherit" | "ignore";
+    capture?: boolean;
+  },
+): Promise<{ status: number | null; stdout: string; stderr: string; error: Error | null }>;
+export function resolveOnPath(executable: string, environment: { PATH?: string; Path?: string }): string | null;
 
 export const PROJECT_ROOT_TOKEN: string;
 export interface SessionLease {
@@ -278,15 +289,19 @@ export function globalLockFile(environment?: ProcessEnvLike): string;
 
 // ---- skills: git / catalog / sources / packs ----
 
-export function git(argumentsList: string[], options?: { cwd?: string; capture?: boolean; environment?: ProcessEnvLike }): string;
-export function run(command: string, argumentsList: string[], options?: unknown): string;
+export function git(argumentsList: string[], options?: { cwd?: string; capture?: boolean; env?: ProcessEnvLike }): Promise<string>;
+export function run(command: string, argumentsList: string[], options?: { cwd?: string; capture?: boolean; env?: ProcessEnvLike }): Promise<string>;
+export function gitExecutable(environment?: ProcessEnvLike): string;
+export function classifyGitFailure(stderr: string): { kind: GitFailureKind; hint: string };
+export type GitFailureKind = "authentication" | "repo-missing" | "ref-missing" | "git-missing" | "network" | "cache-filesystem" | "unknown";
+export function gitFailure(kind: GitFailureKind, options?: { detail?: string; hint?: string }): Error & { kind: GitFailureKind };
 export function normalizeRepositoryInput(reference: string): string;
 export function deriveSourceId(repository: string): string;
 export function repositoryIdentity(repository: string): string;
-export function remoteHead(source: Source): string;
+export function remoteHead(source: Source): Promise<string>;
 export function cloneHead(source: { repository: string }, directory: string): Promise<string>;
 export function cloneRevision(source: Source, directory: string): Promise<string>;
-export function currentRepositoryState(catalogRoot: string): { repository: string | null; revision: string | null; dirty: boolean | null };
+export function currentRepositoryState(catalogRoot: string): Promise<{ repository: string | null; revision: string | null; dirty: boolean | null }>;
 
 export interface KnownCatalogEntry {
   name: string;
@@ -303,8 +318,13 @@ export interface CatalogInfo {
   repository: string;
   ref: string;
   revision: string;
+  shortSha: string;
+  syncedAt: string;
   spec: string;
 }
+export function catalogCacheDirectory(spec: string, environment?: ProcessEnvLike): string;
+export function shortRevision(revision: string): string;
+export function hubSyncSummary(info: { revision: string }, date?: Date): string;
 export function ensureCatalog(spec: string, options?: { environment?: ProcessEnvLike; io?: Io }): Promise<CatalogInfo>;
 export function registerCatalog(spec: string, options?: { environment?: ProcessEnvLike; io?: Io }): Promise<{
   spec: string;

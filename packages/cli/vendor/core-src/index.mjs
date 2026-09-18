@@ -43,7 +43,7 @@ export {
 export { WATCH_INTERVAL_MS, flushNativeSessions, startNativeWatch } from "./runtime/native-watch.mjs";
 export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
 export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
-export { spawnExecutableSync } from "./runtime/process.mjs";
+export { spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
   reconcileCanonicalSession,
@@ -115,24 +115,29 @@ export {
 } from "./skills/paths.mjs";
 export {
   cloneHead,
+  classifyGitFailure,
   cloneRevision,
   currentRepositoryState,
   deriveSourceId,
   git,
+  gitFailure,
   normalizeRepositoryInput,
   remoteHead,
   repositoryIdentity,
   run,
 } from "./skills/git.mjs";
 export {
+  catalogCacheDirectory,
   catalogDisplayName,
   ensureCatalog,
+  hubSyncSummary,
   loadDefaultCatalogSpec,
   loadKnownCatalogs,
   parseCatalogSpec,
   registerCatalog,
   registerKnownCatalog,
   setDefaultCatalogSpec,
+  shortRevision,
 } from "./skills/catalog.mjs";
 export {
   addDirectSkills,

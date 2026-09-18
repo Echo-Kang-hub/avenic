@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { buildCatalog, catalogCacheRoot, currentRepositoryState, defaultCatalogFile, ensureCatalog, loadDefaultCatalogSpec, loadKnownCatalogs, loadPacks, loadSources, parseCatalogSpec, registerCatalog, repositoryIdentity, resolvePack, setDefaultCatalogSpec } from "@avenic/core";
+import { buildCatalog, catalogCacheDirectory, currentRepositoryState, defaultCatalogFile, ensureCatalog, hubSyncSummary, loadDefaultCatalogSpec, loadKnownCatalogs, loadPacks, loadSources, registerCatalog, resolvePack, setDefaultCatalogSpec } from "@avenic/core";
 import type { CatalogInfo, KnownCatalogEntry, Pack, ProcessEnvLike, Source } from "@avenic/core";
 
 export async function defaultSpec(environment = process.env): Promise<string | null> {
@@ -28,6 +28,11 @@ export function sync(spec: string, environment = process.env): Promise<CatalogIn
   return ensureCatalog(spec, { environment });
 }
 
+// 同步结果统一由 core 措辞：「Synced · <short sha> · <时间>」，与 CLI 逐字一致。
+export function syncSummary(info: CatalogInfo): string {
+  return hubSyncSummary(info);
+}
+
 // 读取「本地缓存 Catalog」的修订（Overview「修订」行）：零网络——只读缓存目录的 git
 // HEAD（git rev-parse/status），绝不做 fetch/clone。缓存缺失（未同步过）返回 null，
 // 调用方降级为「—」占位符。旧实现走 resolveInstallSource → ensureCatalog，每次加载
@@ -37,25 +42,11 @@ export async function cachedRevision(_cwd: string, environment: ProcessEnvLike =
     const spec = await loadDefaultCatalogSpec(environment);
     const root = catalogCacheDirectory(spec, environment);
     if (!existsSync(root)) return null;
-    const state = currentRepositoryState(root);
+    const state = await currentRepositoryState(root);
     return state.revision ?? null;
   } catch {
     return null;
   }
-}
-
-// core catalog.mjs cacheDirectory 的算法镜像（cacheDirectory 非导出）：slug 规则与
-// repositoryIdentity 完全一致，仅借用公开的 catalogCacheRoot/repositoryIdentity，不改 core。
-function catalogCacheDirectory(spec: string, environment: ProcessEnvLike): string {
-  const { repository } = parseCatalogSpec(spec);
-  const identity = repositoryIdentity(repository).replace(/\\/g, "/");
-  const parts = identity.split("/").filter(Boolean);
-  const owner = parts.at(-2) ?? "catalog";
-  const name = parts.at(-1) ?? "catalog";
-  const slug = `${owner}-${name}`
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
-  return path.join(catalogCacheRoot(environment), slug);
 }
 
 // Catalog 树只读预览的缓存根优先路径：已缓存（packs 目录存在）直接返回缓存目录；

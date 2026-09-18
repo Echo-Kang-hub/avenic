@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { fail } from "../util/fail.mjs";
 import { readJson } from "../util/json.mjs";
-import { git, normalizeRepositoryInput, repositoryIdentity } from "./git.mjs";
+import { git, gitFailure, normalizeRepositoryInput, repositoryIdentity } from "./git.mjs";
 import { loadPacks } from "./packs.mjs";
 import { catalogCacheRoot, defaultCatalogFile, deprecatedEnvironmentValue, knownCatalogsFile } from "./paths.mjs";
 
@@ -76,7 +76,11 @@ export async function registerKnownCatalog(environment = process.env, spec) {
   await writeFile(file, `${JSON.stringify({ schemaVersion: 1, catalogs: next }, null, 2)}\n`, "utf8");
 }
 
-function cacheDirectory(environment, repository) {
+// Where one Hub lives in the local cache. Exported because the extension needs
+// to read the same directory: re-deriving it from the same slug rule meant a
+// change here silently pointed the editor at a directory the CLI never wrote.
+export function catalogCacheDirectory(spec, environment = process.env) {
+  const { repository } = parseCatalogSpec(spec);
   const identity = repositoryIdentity(repository).replace(/\\/g, "/");
   const parts = identity.split("/").filter(Boolean);
   const owner = parts.at(-2) ?? "catalog";
@@ -87,23 +91,60 @@ function cacheDirectory(environment, repository) {
   return path.join(catalogCacheRoot(environment), slug);
 }
 
+export function shortRevision(revision) {
+  return typeof revision === "string" ? revision.slice(0, 7) : "";
+}
+
+// One line, the same in both front ends: "Synced · a1b2c3d · 2026-09-19 14:03".
+export function hubSyncSummary(info, date = new Date()) {
+  const when = Number.isNaN(date.getTime()) ? new Date() : date;
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
+  return `Synced · ${shortRevision(info.revision)} · ${stamp}`;
+}
+
+// Filesystem trouble is about this machine, never about the Hub, so it must not
+// be reported with the Hub's vocabulary.
+const CACHE_FAILURE_CODES = new Set(["EACCES", "EPERM", "EEXIST", "ENOTDIR", "ENOSPC", "EROFS", "EBUSY"]);
+
 export async function ensureCatalog(spec, options = {}) {
   const environment = options.environment ?? process.env;
   const { repository, ref } = parseCatalogSpec(spec);
-  const directory = cacheDirectory(environment, repository);
+  const directory = catalogCacheDirectory(spec, environment);
   try {
     if (existsSync(path.join(directory, ".git"))) {
-      git(["-C", directory, "fetch", "--depth", "1", "origin", ref], { capture: true });
+      await git(["-C", directory, "fetch", "--depth", "1", "origin", ref]);
     } else {
       await mkdir(directory, { recursive: true });
-      git(["-C", directory, "init", "--quiet"], { capture: true });
-      git(["-C", directory, "remote", "add", "origin", repository], { capture: true });
-      git(["-C", directory, "fetch", "--depth", "1", "origin", ref], { capture: true });
+      await git(["-C", directory, "init", "--quiet"]);
+      await git(["-C", directory, "remote", "add", "origin", repository]);
+      await git(["-C", directory, "fetch", "--depth", "1", "origin", ref]);
     }
-    git(["-C", directory, "checkout", "--quiet", "--detach", "FETCH_HEAD"], { capture: true });
-    const revision = git(["-C", directory, "rev-parse", "HEAD"], { capture: true });
-    return { catalogRoot: directory, repository, ref, revision, spec };
+    await git(["-C", directory, "checkout", "--quiet", "--detach", "FETCH_HEAD"]);
+    const revision = await git(["-C", directory, "rev-parse", "HEAD"]);
+    return {
+      catalogRoot: directory,
+      repository,
+      ref,
+      revision,
+      shortSha: shortRevision(revision),
+      syncedAt: new Date().toISOString(),
+      spec,
+    };
   } catch (error) {
+    if (CACHE_FAILURE_CODES.has(error?.code) || error?.path === directory || /^E[A-Z]+:/.test(error?.message ?? "")) {
+      const blocked = gitFailure("cache-filesystem", {
+        detail: `Unable to use the Hub cache directory ${directory}: ${error.message}`,
+        hint: "Remove whatever occupies that path, or set AVENIC_STATE_DIR to a writable directory.",
+      });
+      blocked.cause = error;
+      throw blocked;
+    }
+    if (error?.kind) {
+      const wrapped = gitFailure(error.kind, { detail: `${error.message}\nUnable to sync Hub: ${spec}` });
+      wrapped.cause = error;
+      throw wrapped;
+    }
     fail(
       `${error.message}\nUnable to fetch Hub: ${spec}\n` +
       "Check your GitHub authentication (gh auth login, SSH key, or credential helper) and the Hub spec.\n" +

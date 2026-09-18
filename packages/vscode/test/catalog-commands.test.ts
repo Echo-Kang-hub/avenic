@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { add, defaultSpec, listKnown, packStructure, packsFor, select, sync } from "../src/services/catalog.ts";
+import { add, defaultSpec, listKnown, packStructure, packsFor, select, sync, syncSummary } from "../src/services/catalog.ts";
 import { makeCatalogFixture, testEnv } from "./helpers.ts";
 
 test("catalog add → select → sync round-trip with local fixture", async () => {
@@ -23,6 +23,20 @@ test("catalog add → select → sync round-trip with local fixture", async () =
     assert.equal(await defaultSpec(env), catalogDir);
     const info = await sync(catalogDir, env);
     assert.match(info.revision, /^[0-9a-f]{40}$/);
+    // 通知栏与 CLI 用的是同一个 core 措辞，不许各写一句。
+    assert.match(syncSummary(info), /^Synced · [0-9a-f]{7} · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed Hub sync carries the classified cause into the error dialog", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-catalog-"));
+  try {
+    const env = testEnv(path.join(root, "state"));
+    const error = await sync(path.join(root, "not-a-hub"), env).then(() => null, (failure: unknown) => failure as Error & { kind?: string });
+    assert.equal(error?.kind, "repo-missing");
+    assert.match(String(error?.message), /not found/i);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

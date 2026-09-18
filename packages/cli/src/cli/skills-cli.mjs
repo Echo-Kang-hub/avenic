@@ -32,6 +32,7 @@ import {
   ensureCatalog,
   fail,
   findSource,
+  hubSyncSummary,
   installCopies,
   installPacks,
   installedPackIds,
@@ -509,7 +510,7 @@ async function commandUpdate(argumentsList, catalogRoot, io = console) {
   }
   if (checkOnly) {
     for (const source of sources) {
-      const latest = remoteHead(source);
+      const latest = await remoteHead(source);
       const status = latest === source.revision ? "up to date" : "update available";
       io.log(`${source.id}: ${status} ${source.revision.slice(0, 8)} -> ${latest.slice(0, 8)}`);
     }
@@ -936,14 +937,15 @@ async function runMaintenanceCommand(command, argumentsList, catalogRoot, io) {
 async function commandHubSync(options = {}) {
   const io = options.io ?? console;
   const spec = await loadDefaultCatalogSpec(options.environment);
+  io.log(`Syncing ${spec}…`);
   const catalogInfo = await ensureCatalog(spec, {
     environment: options.environment,
     io,
   });
-  io.log("Hub sync\n");
-  io.log(`Hub   ${catalogInfo.spec}`);
-  io.log(`Cache     ${catalogInfo.catalogRoot}`);
-  io.log(`Revision  ${catalogInfo.revision}`);
+  io.log(hubSyncSummary(catalogInfo));
+  io.log(`Hub     ${catalogInfo.spec}`);
+  io.log(`Cache   ${catalogInfo.catalogRoot}`);
+  io.log(`Branch  ${catalogInfo.ref}`);
 }
 
 async function commandHubAdd(argumentsList, options = {}) {

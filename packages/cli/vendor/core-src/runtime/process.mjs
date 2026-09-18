@@ -1,9 +1,9 @@
-import { spawnSync } from "node:child_process";
+import { spawn as spawnAsync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-function resolveOnPath(executable, environment) {
+export function resolveOnPath(executable, environment) {
   if (path.isAbsolute(executable) || executable.includes(path.sep)) {
     return existsSync(executable) ? executable : null;
   }
@@ -54,4 +54,33 @@ export function spawnExecutableSync(executable, argumentsList, options = {}) {
   }
   const resolved = invocation(executable, argumentsList, environment);
   return spawnSync(resolved.command, resolved.argumentsList, { ...spawnOptions, shell: resolved.shell ?? false, env: environment });
+}
+
+// Wait for a child process the way a terminal would, but without stopping the
+// event loop. Anything that shares its loop with a user interface (the VS Code
+// extension host, the CLI's interactive prompts) has to use this one: the sync
+// variant monopolises the thread for as long as the child runs, which for a
+// network operation is seconds of frozen window.
+export function spawnExecutable(executable, argumentsList, options = {}) {
+  const environment = options.env ?? process.env;
+  const { spawn, capture = true, ...spawnOptions } = options;
+  return new Promise((resolve) => {
+    const resolved = invocation(executable, argumentsList, environment);
+    const child = spawnAsync(resolved.command, resolved.argumentsList, {
+      ...spawnOptions,
+      shell: resolved.shell ?? false,
+      env: environment,
+      // Captured output, but the child keeps the real stdin: a command that
+      // stops to ask for a password (git writing to a private Hub) has to be
+      // able to read the answer from the terminal it was started in.
+      stdio: capture ? ["inherit", "pipe", "pipe"] : spawnOptions.stdio ?? "inherit",
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => resolve({ status: null, stdout, stderr, error }));
+    child.on("close", (status) => resolve({ status, stdout, stderr, error: null }));
+  });
 }

@@ -62,7 +62,7 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
     const spec = await catalog.defaultSpec();
     if (spec === null) { await vscode.window.showWarningMessage("未选择默认 Hub"); return; }
     const info = await runMutation(deps.queue, () => withProgress("同步 Hub", async (report) => { report("拉取并解析…"); return catalog.sync(spec); }), () => deps.refresh());
-    await vscode.window.showInformationMessage(`已同步 ${spec} → revision ${info.revision}`);
+    await vscode.window.showInformationMessage(catalog.syncSummary(info));
   });
 
   // Catalog 树 Pack 行 → 一键安装：arg 为行 TreeItem（packId/catalogSpec 由 provider 挂载）。

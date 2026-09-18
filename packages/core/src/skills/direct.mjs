@@ -56,12 +56,12 @@ export async function writeDirectState(context, state) {
 
 async function ensureDirectClone(repository, directory) {
   if (existsSync(path.join(directory, ".git"))) {
-    git(["-C", directory, "fetch", "--depth", "1", "origin"], { capture: true });
-    git(["-C", directory, "checkout", "--quiet", "--detach", "FETCH_HEAD"], { capture: true });
+    await git(["-C", directory, "fetch", "--depth", "1", "origin"]);
+    await git(["-C", directory, "checkout", "--quiet", "--detach", "FETCH_HEAD"]);
   } else {
     await cloneHead({ repository }, directory);
   }
-  return git(["-C", directory, "rev-parse", "HEAD"], { capture: true });
+  return git(["-C", directory, "rev-parse", "HEAD"]);
 }
 
 async function findLicenseFile(cloneDirectory) {
