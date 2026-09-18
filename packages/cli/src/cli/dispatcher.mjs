@@ -165,10 +165,6 @@ async function interactiveProjectDraft(projectRoot, editing = false) {
   return { agents, sessionInterop };
 }
 
-async function applyProjectDraft(projectRoot, draft) {
-  return applyProjectConfiguration(projectRoot, draft);
-}
-
 async function dispatchProjectSetup(argumentsList, editing = false) {
   const projectRoot = locateProjectRoot();
   let draft;
@@ -206,11 +202,17 @@ async function dispatchProjectSetup(argumentsList, editing = false) {
     }
     draft = { agents, sessionInterop };
   }
-  const result = await applyProjectDraft(projectRoot, draft);
+  const result = await applyProjectConfiguration(projectRoot, draft);
   console.log(`Avenic project ${editing ? "updated" : "initialized"}\n`);
   console.log(`Project  ${projectRoot}`);
   for (const line of configurationSummary(result.config)) console.log(`  ${line}`);
   if (result.imported.length) console.log(`Imported native histories from ${result.imported.length} agent(s) into the shared workspace.`);
+  // Reconfiguring is also a moment to look for history that was left behind,
+  // since the next launch deliberately does not.
+  if (result.config.sessionInterop === "shared" && result.imported.length === 0) {
+    const { imported } = await reconcileSharedHistory(projectRoot, await loadRuntime(projectRoot));
+    if (imported > 0) console.log(`Imported ${imported} session(s) into the shared workspace.`);
+  }
   return 0;
 }
 
@@ -437,9 +439,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   if (!config) {
     throw new Error(`${agent.displayName} is not initialized. Run: avenic ${agentId} init`);
   }
-  const environment = options.environment ?? (config.auth === "project"
-    ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-    : process.env);
+  const environment = options.environment ?? agentEnvironment(state, projectRoot, agentId);
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
@@ -596,6 +596,39 @@ function untrackSessions(projectRoot) {
   return files.length;
 }
 
+// Shared history is reconciled when the user looks at it, never on the way
+// into an agent. A run whose exit path never happened (closed terminal, killed
+// editor, dead watchdog) is picked up here instead of costing every launch.
+// Returns the diagnostics the caller must surface once.
+async function reconcileSharedHistory(projectRoot, state) {
+  if (projectConfig(state).sessionInterop !== "shared") return { imported: 0, diagnostics: [] };
+  const agentIds = Object.keys(projectConfig(state).agents);
+  if (agentIds.length === 0) return { imported: 0, diagnostics: [] };
+  const results = await recoverSharedNativeSessions(projectRoot, agentIds, {
+    environmentForAgent: (agentId) => agentEnvironment(state, projectRoot, agentId),
+  });
+  return {
+    imported: results.reduce((total, result) => total + (result.imported ?? 0), 0),
+    diagnostics: results.flatMap((result) => result.diagnostics ?? []).filter(Boolean),
+  };
+}
+
+async function reportReconciliation(projectRoot) {
+  const { diagnostics } = await reconcileSharedHistory(projectRoot, await loadRuntime(projectRoot));
+  for (const diagnostic of diagnostics) {
+    console.warn(typeof diagnostic === "string" ? diagnostic : JSON.stringify(diagnostic));
+  }
+}
+
+// The environment one agent normally runs with. Sessions never manufacture or
+// migrate credential directories: project auth is a scope, not a login.
+function agentEnvironment(state, projectRoot, agentId) {
+  const config = effectiveAgentConfig(state, agentId);
+  return config?.auth === "project"
+    ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
+    : process.env;
+}
+
 async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
@@ -617,6 +650,9 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (!action) return 0;
     if (action[0] === "back") return 0;
     if (action[0] === "migrate") return dispatchProjectSetup([], true);
+    // Continue and Set active list shared history directly, so reconcile
+    // before the choices are drawn.
+    if (action[0] === "active" || action[0] === "continue") await reportReconciliation(projectRoot);
     if (action[0] === "active") {
       const sessions = await listCanonicalSessions(projectRoot);
       if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
@@ -636,6 +672,10 @@ async function dispatchSessions(argumentsList, options = {}) {
     return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
   }
   if (!command) return dispatchSessions(["status"], options);
+  // `sync` reconciles every agent itself, in every mode.
+  if (command === "list" || command === "status" || command === "continue") {
+    await reportReconciliation(projectRoot);
+  }
   if ((command === "list" || command === "status") && argumentsList.length === 1) {
     const sessions = await listCanonicalSessions(projectRoot);
     const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
@@ -680,11 +720,10 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (projectConfig(state).sessionInterop !== "shared") {
       throw new Error("Shared continuation is disabled for this project. Run: avenic change --history shared");
     }
-    const config = effectiveAgentConfig(state, agentId);
-    if (!config) throw new Error(`${getAgent(agentId).displayName} is not initialized. Run: avenic ${agentId} init`);
-    const environment = config.auth === "project"
-      ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-      : process.env;
+    if (!effectiveAgentConfig(state, agentId)) {
+      throw new Error(`${getAgent(agentId).displayName} is not initialized. Run: avenic ${agentId} init`);
+    }
+    const environment = agentEnvironment(state, projectRoot, agentId);
     if (agentId === "opencode") {
       const projection = await projectCanonicalSession(projectRoot, mode, agentId, { environment });
       try {
@@ -709,13 +748,7 @@ async function dispatchSessions(argumentsList, options = {}) {
       // agent. Sessions never manufacture or migrate credential directories.
       captureKnown: async () => {
         const results = await reconcileCanonicalSession(projectRoot, mode, {
-          environmentForAgent: (sourceAgent) => {
-            const sourceConfig = effectiveAgentConfig(state, sourceAgent);
-            if (!sourceConfig) return process.env;
-            return sourceConfig.auth === "project"
-              ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
-              : process.env;
-          },
+          environmentForAgent: (sourceAgent) => agentEnvironment(state, projectRoot, sourceAgent),
         });
         for (const result of results.filter((entry) => entry.stale)) {
           console.warn(`${getAgent(result.agentId).displayName} native mapping is stale; rehydrating from canonical history.`);
@@ -789,10 +822,7 @@ async function dispatchSessions(argumentsList, options = {}) {
     const state = await loadRuntime(projectRoot);
     const results = [];
     for (const agentId of Object.keys(projectConfig(state).agents)) {
-      const config = effectiveAgentConfig(state, agentId);
-      const environment = config?.auth === "project"
-        ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-        : process.env;
+      const environment = agentEnvironment(state, projectRoot, agentId);
       results.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
     }
     console.log(`Synced ${results.reduce((total, item) => total + (item.imported ?? 0), 0)} native session(s).`);
