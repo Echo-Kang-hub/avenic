@@ -6,6 +6,30 @@
   native-session scopes, and Shared or Isolated session history.
 - Added a single Configure Project entry point and an initialization welcome
   state; launch continues to open the official default agent TUI.
+- Hub sync no longer freezes the window: git runs asynchronously, so a clone or
+  fetch over a slow network leaves the editor usable. Failures are classified
+  — authentication, missing repository, missing ref, missing git, network,
+  cache blocked — and each kind shows the one next step that applies, instead
+  of "check your authentication" for a misspelled repository.
+- Launching an agent now takes the same path `avenic <agent>` takes: one
+  launch group, one model injection, one recovery policy, shared with the CLI
+  and the detached watchdog. A launch that dies mid-snapshot no longer writes a
+  half-copied tree back over your real history, and no longer scans every
+  agent's history before the terminal opens.
+- Agent CLI detection and version checks come from core in one asynchronous
+  probe, so refreshing the status no longer runs synchronous `--version`
+  spawns on the thread that paints the window.
+- Shared history is reconciled when you open Sessions, not before every
+  launch.
+- Unmanaged Skills are now decided against the managed set rather than against
+  what the catalog displays, so a Skill you installed from the CLI is no longer
+  offered for adoption.
+- The active editor's workspace folder is matched by path containment, so
+  Windows folders that end in a separator and filesystem roots resolve to the
+  right project.
+- Malformed native-history files are reported once per run, in the CLI's
+  wording, and are never modified; captures report what they skipped instead of
+  printing an object into the message.
 
 ## 0.2.0
 

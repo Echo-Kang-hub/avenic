@@ -1,7 +1,45 @@
 # Changelog
 
-## 1.5.2 / 1.4.2 - 2026-09-18
+## 1.5.2 / 1.4.2 - 2026-09-19
 
+- Remember what was already read: Claude and Codex native history is captured
+  and imported by what changed since the last run instead of by re-reading
+  every session file, so a plain launch reaches the official agent TUI without
+  walking history it has already seen. First run pays for the history; every
+  run after it pays for the delta, and a truncated or rewritten file is still
+  read in full.
+- Keep a running agent's sessions durable instead of waiting for it to exit:
+  the launch group mirrors the project's native storage before the agent
+  starts, a background pass captures while it runs, and the exit path
+  reconciles what is left — so an abrupt exit loses at most the writes still in
+  flight, and a second Avenic launch joins the group rather than racing it.
+- Write canonical history back into native storage only where the two sides
+  disagree. Both stamps are recorded per file, so a repeated restore costs one
+  comparison, a lost cursor costs one re-render, and neither can lose history.
+- Give every malformed native-history problem one report and one wording,
+  printed once per run. Native files are still never modified, and the valid
+  records around the broken line are still imported.
+- Make Hub sync a real network operation that can be diagnosed, using the
+  system's own git credentials. Failures name their kind — authentication,
+  repo-missing, ref-missing, git-missing, network, cache-filesystem or unknown
+  — and Avenic still does not create its own GitHub token system.
+- Reconcile shared history when the user opens the Sessions view, not on every
+  launch.
+- Ask OpenCode which sessions moved instead of exporting its whole history
+  again.
+- Decide what an agent CLI version is, and whether it is usable, in one place
+  shared by the CLI and the VS Code extension; the probe never blocks the UI.
+- Decide unmanaged Skills against the managed set rather than against what the
+  catalog happens to display, so a Skill the catalog no longer lists can still
+  be removed.
+- Answer "which Skills are unmanaged", how the Skill catalog is laid out, and
+  how everything is uninstalled from one place each, in core.
+- Pick the active editor's workspace folder by core's path containment, so
+  roots that end in a separator and filesystem roots are matched on Windows
+  too.
+- Fix a launch in a project whose native session directory exists but holds
+  nothing — Claude Code creates that directory on startup, so this was the
+  normal state of a project the agent had only been opened in.
 - Make the shared init/change agent selector require at least one selection,
   without changing generic optional multi-select behavior.
 - Add the compact interactive Avenic terminal banner and complete the Sessions

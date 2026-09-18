@@ -1239,40 +1239,157 @@ Filled in during execution.
 
 ### Launch latency
 
-Two numbers matter, and they are measured separately (`scripts/perf/launch-profile.mjs`):
+Measured with the committed harness, `npm run perf` (`scripts/perf/profile.mjs`).
+It spawns the real CLI against a real fixture — 40 Claude sessions × 400
+records, 120 Codex rollouts, 60 other workspaces' Claude history — with a
+stub agent on `PATH`, so every number below is wall clock for a process a
+user would have run, not a microbenchmark. The harness prints the fixture
+size with the numbers so the two cannot drift apart.
 
-- **time to agent** — how long until the official agent process starts, i.e. what the user waits for.
-- **wrapper total** — how long until the shell prompt returns after quitting the agent, which includes the capture that makes the run durable.
+What the user waits for is the delay before the official agent process
+starts. The wrapper's own lifetime adds the capture that makes the run
+durable.
 
-Fixture: 40 Claude sessions × 400 records, 120 Codex rollouts, one project.
+| Command | Before | After |
+|---|---|---|
+| `avenic --version` | 10 945 ms | 87 ms |
+| `avenic claude` (cold) | 7 677 ms | 833 ms |
+| `avenic claude` (warm) | 4 446 ms | 780–1037 ms (median ≈ 860 ms) |
+| `avenic codex` (warm) | 3 670 ms | 393–484 ms |
+| `avenic opencode` (warm) | 2 301 ms | 220–250 ms |
+| `avenic sessions status` | — | 704–734 ms |
+| `avenic status` | — | 136–143 ms |
 
-| Command | Before (wrapper) | After (wrapper) | Time to agent (after) |
-|---|---|---|---|
-| `avenic claude` (cold) | 10 945 ms | 244 ms | 244 ms |
-| `avenic claude` (warm) | 7 677 ms | 339 ms | 284–331 ms |
-| `avenic codex` (warm) | 4 446 ms | 210 ms | 187–201 ms |
-| `avenic opencode` (warm) | 3 670 ms | 275 ms | 256–305 ms |
+The "before" column is the baseline measured on 2026-09-19 before any
+change, on this machine. The `claude` target is under one second and the
+median clears it; the spread is this machine (Windows, Defender scanning
+the fixture as it is written), and the four runs behind it were 780, 852,
+861 and 1037 ms.
 
-Per-step, warm (`.tmp/perf/step-profile.mjs`):
+Per-step, warm:
 
 | Step | Before | After |
 |---|---|---|
-| `claude.capture` (warm) | 2 301 ms | 48 ms |
-| `importProjectSessions(claude)` (warm) | 2 799 ms | 27 ms |
-| `codex.capture` (warm) | 273 ms | 24 ms |
-| `importProjectSessions(codex)` (warm) | 509 ms | 25 ms |
-| `recoverSharedNativeSessions` (3 agents) | 3 298 ms | 125 ms |
-| exit capture, claude | 2 706 ms | 26 ms |
-| exit capture, codex | 498 ms | 29 ms |
-| `claude.revertNative` | 192 ms | 17 ms |
-| `codex.revertNative` | 519 ms | 38 ms |
+| `claude.capture` | 2 301 ms | 205–322 ms |
+| `claude.capture` (`knownOnly`) | — | 77–114 ms |
+| `importProjectSessions(claude)` | 2 799 ms | 712–763 ms |
+| `codex.capture` | 273 ms | 79–93 ms |
+| `importProjectSessions(codex)` | 509 ms | 283–303 ms |
+| `recoverSharedNativeSessions` (3 agents) | 3 298 ms | 84–102 ms |
+| `listCanonicalSessions` | — | 224–248 ms |
+| `claude.revertNative` | 192 ms | 3–4 ms |
+| `codex.revertNative` | 519 ms | 20 ms |
+| exit capture, claude (`observeSharedNativeSessions`) | 2 706 ms | 22–27 ms |
+| exit capture, codex | 498 ms | 13–14 ms |
+
+Two steps remain in the hundreds of milliseconds and both are bounded by
+work, not by history: `claude.capture` re-reads the head of every Claude
+session on the machine to decide which belong to this project (the gap to
+`knownOnly` is that discovery), and `importProjectSessions(claude)` parses
+the records that genuinely changed. Both scale with what moved, not with
+how much history exists.
+
+The remaining fixed cost of a launch is the native-storage snapshot: the
+launch group copies the project's native session tree before the agent
+starts and puts it back when the run ends, which is what keeps a run's
+sessions inside the project. On this fixture that copy is 200–450 ms, and
+it is I/O the operating system's file inspection dominates rather than the
+8 MB itself.
 
 ### Production LOC
 
-| Area | Before | After |
+Counted over production sources only:
+
+```bash
+find packages/core/src packages/cli/src packages/cli/scripts packages/vscode/src \
+  -type f \( -name '*.mjs' -o -name '*.ts' \) | xargs wc -l | tail -1
+```
+
+| Area | Before | After | Added | Deleted | Net |
+|---|---|---|---|---|---|
+| core | 6 609 | 7 638 | +1 288 | −256 | **+1 032** |
+| CLI | 2 858 | 2 836 | +203 | −225 | **−22** |
+| CLI scripts | 68 | 75 | +34 | −27 | **+7** |
+| VS Code | 3 102 | 3 020 | +106 | −188 | **−82** |
+| **Total** | **12 637** | **13 569** | **+1 631** | **−696** | **+935** |
+
+The net is positive because this release added capability: the cursor
+store, incremental capture and import, runtime durability, session
+recovery, one diagnostic surface, and Hub sync as a real network
+operation. The consolidation below is what kept the addition from being
+larger — core absorbed about twice the code of the feature work and both
+hosts shrank. No `Manager`, `Controller`, `Coordinator` or `Engine`
+module exists anywhere in the tree.
+
+### Duplicated orchestration
+
+Places that implemented the same decision, before → after:
+
+| Decision | Before | After |
 |---|---|---|
-| core | 6 609 | |
-| CLI | 2 858 | |
-| CLI scripts | 68 | |
-| VS Code | 3 102 | |
-| **Total** | **12 637** | |
+| Native-history capture pipeline | 3 near-copies | 1 with flags |
+| "Is this a session file?" | 5 predicates | 2 (per-agent layout differs on purpose) |
+| Adapter restore body | 3 | 1 (`restoreInto`) |
+| Session head read | 2 | 1 (bounded, with a whole-file fallback) |
+| Project-root rewrite in a JSONL record | 2 | 1 |
+| Role sets | 3 | 2 (`CONVERSATION_ROLES` vs OpenCode's readable set) |
+| Launch group + launch resolution | 2 hosts × 2 copies | 1 per host, one shared core sequence |
+| Agent CLI version rules (VS Code) | 4 (package map, parser, comparator, npm spawn) | 0 — all in core |
+| "Which Skills on disk are unmanaged?" | 2 hosts × own subtraction | 1 (core returns the set) |
+| Uninstall-everything sequence | 2 | 1 (`removeAllInstalledSkills`) |
+| Catalog layout joins | 9 call sites, 4 spellings | 1 (`catalogLayout`) |
+| Path containment (VS Code) | 1 hand-rolled | 0 — core's `isInside` |
+| Cached file head protocol | 2 | 1 (`cachedFileHead`) |
+
+The two predicates that stayed separate answer different questions: "is
+this a conversation event" for canonical import, and "can OpenCode read
+this role back" for its projection. The two role sets are the reason a
+system event is reported rather than silently dropped.
+
+### Versions
+
+What the registries actually hold, versus what the repository carries:
+
+| Artifact | Published | Repository |
+|---|---|---|
+| `avenic` | 1.5.1 (`latest`) | 1.5.2 |
+| `@avenic/core` | 1.4.1 | 1.4.2 |
+| `avenic-agent-manager` (Marketplace) | 0.2.0 | 0.3.0 |
+
+The repository was already one patch above every published version — the
+1.5.2 / 1.4.2 entry was written on 2026-09-18 and never published, and
+0.3.0 has never been uploaded. So nothing needs bumping, and no published
+version is reused: this release publishes 1.5.2 / 1.4.2 / 0.3.0.
+
+Because 1.5.2 never reached a registry, its changelog entry is the entry
+for what this release ships, and the convergence work that landed after
+the entry was written belongs in it rather than in a second entry for a
+version nobody can install. The entry keeps its 2026-09-18 bullets, gains
+the 2026-09-19 ones, and is dated 2026-09-19.
+
+### Release smoke
+
+`npm run test:release` (`integration/release-smoke.mjs`) packs
+`packages/cli`, installs the tarball into a temporary global prefix, and
+runs what a user runs against that install:
+
+- `avenic --version` — must print the version from `package.json`, not a
+  constant.
+- `avenic init --agents claude,codex --auth global --sessions project
+  --history shared`, then `avenic status`.
+- `avenic claude` — a real launch, with a stub on `PATH` that writes a
+  real-shaped native transcript; the run's events must be in the project's
+  shared history when the command returns, and `sessions list` / `sessions
+  status` must show the session and its cursor.
+- `avenic change --auth project --sessions project --history isolated`,
+  then `avenic codex` — the run must stay in its own history (no project
+  file appears in the shared workspace), and `sessions sync` is what
+  imports it.
+- `avenic change --history shared` — the two histories stay two sessions.
+- `avenic self-update`, three ways, against a stub npm: already current
+  (must not reinstall), newer available (must install and then verify
+  `PATH` runs the new one), and install-succeeded-but-`PATH`-still-old
+  (must fail loudly, non-zero).
+
+Its assertions were checked for teeth: with the version expectation
+mutated to a wrong value the run fails with exit 1.
