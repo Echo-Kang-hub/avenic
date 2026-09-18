@@ -70,3 +70,29 @@ test("capture never rewrites the native session", async () => {
     assert.deepEqual(await nativeSnapshot(), before);
   });
 });
+
+// Discovery reads the head of every Claude session on the machine to decide
+// which of them belong to this project, so a long unrelated history must not
+// turn this project's bookkeeping into a per-session filesystem walk. The
+// precise contract — a repeated comparison never revisits the filesystem — is
+// asserted in session-adapter-contract.test.mjs; this ceiling only catches a
+// catastrophic regression (re-reading whole foreign transcripts, say), so it
+// is deliberately loose enough to survive a loaded machine.
+const FOREIGN_DISCOVERY_BUDGET_MS = 1000;
+
+test("discovery stays bounded when the machine holds a long foreign history", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds, foreignSessions }) => {
+    assert.ok(foreignSessions >= 500, "the fixture must hold enough foreign sessions to matter");
+    const adapter = getSessionAdapter("claude");
+    await adapter.capture(projectRoot, { environment });
+    const started = process.hrtime.bigint();
+    const second = await adapter.capture(projectRoot, { environment });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.equal(second.changed, false);
+    assert.equal(second.count, sessionIds.length);
+    assert.ok(
+      ms < FOREIGN_DISCOVERY_BUDGET_MS,
+      `re-discovery took ${ms.toFixed(0)} ms over ${foreignSessions} foreign sessions (budget ${FOREIGN_DISCOVERY_BUDGET_MS} ms)`,
+    );
+  }, { sessions: 2, records: 4, otherWorkspaces: { projects: 60, sessions: 25 } });
+});

@@ -114,6 +114,10 @@ export async function withClaudeProject(run, options = {}) {
   const records = options.records ?? 4;
   const agents = options.agents ?? { claude: { auth: "global", sessions: "project" } };
   const sessionInterop = options.sessionInterop ?? "shared";
+  // A real machine holds other workspaces' history too. Those sessions must be
+  // recognised as foreign, which is the only part of discovery whose cost grows
+  // with the size of the machine rather than the size of this project.
+  const otherWorkspaces = options.otherWorkspaces ?? { projects: 0, sessions: 0 };
 
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-session-fixture-"));
   const home = path.join(root, "home");
@@ -148,6 +152,20 @@ export async function withClaudeProject(run, options = {}) {
       `${Array.from({ length: records }, (_, i) => claudeRecord(sessionId, i, projectRoot)).join("\n")}\n`,
     );
   }
+  let foreignSessions = 0;
+  for (let project = 0; project < otherWorkspaces.projects; project += 1) {
+    const directory = path.join(claudeHome, "projects", `-other-workspace-${project}`);
+    await mkdir(directory, { recursive: true });
+    const cwd = `C:\\other\\workspace-${project}`;
+    for (let index = 0; index < otherWorkspaces.sessions; index += 1) {
+      const sessionId = `other-${project}-${index}`;
+      foreignSessions += 1;
+      await writeFile(
+        path.join(directory, `${sessionId}.jsonl`),
+        `${Array.from({ length: records }, (_, i) => claudeRecord(sessionId, i, cwd)).join("\n")}\n`,
+      );
+    }
+  }
   await writeRuntime(projectRoot, agents, sessionInterop);
 
   const helpers = {
@@ -160,6 +178,7 @@ export async function withClaudeProject(run, options = {}) {
     environment,
 
     sessionIds,
+    foreignSessions,
     nativeFile: (sessionId) => path.join(nativeRoot, `${sessionId}.jsonl`),
     portableFile: (sessionId) => path.join(projectRoot, ".agents", "sessions", "claude", `${sessionId}.jsonl`),
     canonicalDirectory: (canonicalId) => path.join(projectRoot, ".agents", "sessions", "canonical", canonicalId),

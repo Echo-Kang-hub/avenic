@@ -18,18 +18,35 @@ import { agentCursors, sameStamp, stampOf } from "./cursors.mjs";
 
 export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 
+// Resolving a path through the filesystem is the expensive half of comparing
+// two identities, and discovery compares the same few spellings — this
+// project's root, plus one cwd per other workspace on the machine — once for
+// every session file it finds. On a machine with a long history of unrelated
+// projects that was seconds per pass; with the memo it is one resolution per
+// distinct spelling. The cache holds what this process believes each spelling
+// means, which is the same guarantee the OS path cache gives: a directory
+// created mid-process is recognised from the next process on, not instantly.
+const identityCache = new Map();
+const IDENTITY_CACHE_LIMIT = 4096;
+
 export function normalizeProjectIdentity(value) {
   if (typeof value !== "string" || !value.trim()) return null;
+  const cached = identityCache.get(value);
+  if (cached !== undefined) return cached;
+  let target = value;
   try {
-    if (/^file:/i.test(value)) value = fileURLToPath(value);
+    if (/^file:/i.test(target)) target = fileURLToPath(target);
   } catch {
     return null;
   }
-  let resolved = path.normalize(path.resolve(value));
+  let resolved = path.normalize(path.resolve(target));
   // Resolve junctions/symlinks when the path exists, while retaining the
   // lexical fallback for native metadata that references a deleted path.
   try { resolved = realpathSync.native(resolved); } catch {}
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  if (process.platform === "win32") resolved = resolved.toLowerCase();
+  if (identityCache.size >= IDENTITY_CACHE_LIMIT) identityCache.clear();
+  identityCache.set(value, resolved);
+  return resolved;
 }
 
 export function samePath(left, right) {

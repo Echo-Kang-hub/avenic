@@ -12,6 +12,7 @@
     "sync-core": "node scripts/sync-core.mjs",
     "pretest": "npm run sync-core",
     "test": "node --test test/*.test.mjs",
+    "perf": "node scripts/perf/profile.mjs",
     "test:vscode": "npm --prefix packages/vscode test",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "pack:cli": "cd packages/cli && npm pack --dry-run --json"

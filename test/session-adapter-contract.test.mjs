@@ -95,6 +95,26 @@ test("project identity accepts Windows separators, trailing separators, and file
   }
 });
 
+// Discovery compares this project's root against the cwd recorded in every
+// session on the machine, so the same handful of spellings is compared
+// thousands of times per pass. Resolving a spelling through the filesystem is
+// the only expensive part, and repeating it per comparison is what made a
+// machine with a long unrelated history slow down launch bookkeeping, so an
+// unchanged pair must be answerable from memory.
+test("repeatedly comparing the same two identities never revisits the filesystem", async () => {
+  const root = path.join(os.tmpdir(), "avenic identity repeat");
+  const other = path.join(os.tmpdir(), "avenic identity other");
+  samePath(root, other); // The first comparison is allowed to resolve both sides.
+  const started = process.hrtime.bigint();
+  let consistent = true;
+  for (let index = 0; index < 5000; index += 1) {
+    consistent = consistent && samePath(root, other) === false && samePath(root, root) === true;
+  }
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.equal(consistent, true);
+  assert.ok(ms < 50, `5000 repeated identity comparisons took ${ms.toFixed(0)} ms`);
+});
+
 test("Claude discovery reports a missing configured session root instead of silently returning zero", async () => {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "avenic-claude-empty-"));
   try {
