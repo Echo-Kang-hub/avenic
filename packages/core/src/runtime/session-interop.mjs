@@ -3,7 +3,8 @@ import { createCanonicalSession } from "./canonical-sessions.mjs";
 import { getSessionAdapter } from "./adapters/index.mjs";
 import { agentCursors, loadCursors, sameStamp, saveCursors, stampOf } from "./cursors.mjs";
 import { buildHandoff } from "./handoff.mjs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   configureProject,
@@ -15,7 +16,12 @@ import {
   setActiveCanonicalSession,
   validateSessionInteropMode,
 } from "./config.mjs";
-import { listFiles } from "./sessions.mjs";
+import {
+  acquireSessionLease,
+  listFiles,
+  releaseSessionLease,
+  sessionLeasePath,
+} from "./sessions.mjs";
 
 function canonicalRevision(stored) {
   return stored.session.revision
@@ -47,6 +53,85 @@ export async function recoverSharedNativeSessions(projectRoot, agentIds, options
     }
   }
   return results;
+}
+
+// One launch group, three hosts: the CLI's foreground launch, the detached
+// watchdog that finishes an interrupted one, and the VS Code extension's
+// terminal. They all need the same sequence — the first member snapshots the
+// agent's native storage, the last member to leave restores it — and the same
+// two safety rules: a recovering group salvages the run it inherited *before*
+// snapshotting, so the dead run's sessions are not recorded as pre-launch
+// state, and a snapshot is replayed only when it completed, because writing a
+// half-copied tree back over the user's storage would destroy it. Hosts own
+// when a launch happens; they do not own these rules.
+function launchGroup(projectRoot, agentId, environment) {
+  const adapter = getSessionAdapter(agentId);
+  const { snapshotNative, revertNative } = adapter;
+  if (typeof snapshotNative !== "function" || typeof revertNative !== "function") {
+    // An agent whose history is owned by its own CLI (OpenCode) has no native
+    // tree to isolate: it is captured, never snapshotted.
+    return null;
+  }
+  const stateDir = sessionLeasePath(agentId, projectRoot);
+  const snapshotRoot = path.join(stateDir, "snapshot");
+  return {
+    hooks: {
+      onFirst: async (recovering) => {
+        if (recovering) {
+          await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: false });
+          await revertNative(snapshotRoot, projectRoot, { environment });
+        }
+        await snapshotNative(projectRoot, snapshotRoot, { environment });
+      },
+      // `acquireSessionLease` writes the marker once onFirst returns, so its
+      // absence means the copy never finished.
+      onLast: async () => {
+        if (existsSync(path.join(stateDir, "snapshot.ok"))) {
+          await revertNative(snapshotRoot, projectRoot, { environment });
+        }
+      },
+    },
+  };
+}
+
+/**
+ * Join the launch group for one project+agent, or return null when the agent's
+ * storage is not isolated for the run. Membership is a member id to leave with
+ * plus, for hosts that never leave early, the same membership as a function.
+ */
+export async function joinLaunchGroup(projectRoot, agentId, options = {}) {
+  const environment = options.environment ?? process.env;
+  const group = launchGroup(projectRoot, agentId, environment);
+  if (!group) return null;
+  const lease = await acquireSessionLease(agentId, projectRoot, group.hooks);
+  return { member: lease.member, release: lease.release };
+}
+
+/**
+ * The exit sequence for a launch: capture what the run produced, then leave the
+ * group (the last member restores native storage). A host that started a
+ * durability watch removes its state here too. `beforeRevert` runs while the
+ * native tree still holds what the run left, which is what a continuation
+ * reader needs; everything else belongs after the group is gone.
+ */
+export async function finishLaunch(projectRoot, agentId, options = {}) {
+  const environment = options.environment ?? process.env;
+  try {
+    const captured = await observeSharedNativeSessions(projectRoot, agentId, {
+      environment,
+      setActive: options.setActive ?? true,
+    });
+    if (typeof options.beforeRevert === "function") await options.beforeRevert({ environment, projectRoot });
+    return captured;
+  } finally {
+    if (options.member) {
+      await releaseSessionLease(agentId, projectRoot, options.member, launchGroup(projectRoot, agentId, environment)?.hooks ?? {});
+    } else {
+      // A host with no launch group still owns the watch state the launch
+      // created, and nothing else removes it.
+      await rm(sessionLeasePath(agentId, projectRoot), { recursive: true, force: true });
+    }
+  }
 }
 
 async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {

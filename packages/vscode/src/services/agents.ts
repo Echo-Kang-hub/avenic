@@ -1,33 +1,27 @@
 import path from "node:path";
 import {
   AGENTS,
-  acquireSessionLease,
   agentExecutableAvailable as coreAgentExecutableAvailable,
-  bindProject,
-  buildLaunchInjection,
   clearLocalAuth,
   applyProjectConfiguration,
   detectAgentInstallation,
   deinitializeAgent,
   effectiveAgentConfig,
+  finishLaunch,
   getAgentRuntimeMode,
   getAgent,
   getSessionAdapter,
   initializeAgent,
   importProjectSessions,
+  joinLaunchGroup,
   loadRuntime,
-  observeSharedNativeSessions,
   projectAuthEnvironment,
   projectConfig,
-  projectModelStatus,
-  resolveProjectProfile,
-  recoverSharedNativeSessions,
-  sessionLeasePath,
+  resolveEffectiveAgentRuntime,
   setLocalAuth,
   type Agent,
   type AgentInstallation,
   type EffectiveAgentConfig,
-  type ProcessEnvLike,
 } from "@avenic/core";
 import { cliVersionStatus, type CliVersionStatus } from "./agent-versions.ts";
 
@@ -188,65 +182,36 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
   let launchEnvironment = environment;
   let launchNote: string | null = null;
   try {
-    const resolved = await resolveProjectProfile(projectRoot, process.env as ProcessEnvLike);
-    if (!resolved.profile && resolved.message) {
-      // 绑定指向的配置已被删除：core 已完成安全回滚（幂等），这里只负责让用户看见（spec §7/§13）。
-      launchNote = resolved.message;
-    }
-    if (resolved.profile) {
-      const status = await projectModelStatus(projectRoot, process.env as ProcessEnvLike);
-      if (status.projection && !status.projection.fingerprintMatches) {
-        await bindProject(projectRoot, process.env as ProcessEnvLike, resolved.profile.id);
-      }
-      const injection = buildLaunchInjection({ agentId, profile: resolved.profile, argumentsList: [], environment });
-      launchArguments = injection.argumentsList;
-      launchEnvironment = injection.environment;
-      launchNote = injection.note;
-    }
+    // 与 `avenic <agent>` 启动取用的是同一个解析结果：会话适配器/终端拿到 argv、
+    // 子进程环境与"模型配置为何没生效"（note）三件东西，判定逻辑不在插件里重写。
+    let logged: string | null = null;
+    const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, {
+      state,
+      environment,
+      io: { log: (line: string) => { logged = line; } },
+    });
+    launchArguments = runtime.argumentsList;
+    launchEnvironment = runtime.environment as Record<string, string>;
+    // core 已回滚的 dangling 绑定、被跳过的模型配置都以 note 呈现给用户（spec §7/§13）。
+    launchNote = runtime.note ?? logged;
   } catch (error) {
     launchNote = `Model configuration skipped: ${error instanceof Error ? error.message : String(error)}`;
   }
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions === "project";
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
-  if (portableSessions && sharedSessions) {
-    await recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), {
-      environmentForAgent: (sourceAgent: string) => {
-        const source = effectiveAgentConfig(state, sourceAgent);
-        return source?.auth === "project"
-          ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
-          : process.env;
-      },
-    });
-  }
-  const { snapshotNative, revertNative } = adapter;
-  let leaveLaunchGroup: (() => Promise<unknown>) | null = null;
-  if (portableSessions && snapshotNative && revertNative) {
-    const snapshotRoot = path.join(sessionLeasePath(agentId, projectRoot), "snapshot");
-    const lease = await acquireSessionLease(agentId, projectRoot, {
-      onFirst: async (recovering) => {
-        // 上次启动组未能正常收官（终端/窗口被杀）：先收回运行产物进项目，再还原启动前原生存储
-        if (recovering) {
-          if (sharedSessions) await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: false });
-          else await adapter.capture(projectRoot, { environment });
-          await revertNative(snapshotRoot, projectRoot, { environment });
-        }
-        await snapshotNative(projectRoot, snapshotRoot, { environment });
-      },
-      onLast: async () => {
-        await revertNative(snapshotRoot, projectRoot, { environment });
-      },
-    });
-    leaveLaunchGroup = lease.release;
-  }
+  // 启动组与 CLI、CLI 的看门狗共用 core 的同一份策略（首个成员快照、末个成员还原、
+  // 崩溃组先回收再快照）。插件只加入本 agent 的组：启动不扫描其它 agent 的原生历史，
+  // 那是 Sessions 命令与 `avenic sessions` 的职责。
+  const group = portableSessions ? await joinLaunchGroup(projectRoot, agentId, { environment }) : null;
   try {
     if (portableSessions) {
       // 项目会话记录优先：启动前把项目里的会话合并进原生存储供 CLI 使用
       await adapter.restore(projectRoot, { environment });
     }
   } catch (error) {
-    if (leaveLaunchGroup) {
-      try { await leaveLaunchGroup(); } catch {}
+    if (group) {
+      try { await group.release(); } catch {}
     }
     throw error;
   }
@@ -261,16 +226,12 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string): 
   const finishRun = async (): Promise<void> => {
     if (done) return;
     done = true;
-    try {
-      if (portableSessions) {
-        if (sharedSessions) await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: true });
-        else await adapter.capture(projectRoot, { environment });
-      }
-    } finally {
-      if (leaveLaunchGroup) {
-        try { await leaveLaunchGroup(); } catch {}
-      }
-    }
+    if (!portableSessions) return;
+    await finishLaunch(projectRoot, agentId, {
+      environment,
+      member: group?.member ?? null,
+      setActive: sharedSessions,
+    });
   };
   return {
     definition: {

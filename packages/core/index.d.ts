@@ -209,6 +209,24 @@ export interface ContinuationResult {
 export function createCanonicalSession(projectRoot: string, input?: Record<string, unknown>): Promise<{ id: string; created: boolean }>;
 export function listCanonicalSessions(projectRoot: string): Promise<Array<{ id: string; title?: string; updatedAt?: string }>>;
 export function observeSharedNativeSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
+export function formatSessionDiagnostics(diagnostics?: unknown[]): { warnings: string[]; notes: string[] };
+export interface LaunchGroup {
+  member: string;
+  release: () => Promise<unknown>;
+}
+export function joinLaunchGroup(projectRoot: string, agentId: string, options?: { environment?: ProcessEnvLike }): Promise<LaunchGroup | null>;
+export function finishLaunch(
+  projectRoot: string,
+  agentId: string,
+  options?: {
+    environment?: ProcessEnvLike;
+    /** The launch's membership, or null when the agent's storage is not isolated for the run. */
+    member?: string | null;
+    setActive?: boolean;
+    /** Runs after the exit capture and before the last member restores native storage. */
+    beforeRevert?: (context: { environment: ProcessEnvLike; projectRoot: string }) => Promise<void>;
+  },
+): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
 export function recoverSharedNativeSessions(projectRoot: string, agentIds: string[], options?: Record<string, unknown>): Promise<Array<{ agentId: string; changed: boolean; diagnostic?: string }>>;
 export function importProjectSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ count: number; changed: boolean; discovered: number; imported: number; unchanged: number; failed: number; diagnostics: string[] }>;
 export function setSessionInteropMode(projectRoot: string, mode: "shared" | "isolated", options?: { agents?: ProjectConfig["agents"]; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;

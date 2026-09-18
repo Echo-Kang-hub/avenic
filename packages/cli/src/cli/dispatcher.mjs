@@ -2,11 +2,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
-  acquireSessionLease,
   applyProjectConfiguration,
   agentExecutableAvailable,
   bindProject,
@@ -16,6 +14,7 @@ import {
   deinitializeAgent,
   effectiveAgentConfig,
   ensureSkillLinks,
+  finishLaunch,
   formatLinkSummary,
   formatSessionDiagnostics,
   getAgent,
@@ -23,7 +22,7 @@ import {
   getSessionAdapter,
   initializeAgent,
   importProjectSessions,
-  observeSharedNativeSessions,
+  joinLaunchGroup,
   recoverSharedNativeSessions,
   loadRuntime,
   locateProjectRoot,
@@ -487,35 +486,13 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
   // opencode's storage is managed by the official CLI, so it captures without
-  // snapshotting or reverting.
-  const isolatesNative = typeof adapter.snapshotNative === "function"
-    && typeof adapter.revertNative === "function";
-  let leaveLaunchGroup = null;
-  let leaseMember = null;
-  if (portableSessions && isolatesNative) {
-    const snapshotRoot = path.join(sessionLeasePath(agentId, projectRoot), "snapshot");
-    const lease = await acquireSessionLease(agentId, projectRoot, {
-      onFirst: async (recovering) => {
-        if (recovering) {
-          // A previous launch group died without exiting: move its sessions
-          // into the project and restore the pre-launch native state first.
-          await adapter.capture(projectRoot, { environment });
-          await adapter.revertNative(snapshotRoot, projectRoot, { environment });
-        }
-        await adapter.snapshotNative(projectRoot, snapshotRoot, { environment });
-      },
-      onLast: async () => {
-        await adapter.revertNative(snapshotRoot, projectRoot, { environment });
-      },
-    });
-    leaveLaunchGroup = lease.release;
-    leaseMember = lease.member;
-  }
+  // snapshotting or reverting; the group is null for it.
+  const group = portableSessions ? await joinLaunchGroup(projectRoot, agentId, { environment }) : null;
   if (portableSessions) {
     // Every project-scoped launch gets a durability watch, whether or not the
     // agent's native storage is isolated for the run.
     try {
-      await spawnSessionWatchdog(agentId, projectRoot, leaseMember, environment);
+      await spawnSessionWatchdog(agentId, projectRoot, group?.member ?? null, environment);
     } catch {}
   }
   if (portableSessions && !options.skipRestore) {
@@ -526,11 +503,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     try {
       await adapter.restore(projectRoot, { environment });
     } catch (error) {
-      if (leaveLaunchGroup) {
+      if (group) {
         // Leaving the group reverts native storage when this was the only
         // launch in it.
         try {
-          await leaveLaunchGroup();
+          await group.release();
         } catch {}
       }
       throw error;
@@ -573,21 +550,15 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       // process starts its own exit sequence, so the two never capture the
       // same tree at once.
       markLaunchClosing(agentId, projectRoot);
-      try {
-        const captured = await observeSharedNativeSessions(projectRoot, agentId, {
-          environment,
-          setActive: !options.skipCanonical && sharedSessions,
-        });
-        reportSessionDiagnostics(captured.diagnostics);
-        if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
-      } finally {
-        if (leaveLaunchGroup) {
-          await leaveLaunchGroup();
-        } else {
-          // Without a launch group nothing else removes the watch state.
-          await rm(sessionLeasePath(agentId, projectRoot), { recursive: true, force: true });
-        }
-      }
+      const captured = await finishLaunch(projectRoot, agentId, {
+        environment,
+        member: group?.member ?? null,
+        setActive: !options.skipCanonical && sharedSessions,
+        // The continuation reader must still see the native session this run
+        // produced, so it runs before the last member reinstates the snapshot.
+        beforeRevert: options.onExit,
+      });
+      reportSessionDiagnostics(captured.diagnostics);
     }
   }
   return options.capture ? launchResult : status;

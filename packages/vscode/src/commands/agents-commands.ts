@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { formatSessionDiagnostics } from "@avenic/core";
 import * as agents from "../services/agents.ts";
 import { updateCommandForInstallation } from "../services/agent-versions.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
@@ -173,7 +174,11 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (target === null) return;
     const result = await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.importSessions(target.root, target.id).then((r) => { report("完成"); return r; })), () => deps.refresh());
     const message = `发现 ${result.discovered} 个会话；导入 ${result.imported} 个；未变更 ${result.unchanged} 个；失败 ${result.failed} 个。`;
-    if ((result.discovered === 0 || result.failed > 0) && result.diagnostics.length > 0) await vscode.window.showWarningMessage(`${message} ${result.diagnostics[0]}`);
+    // core 的同一个格式化器也服务于 CLI：原生历史的每一类问题只有一处措辞，
+    // 且诊断对象永远不会被直接拼进消息（那只会打印 [object Object]）。
+    const { warnings, notes } = formatSessionDiagnostics(result.diagnostics);
+    const detail = [...warnings, ...notes].join(" ");
+    if (warnings.length > 0 || (result.discovered === 0 && detail.length > 0)) await vscode.window.showWarningMessage(`${message} ${detail}`);
     else await vscode.window.showInformationMessage(message);
   });
 
