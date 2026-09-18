@@ -443,16 +443,10 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   const adapter = getSessionAdapter(agentId);
   const portableSessions = config.sessions !== "global";
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
-  if (portableSessions && sharedSessions && !options.skipCanonical) {
-    await recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), {
-      environmentForAgent: (sourceAgent) => {
-        const source = effectiveAgentConfig(state, sourceAgent);
-        return source?.auth === "project"
-          ? { ...process.env, ...projectAuthEnvironment(sourceAgent, projectRoot) }
-          : process.env;
-      },
-    });
-  }
+  // Recovery for sessions another agent left behind belongs to the explicit
+  // `sessions` and `change` commands. A plain launch must reach the official
+  // TUI first: it captures its own agent's history on exit, and the runtime
+  // watcher keeps that history durable while it runs.
   // A plain agent launch is intentionally transparent: storage scope does not
   // imply a launch target. Shared-session continuation is opt-in via
   // `sessions continue`, while this path preserves the agent's native new/

@@ -230,38 +230,70 @@ export function hashContent(content) {
   return createHash("sha256").update(content).digest("hex");
 }
 
-async function copyPath(source, destination) {
-  const stats = await stat(source);
-  if (stats.isDirectory()) {
-    await mkdir(destination, { recursive: true });
-    for (const entry of await readdir(source, { withFileTypes: true })) {
-      await copyPath(path.join(source, entry.name), path.join(destination, entry.name));
-    }
-  } else {
-    await mkdir(path.dirname(destination), { recursive: true });
-    await writeFile(destination, await readFile(source));
+async function sameContent(left, right) {
+  const source = await stat(left);
+  const target = await stat(right).catch(() => null);
+  if (!target || !target.isFile() || !source.isFile() || target.size !== source.size) return false;
+  return (await readFile(left)).equals(await readFile(right));
+}
+
+// Copy one file, replacing whatever the destination holds.
+async function copyFile(from, to) {
+  await rm(to, { recursive: true, force: true });
+  await mkdir(path.dirname(to), { recursive: true });
+  await writeFile(to, await readFile(from));
+}
+
+// Make destination hold exactly what source holds, while leaving matching
+// files alone. Rewriting a file that did not change is not just wasted work:
+// it replaces the file stamp that incremental capture reads, so an unchanged
+// native tree would be re-copied and re-parsed on the next launch. Both paths
+// may also be single files, which is how Codex snapshots its session index.
+async function mirrorInto(source, destination) {
+  if (!(await stat(source)).isDirectory()) {
+    if (!(await sameContent(source, destination))) await copyFile(source, destination);
+    return;
+  }
+  const wanted = await listFiles(source);
+  for (const relative of wanted) {
+    const from = path.join(source, relative);
+    const to = path.join(destination, relative);
+    if (await sameContent(from, to)) continue;
+    await copyFile(from, to);
+  }
+  if (!(await stat(destination).catch(() => null))?.isDirectory()) {
+    // The destination held a file where the source has a directory.
+    await rm(destination, { recursive: true, force: true });
+    return mirrorInto(source, destination);
+  }
+  const keep = new Set(wanted);
+  for (const relative of await listFiles(destination)) {
+    if (keep.has(relative)) continue;
+    const target = path.join(destination, relative);
+    await rm(target, { force: true });
+    await removeEmptyDirectories(path.dirname(target), destination);
   }
 }
 
-// Copy a file or directory into destination, which must not exist; when the
-// source is absent the destination is removed instead, so a path that did not
-// exist at snapshot time disappears again on revert.
+// The destination ends up holding the source; when the source is absent the
+// destination is removed instead, so a path that did not exist at snapshot time
+// disappears again on revert.
 export async function snapshotInto(source, destination) {
   if (!existsSync(source)) {
     await rm(destination, { recursive: true, force: true });
     return;
   }
-  await rm(destination, { recursive: true, force: true });
-  await copyPath(source, destination);
+  await mirrorInto(source, destination);
 }
 
 // Restore the pre-launch state saved by snapshotInto: the source path returns
 // to its snapshot content, or disappears entirely when the snapshot is absent.
 export async function revertFrom(snapshot, source) {
-  await rm(source, { recursive: true, force: true });
-  if (existsSync(snapshot)) {
-    await copyPath(snapshot, source);
+  if (!existsSync(snapshot)) {
+    await rm(source, { recursive: true, force: true });
+    return;
   }
+  await mirrorInto(snapshot, source);
 }
 
 export function processAlive(pid) {

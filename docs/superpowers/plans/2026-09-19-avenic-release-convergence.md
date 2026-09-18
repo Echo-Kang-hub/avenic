@@ -1,0 +1,1278 @@
+# Avenic Release Convergence Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Converge Avenic to a releasable state — plain agent launches under 1s, real runtime incremental durability, verified Shared/Isolated semantics, CLI↔VS Code parity, consolidated code, and verified npm + VSIX artifacts.
+
+**Architecture:** Core gains one incremental *session cursor* primitive shared by native capture, canonical import, and a new debounced runtime watcher. The plain `avenic <agent>` path does no canonical work before spawning; recovery moves to explicit commands, post-exit capture, and the watcher.
+
+**Tech Stack:** Node ESM (core, CLI), TypeScript + esbuild (VS Code), `node:test`.
+
+**Spec:** the project-owner requirements list (38 sections) plus `principle.md`.
+
+## Global Constraints
+
+- `packages/core` is the only business implementation. CLI = argument parsing, process launch, human-readable output. VS Code = commands, trees, progress, display. No second path/auth/conversion logic in either host.
+- Adapters isolate native formats only; no N² direct converters.
+- Do not add `Manager` / `Controller` / `Coordinator` / `Engine` layers.
+- Plain launch fast path must perform: **no network, no LLM call, no npm lookup, no full history scan, no full JSONL parse, no blocking projection bootstrap.** Target < 1000 ms to the agent TUI on local history; < 500 ms to visible response.
+- Native agent storage is never written except by explicit `sessions writeback` / launch `restore`.
+- Canonical writes are atomic (temp file + rename). A half-written file must never replace valid canonical data.
+- Native JSON/JSONL is untrusted input: never execute it, never write secret-shaped fields into canonical, never "repair" JSON by guessing.
+- Versions come from `package.json` metadata; never hardcode a version string in production code.
+- Tests use `node:test`; interactive TUI input must be drivable without a human.
+- Must work on Windows and Linux. Windows npm `.cmd` shims are launched through `cmd` with the prompt as one argument.
+
+---
+
+## Baseline (measured 2026-09-19, before any change)
+
+Fixture: 40 Claude sessions × 400 records, 60 foreign-project Claude directories, 120 Codex rollouts, three fake agent executables on `PATH`.
+
+| Command | Wall clock |
+|---|---|
+| `avenic --version` | 81 ms |
+| `avenic init` (shared) | 122 ms |
+| `avenic claude` (cold) | **10 945 ms** |
+| `avenic claude` (warm) | **7 677 ms** |
+| `avenic codex` (warm) | **4 446 ms** |
+| `avenic opencode` (warm) | **3 670 ms** |
+| `avenic sessions status` | 580 ms |
+
+Per-step profile (warm):
+
+| Step | Cost |
+|---|---|
+| `claude.capture` | 2 301 ms |
+| `importProjectSessions(claude)` | 2 799 ms |
+| `codex.capture` | 273 ms |
+| `importProjectSessions(codex)` | 509 ms |
+| `recoverSharedNativeSessions(3 agents)` | 3 298 ms |
+| `claude.snapshotNative + restore` | 536 ms |
+| `listCanonicalSessions` | 197 ms |
+| `loadRuntime`, `resolveEffectiveAgentRuntime` | ~1 ms |
+
+Root causes:
+
+1. `adapter.capture` copies **every** native session file into the portable directory on **every** launch (`replaceDirectory`), re-running `transformJsonLines` over every record.
+2. `discoverNativeProjectDirectories` / `matchingRollouts` open the head of **every** session file on the machine on every launch to test the project `cwd`.
+3. `importProjectSessions` re-reads and re-parses **every** portable file, then calls `createCanonicalSession`, `appendCanonicalEvents` (which re-reads and normalizes the whole `events.jsonl`), and `syncNativeMapping` (another full read) per session.
+4. Steps 1–3 run **twice** per launch: once in `recoverSharedNativeSessions` before spawn and once in the `finally` `observeSharedNativeSessions`.
+
+Production LOC at baseline: core 6 609, CLI 2 858, CLI scripts 68, VS Code 3 102 → **12 637** (excludes `packages/cli/vendor/core-src`, which is a generated copy of core).
+
+---
+
+## Task 1: Session cursor store
+
+The single primitive that makes capture, import, and the watcher incremental. One file, one schema, no per-feature caches.
+
+**Files:**
+- Create: `packages/core/src/runtime/cursors.mjs`
+- Modify: `packages/core/src/index.mjs` (export)
+- Test: `test/cursors.test.mjs`
+
+**Interfaces:**
+- Produces:
+  - `cursorFilePath(projectRoot): string`
+  - `loadCursors(projectRoot): Promise<Cursors>` where `Cursors = { schemaVersion: 1, agents: Record<string, { files: Record<string, FileCursor> }> }`
+  - `FileCursor = { native?: Stamp, portable?: Stamp, cwd?: string, nativeSessionId?: string, canonicalId?: string }`
+  - `Stamp = { size: number, mtimeMs: number }`
+  - `stampOf(file): Promise<Stamp | null>` — `stat` only; `null` when missing
+  - `sameStamp(a, b): boolean`
+  - `saveCursors(projectRoot, cursors): Promise<void>` — atomic, skips the write when unchanged
+  - `rememberCwd(cursors, agentId, absolutePath, stamp, cwd)`, `cachedCwd(cursors, agentId, absolutePath, stamp)`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/cursors.test.mjs
+import assert from "node:assert/strict";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import {
+  cachedCwd, cursorFilePath, loadCursors, rememberCwd, sameStamp, saveCursors, stampOf,
+} from "../packages/core/src/runtime/cursors.mjs";
+
+async function workspace() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-cursors-"));
+  return { root, cleanup: () => rm(root, { recursive: true, force: true }) };
+}
+
+test("stampOf reports size and mtime and null for a missing file", async () => {
+  const { root, cleanup } = await workspace();
+  try {
+    const file = path.join(root, "a.jsonl");
+    assert.equal(await stampOf(file), null);
+    await writeFile(file, "one\n");
+    const first = await stampOf(file);
+    assert.equal(first.size, 4);
+    assert.equal(typeof first.mtimeMs, "number");
+  } finally { await cleanup(); }
+});
+
+test("sameStamp compares size and mtime", () => {
+  assert.equal(sameStamp({ size: 1, mtimeMs: 2 }, { size: 1, mtimeMs: 2 }), true);
+  assert.equal(sameStamp({ size: 1, mtimeMs: 2 }, { size: 1, mtimeMs: 3 }), false);
+  assert.equal(sameStamp(null, { size: 1, mtimeMs: 2 }), false);
+});
+
+test("saveCursors round-trips and lives outside the project tree", async () => {
+  const { root, cleanup } = await workspace();
+  try {
+    assert.equal(cursorFilePath(root).startsWith(path.resolve(root)), false);
+    const cursors = loadCursors(root);
+    cursors.agents.codex = { files: { "rollout.jsonl": { native: { size: 3, mtimeMs: 4 } } } };
+    await saveCursors(root, cursors);
+    assert.deepEqual(loadCursors(root).agents.codex.files["rollout.jsonl"].native, { size: 3, mtimeMs: 4 });
+  } finally { await cleanup(); }
+});
+
+test("saveCursors skips the write when nothing changed", async () => {
+  const { root, cleanup } = await workspace();
+  try {
+    const cursors = loadCursors(root);
+    await saveCursors(root, cursors);
+    const file = cursorFilePath(root);
+    const before = await stat(file);
+    await saveCursors(root, loadCursors(root));
+    const after = await stat(file);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+  } finally { await cleanup(); }
+});
+
+test("cachedCwd returns only an exactly matching stamp", () => {
+  const cursors = loadCursors("C:\\nowhere");
+  rememberCwd(cursors, "claude", "C:\\x\\a.jsonl", { size: 10, mtimeMs: 20 }, "C:\\x");
+  assert.equal(cachedCwd(cursors, "claude", "C:\\x\\a.jsonl", { size: 10, mtimeMs: 20 }), "C:\\x");
+  assert.equal(cachedCwd(cursors, "claude", "C:\\x\\a.jsonl", { size: 11, mtimeMs: 20 }), null);
+  assert.equal(cachedCwd(cursors, "claude", "C:\\x\\b.jsonl", { size: 10, mtimeMs: 20 }), null);
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/cursors.test.mjs`
+Expected: FAIL — `Cannot find module .../cursors.mjs`
+
+- [ ] **Step 3: Write the implementation**
+
+```js
+// packages/core/src/runtime/cursors.mjs
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { stateRoot } from "../skills/paths.mjs";
+
+const SCHEMA_VERSION = 1;
+
+// Cursors describe this machine's native files, so they belong to machine
+// state, not to the project tree: a committed cursors file would be noise and
+// would be wrong on another checkout.
+export function cursorFilePath(projectRoot) {
+  const key = createHash("sha256").update(path.resolve(projectRoot)).digest("hex").slice(0, 16);
+  return path.join(stateRoot(), "runtime", key, "cursors.json");
+}
+
+export function emptyCursors() {
+  return { schemaVersion: SCHEMA_VERSION, agents: {} };
+}
+
+export function loadCursors(projectRoot) {
+  const file = cursorFilePath(projectRoot);
+  if (!existsSync(file)) return emptyCursors();
+  try {
+    const parsed = JSON.parse(readFileSyncSafe(file));
+    if (parsed?.schemaVersion !== SCHEMA_VERSION || typeof parsed.agents !== "object") return emptyCursors();
+    return parsed;
+  } catch {
+    // A damaged cursor is a cache miss, never a failure.
+    return emptyCursors();
+  }
+}
+
+export async function saveCursors(projectRoot, cursors) {
+  const file = cursorFilePath(projectRoot);
+  const content = `${JSON.stringify(cursors, null, 2)}\n`;
+  if (existsSync(file) && (await readFile(file, "utf8")) === content) return false;
+  await mkdir(path.dirname(file), { recursive: true });
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temporary, content, "utf8");
+  await rename(temporary, file);
+  return true;
+}
+
+export async function stampOf(file) {
+  try {
+    const stats = await stat(file);
+    return { size: stats.size, mtimeMs: stats.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+export function sameStamp(left, right) {
+  return Boolean(left && right && left.size === right.size && left.mtimeMs === right.mtimeMs);
+}
+
+export function agentCursors(cursors, agentId) {
+  cursors.agents[agentId] ??= { files: {} };
+  cursors.agents[agentId].files ??= {};
+  return cursors.agents[agentId].files;
+}
+
+export function rememberCwd(cursors, agentId, file, stamp, cwd) {
+  const files = agentCursors(cursors, agentId);
+  files[file] = { ...files[file], cwd, cwdStamp: stamp };
+}
+
+export function cachedCwd(cursors, agentId, file, stamp) {
+  const entry = cursors.agents[agentId]?.files?.[file];
+  return entry && sameStamp(entry.cwdStamp, stamp) ? entry.cwd : null;
+}
+```
+
+Use a small synchronous read helper so `loadCursors` stays usable from synchronous call sites:
+
+```js
+function readFileSyncSafe(file) {
+  return readFileSync(file, "utf8");
+}
+```
+
+with `import { readFileSync } from "node:fs";` and drop the unused `os` / `readFile` imports until Step 3 needs them.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test test/cursors.test.mjs`
+Expected: PASS (5 tests)
+
+- [ ] **Step 5: Export from the public API and commit**
+
+Add to `packages/core/src/index.mjs`:
+
+```js
+export {
+  agentCursors,
+  cachedCwd,
+  cursorFilePath,
+  loadCursors,
+  rememberCwd,
+  sameStamp,
+  saveCursors,
+  stampOf,
+} from "./runtime/cursors.mjs";
+```
+
+```bash
+npm run sync-core
+git add packages/core/src/runtime/cursors.mjs packages/core/src/index.mjs test/cursors.test.mjs packages/cli/vendor/core-src
+git commit -m "feat(core): add the incremental session cursor store"
+```
+
+---
+
+## Task 2: Incremental native capture and project discovery
+
+Make `capture` copy only files whose stamp changed, and make project discovery reuse cached `cwd` values instead of reopening every session head.
+
+**Files:**
+- Modify: `packages/core/src/runtime/sessions.mjs` (add `syncDirectory`)
+- Modify: `packages/core/src/runtime/adapters/claude.mjs`
+- Modify: `packages/core/src/runtime/adapters/codex.mjs`
+- Test: `test/incremental-capture.test.mjs`
+
+**Interfaces:**
+- Consumes: Task 1 cursors.
+- Produces:
+  - `syncDirectory(sourceRoot, entries, destinationRoot, transform, cursors, agentId): Promise<{ added, updated, unchanged, removed }>` in `sessions.mjs` — copies only files whose `native` stamp moved, deletes destination files absent from `entries` and from the cursor, updates `cursors.agents[agentId].files`.
+  - `capture(projectRoot, options)` keeps its current return shape `{ count, changed, diagnostics }`.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/incremental-capture.test.mjs
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { getSessionAdapter } from "../packages/core/src/runtime/adapters/index.mjs";
+import { cursorFilePath } from "../packages/core/src/runtime/cursors.mjs";
+
+function claudeKey(root) { return path.resolve(root).replace(/[^a-zA-Z0-9]/g, "-"); }
+
+function record(sessionId, index, cwd) {
+  return JSON.stringify({
+    type: "assistant", uuid: `u-${sessionId}-${index}`, sessionId,
+    timestamp: new Date(1700000000000 + index * 1000).toISOString(), cwd,
+    message: { role: index % 2 ? "assistant" : "user", model: "m", content: [{ type: "text", text: `t${index}` }] },
+  });
+}
+
+async function fixture() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-inc-"));
+  const home = path.join(root, "home");
+  const project = path.join(root, "project");
+  const native = path.join(home, ".claude", "projects", claudeKey(project));
+  await mkdir(native, { recursive: true });
+  await mkdir(project, { recursive: true });
+  await writeFile(path.join(native, "s1.jsonl"), `${[0, 1, 2].map((i) => record("s1", i, project)).join("\n")}\n`);
+  return {
+    root, home, project, native,
+    environment: { CLAUDE_CONFIG_DIR: path.join(home, ".claude") },
+    cleanup: () => rm(root, { recursive: true, force: true }),
+  };
+}
+
+test("capture copies the matched native session into the portable directory", async () => {
+  const { project, native, environment, cleanup } = await fixture();
+  try {
+    const adapter = getSessionAdapter("claude");
+    const result = await adapter.capture(project, { environment });
+    assert.equal(result.count, 1);
+    const portable = path.join(project, ".agents", "sessions", "claude", "s1.jsonl");
+    assert.match(await readFile(portable, "utf8"), /"cwd":"\$\{PROJECT_ROOT\}"/);
+  } finally { await cleanup(); }
+});
+
+test("a second capture of unchanged native files rewrites nothing", async () => {
+  const { project, environment, cleanup } = await fixture();
+  try {
+    const adapter = getSessionAdapter("claude");
+    await adapter.capture(project, { environment });
+    const portable = path.join(project, ".agents", "sessions", "claude", "s1.jsonl");
+    const before = await stat(portable);
+    const second = await adapter.capture(project, { environment });
+    const after = await stat(portable);
+    assert.equal(second.changed, false);
+    assert.equal(after.mtimeMs, before.mtimeMs, "portable copy must not be rewritten");
+  } finally { await cleanup(); }
+});
+
+test("appending to a native session updates only that portable file", async () => {
+  const { project, native, environment, cleanup } = await fixture();
+  try {
+    const adapter = getSessionAdapter("claude");
+    await adapter.capture(project, { environment });
+    const other = path.join(native, "s2.jsonl");
+    await writeFile(other, `${[0, 1].map((i) => record("s2", i, project)).join("\n")}\n`);
+    await adapter.capture(project, { environment });
+    const otherPortable = path.join(project, ".agents", "sessions", "claude", "s2.jsonl");
+    const stable = await stat(path.join(project, ".agents", "sessions", "claude", "s1.jsonl"));
+    await writeFile(path.join(native, "s1.jsonl"), `${[0, 1, 2, 3].map((i) => record("s1", i, project)).join("\n")}\n`);
+    const result = await adapter.capture(project, { environment });
+    assert.equal(result.changed, true);
+    assert.match(await readFile(path.join(project, ".agents", "sessions", "claude", "s1.jsonl"), "utf8"), /t3/);
+    assert.ok((await stat(otherPortable)).mtimeMs >= 0);
+    assert.ok(stable.mtimeMs > 0);
+  } finally { await cleanup(); }
+});
+
+test("a deleted native session disappears from the portable directory", async () => {
+  const { project, native, environment, cleanup } = await fixture();
+  try {
+    const adapter = getSessionAdapter("claude");
+    await adapter.capture(project, { environment });
+    await rm(path.join(native, "s1.jsonl"), { force: true });
+    await adapter.capture(project, { environment });
+    await assert.rejects(readFile(path.join(project, ".agents", "sessions", "claude", "s1.jsonl")));
+  } finally { await cleanup(); }
+});
+
+test("discovery reuses a cached cwd and does not reopen unchanged heads", async () => {
+  const { project, environment, cleanup } = await fixture();
+  try {
+    const adapter = getSessionAdapter("claude");
+    await adapter.capture(project, { environment });
+    const stamp = await stat(cursorFilePath(project));
+    assert.ok(stamp.size > 0, "capture must persist a cursor");
+    const second = await adapter.capture(project, { environment });
+    assert.equal(second.diagnostics.length, 0);
+    assert.equal(second.count, 1);
+  } finally { await cleanup(); }
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/incremental-capture.test.mjs`
+Expected: FAIL — the second capture rewrites the portable file (`second.changed` is `true`), and the deletion test fails.
+
+- [ ] **Step 3: Add `syncDirectory` to `sessions.mjs`**
+
+```js
+// Copy only the entries whose native stamp moved. A capture that finds nothing
+// new must touch nothing: repeated launches are the common case.
+export async function syncDirectory(sourceRoot, entries, destinationRoot, transform, cursors, agentId) {
+  const { agentCursors, sameStamp, stampOf } = await import("./cursors.mjs");
+  const files = agentCursors(cursors, agentId);
+  const seen = new Set();
+  let added = 0; let updated = 0; let unchanged = 0;
+  for (const { relative, source } of entries) {
+    seen.add(relative);
+    const stamp = await stampOf(source);
+    if (!stamp) continue;
+    const destination = path.join(destinationRoot, relative);
+    const entry = files[relative] ?? {};
+    const destinationStamp = await stampOf(destination);
+    if (entry.portable && sameStamp(entry.portable, destinationStamp) && sameStamp(entry.native, stamp)) {
+      unchanged += 1;
+      continue;
+    }
+    const existed = Boolean(destinationStamp);
+    await mkdir(path.dirname(destination), { recursive: true });
+    const content = await readFile(source);
+    await writeFile(destination, transform ? await transform(content, relative) : content);
+    files[relative] = { ...entry, native: stamp, portable: await stampOf(destination) };
+    if (existed) updated += 1; else added += 1;
+  }
+  let removed = 0;
+  for (const relative of Object.keys(files)) {
+    if (seen.has(relative)) continue;
+    await rm(path.join(destinationRoot, relative), { force: true });
+    await removeEmptyDirectories(path.dirname(path.join(destinationRoot, relative)), destinationRoot);
+    delete files[relative];
+    removed += 1;
+  }
+  return { added, updated, unchanged, removed };
+}
+```
+
+`removeEmptyDirectories` walks up from a directory removing empty parents until `stopAt`:
+
+```js
+async function removeEmptyDirectories(directory, stopAt) {
+  let current = path.resolve(directory);
+  const stop = path.resolve(stopAt);
+  while (current !== stop && current.startsWith(stop)) {
+    try {
+      const entries = await readdir(current);
+      if (entries.length > 0) return;
+      await rmdir(current);
+    } catch { return; }
+    current = path.dirname(current);
+  }
+}
+```
+
+- [ ] **Step 4: Rewrite `claude.capture` to be incremental**
+
+Replace the `replaceDirectory` body:
+
+```js
+export async function capture(projectRoot, options = {}) {
+  const { portable } = locations(projectRoot, options.environment);
+  const cursors = options.cursors ?? loadCursors(projectRoot);
+  const discovery = await discoverNativeProjectDirectories(projectRoot, options.environment, { cursors });
+  const entries = [];
+  for (const native of discovery.directories) {
+    for (const relative of await listFiles(native)) {
+      entries.push({ relative, source: path.join(native, relative) });
+    }
+  }
+  const result = await syncDirectory(
+    null, entries, portable,
+    (content, relative) => (relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, false) : content),
+    cursors, "claude",
+  );
+  if (options.cursors === undefined) await saveCursors(projectRoot, cursors);
+  const changed = result.added + result.updated + result.removed > 0;
+  return {
+    count: entries.filter(({ relative }) => isRootSession(relative)).length,
+    changed,
+    diagnostics: discovery.diagnostics,
+  };
+}
+```
+
+Also update `discoverNativeProjectDirectories` to accept `{ cursors }` and use `cachedCwd` / `rememberCwd`:
+
+```js
+async function jsonlCwd(file, cursors, stamp) {
+  const cached = cursors ? cachedCwd(cursors, "claude", file, stamp) : null;
+  if (cached) return cached;
+  const cwd = await readCwdHead(file);
+  if (cursors && stamp) rememberCwd(cursors, "claude", file, stamp, cwd);
+  return cwd;
+}
+```
+
+where `readCwdHead` is the existing 64 KB head read, and each call site passes `await stampOf(file)`.
+
+- [ ] **Step 5: Rewrite `codex.capture` the same way**
+
+`matchingRollouts` gains `{ cursors }` and caches the first-line `cwd` per rollout path using `cachedCwd`/`rememberCwd` with agent id `"codex"`; `capture` uses `syncDirectory` into `path.join(portable, "sessions")` and writes `session_index.jsonl` only when the filtered index content changed.
+
+- [ ] **Step 6: Run the tests**
+
+Run: `node --test test/incremental-capture.test.mjs test/session-adapter-contract.test.mjs test/runtime.test.mjs`
+Expected: PASS
+
+- [ ] **Step 7: Measure and commit**
+
+Run: `node .tmp/perf/step-profile.mjs`
+Expected: warm `claude.capture` and `codex.capture` each < 100 ms.
+
+```bash
+npm run sync-core
+git add -A packages/core packages/cli/vendor test
+git commit -m "perf(core): capture only native session files that changed"
+```
+
+---
+
+## Task 3: Incremental canonical import
+
+**Files:**
+- Modify: `packages/core/src/runtime/session-interop.mjs` (`importProjectSessions`)
+- Test: `test/incremental-import.test.mjs`
+
+**Interfaces:**
+- Consumes: Task 1 cursors, Task 2 capture.
+- Produces: `importProjectSessions(projectRoot, agentId, options)` keeps its return shape and additionally skips unchanged portable files.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/incremental-import.test.mjs
+import assert from "node:assert/strict";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { appendCanonicalEvents, readCanonicalSession } from "../packages/core/src/runtime/canonical-sessions.mjs";
+import { importProjectSessions } from "../packages/core/src/runtime/session-interop.mjs";
+import { withClaudeProject } from "./helpers/session-fixture.mjs";
+
+test("a repeated import with unchanged natives appends nothing", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds }) => {
+    const first = await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(first.discovered, sessionIds.length);
+    assert.equal(first.imported, sessionIds.length);
+    const canonicalId = `claude-${sessionIds[0]}`;
+    const eventsFile = path.join(projectRoot, ".agents", "sessions", "canonical", canonicalId, "events.jsonl");
+    const before = await stat(eventsFile);
+    const second = await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(second.imported, 0);
+    assert.equal(second.unchanged, sessionIds.length);
+    assert.equal((await stat(eventsFile)).mtimeMs, before.mtimeMs, "events.jsonl must not be rewritten");
+  });
+});
+
+test("appending to one native session imports only its delta and stays idempotent", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, appendRecords, sessionIds }) => {
+    await importProjectSessions(projectRoot, "claude", { environment });
+    await appendRecords(sessionIds[0], 2);
+    const result = await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(result.imported, 1);
+    assert.equal(result.unchanged, sessionIds.length - 1);
+    const stored = await readCanonicalSession(projectRoot, `claude-${sessionIds[0]}`);
+    assert.equal(new Set(stored.events.map((event) => event.id)).size, stored.events.length);
+    const repeat = await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(repeat.imported, 0);
+    const after = await readCanonicalSession(projectRoot, `claude-${sessionIds[0]}`);
+    assert.equal(after.events.length, stored.events.length);
+  });
+});
+
+test("appendCanonicalEvents reports duplicates without rewriting", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds }) => {
+    await importProjectSessions(projectRoot, "claude", { environment });
+    const stored = await readCanonicalSession(projectRoot, `claude-${sessionIds[0]}`);
+    const result = await appendCanonicalEvents(projectRoot, stored.session.id, stored.events);
+    assert.deepEqual(result, { added: 0, duplicate: stored.events.length });
+  });
+});
+```
+
+Create `test/helpers/session-fixture.mjs` with `withClaudeProject(run)`: builds a temp HOME + project, seeds N Claude sessions, writes a shared-mode `.agents/runtime.json`, exposes `{ projectRoot, environment, sessionIds, appendRecords }`, and always removes the temp tree.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/incremental-import.test.mjs`
+Expected: FAIL — `second.imported` is `0` but `unchanged` is `0` (every file is re-parsed and `evaluated`), and `events.jsonl` mtime moves.
+
+- [ ] **Step 3: Make `importProjectSessions` cursor-aware**
+
+```js
+export async function importProjectSessions(projectRoot, agentId, options = {}) {
+  const adapter = getSessionAdapter(agentId);
+  const portable = path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
+  const cursors = options.cursors ?? loadCursors(projectRoot);
+  const files = agentCursors(cursors, agentId);
+  const captured = options.skipCapture
+    ? { count: 0, changed: false, diagnostics: [] }
+    : await adapter.capture(projectRoot, { ...options, cursors });
+  let discovered = 0; let imported = 0; let unchanged = 0; let failed = 0;
+  const diagnostics = [...(captured.diagnostics ?? [])];
+  for (const relative of await listFiles(portable)) {
+    if (!isImportableSession(relative)) continue;
+    const absolute = path.join(portable, relative);
+    const stamp = await stampOf(absolute);
+    const entry = files[relative] ?? {};
+    if (entry.canonicalId && sameStamp(entry.portable, stamp) && entry.imported === true) {
+      discovered += 1;
+      unchanged += 1;
+      continue;
+    }
+    let native;
+    try { native = adapter.toCanonical(await readFile(absolute, "utf8")); }
+    catch (error) {
+      failed += 1;
+      diagnostics.push(`Could not parse ${agentId} session ${relative}: ${error.message}`);
+      continue;
+    }
+    if (!native?.nativeSessionId || native.nativeSessionId === "unknown") {
+      failed += 1;
+      diagnostics.push(`Could not identify ${agentId} session id in ${relative}.`);
+      continue;
+    }
+    discovered += 1;
+    const canonicalId = `${agentId}-${native.nativeSessionId}`;
+    const created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title: `${agentId} ${native.nativeSessionId}` });
+    const appended = await appendCanonicalEvents(projectRoot, canonicalId, native.events);
+    await syncNativeMapping(projectRoot, canonicalId, {
+      agentId,
+      nativeSessionId: native.nativeSessionId,
+      nativeRevision: native.revision ?? null,
+      lastCanonicalEventId: native.events.at(-1)?.id ?? null,
+    });
+    if (options.setActive !== false) await setActiveCanonicalSession(projectRoot, canonicalId);
+    if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
+    files[relative] = { ...entry, portable: stamp, canonicalId, nativeSessionId: native.nativeSessionId, imported: true };
+    if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
+  }
+  if (options.cursors === undefined) await saveCursors(projectRoot, cursors);
+  return { ...captured, discovered, imported, unchanged, failed, diagnostics };
+}
+```
+
+Where `isImportableSession(relative)` is the existing inline predicate extracted to a named function so capture and import share one definition.
+
+- [ ] **Step 4: Stop `readCanonicalSession` from re-normalizing on the hot path**
+
+Add a cheap id-only reader used by `appendCanonicalEvents` for dedupe, so a no-op append does not normalize every event:
+
+```js
+// packages/core/src/runtime/canonical-sessions.mjs
+export async function canonicalEventIds(projectRoot, id) {
+  const file = path.join(sessionDirectory(projectRoot, id), "events.jsonl");
+  if (!existsSync(file)) return new Set();
+  const ids = new Set();
+  for (const line of (await readFile(file, "utf8")).split(/\r?\n/)) {
+    if (!line) continue;
+    try { ids.add(JSON.parse(line).id); } catch { /* a torn line is not an id */ }
+  }
+  return ids;
+}
+```
+
+and in `appendCanonicalEvents`, when every incoming event id is already present, return `{ added: 0, duplicate }` before calling `readCanonicalSession`.
+
+- [ ] **Step 5: Run the tests**
+
+Run: `node --test test/incremental-import.test.mjs test/canonical-sessions.test.mjs test/session-continuation.test.mjs`
+Expected: PASS
+
+- [ ] **Step 6: Measure and commit**
+
+Run: `node .tmp/perf/step-profile.mjs`
+Expected: warm `importProjectSessions(claude)` < 100 ms.
+
+```bash
+npm run sync-core
+git add -A packages/core packages/cli/vendor test
+git commit -m "perf(core): import only canonical deltas from changed sessions"
+```
+
+---
+
+## Task 4: Fast plain launch path
+
+Remove canonical work from the pre-spawn critical path. Recovery becomes an explicit-command and post-exit concern.
+
+**Files:**
+- Modify: `packages/cli/src/cli/dispatcher.mjs:435-558`
+- Modify: `packages/core/src/runtime/session-interop.mjs` (`observeSharedNativeSessions` gains `deferImport`)
+- Test: `test/launch-latency.test.mjs`, `test/session-continuation.test.mjs`
+
+**Interfaces:**
+- Consumes: Tasks 1–3.
+- Produces: `recoverSharedNativeSessions` is called by `dispatchSessions`, `dispatchProjectSetup` and `sessionInterop` transitions — never by a plain agent launch.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/launch-latency.test.mjs
+import assert from "node:assert/strict";
+import test from "node:test";
+import { withClaudeProject } from "./helpers/session-fixture.mjs";
+import { runCliIn } from "./helpers/session-fixture.mjs";
+
+test("a plain launch performs no canonical import before the agent starts", async () => {
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    const result = await runCliIn(projectRoot, ["claude"], environment);
+    assert.equal(result.status, 0);
+    // The agent executable is the last thing that runs: nothing canonical
+    // exists yet because the fake agent produced no session.
+    assert.equal(result.canonicalBeforeSpawn, 0);
+  });
+});
+
+test("the 40-session fixture launches in under one second when warm", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, primeLaunch, runCli }) => {
+    await runCli(["init", "--agents", "claude", "--auth", "global", "--sessions", "project", "--history", "shared"]);
+    await primeLaunch();
+    const started = process.hrtime.bigint();
+    await runCli(["claude"]);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 1000, `warm plain launch took ${ms.toFixed(0)} ms`);
+  }, { sessions: 40, records: 400 });
+});
+```
+
+`runCliIn` / `runCli` spawn `packages/cli/scripts/skills.mjs`; `canonicalBeforeSpawn` is reported by the fake agent executable, which counts directories under `.agents/sessions/canonical` at the moment it runs and writes the count to a file the test reads.
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/launch-latency.test.mjs`
+Expected: FAIL — the latency test reports several thousand ms.
+
+- [ ] **Step 3: Delete the pre-spawn recovery call**
+
+In `dispatchAgent`, remove:
+
+```js
+  if (portableSessions && sharedSessions && !options.skipCanonical) {
+    await recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), { ... });
+  }
+```
+
+Keep `sharedSessions` for the exit path. Add a comment recording why:
+
+```js
+  // Plain launch is a zero-session-control-plane path: the official TUI must
+  // appear without any canonical work. Recovery for sessions created by a
+  // crashed launch runs in the runtime watcher, at post-exit capture, and in
+  // the explicit `sessions` / `change` commands.
+```
+
+- [ ] **Step 4: Run the CLI surface and session tests**
+
+Run: `node --test test/launch-latency.test.mjs test/session-continuation.test.mjs test/cli-surface.test.mjs test/runtime.test.mjs`
+Expected: PASS
+
+- [ ] **Step 5: Re-measure the end-to-end profile**
+
+Run: `node .tmp/perf/launch-profile.mjs`
+Expected: `avenic claude` warm < 1000 ms, `avenic codex` warm < 1000 ms, `avenic opencode` warm < 1000 ms. Record the numbers in the plan's Results section.
+
+- [ ] **Step 6: Commit**
+
+```bash
+npm run sync-core
+git add -A packages/cli packages/core test
+git commit -m "perf(cli): keep plain agent launches off the canonical control plane"
+```
+
+---
+
+## Task 5: Runtime incremental durability
+
+Satisfy "the conversation must survive a crash while it is still running": observe the active native sessions during the run and commit deltas to canonical.
+
+**Files:**
+- Create: `packages/core/src/runtime/native-watch.mjs`
+- Modify: `packages/cli/src/cli/dispatcher.mjs` (start/stop around the child)
+- Create: `packages/cli/src/cli/native-watch.mjs` (child-process host)
+- Test: `test/native-watch.test.mjs`
+
+**Interfaces:**
+- Produces:
+  - `watchNativeSessions({ projectRoot, agentId, environment, signal, intervalMs = 1500, debounceMs = 400 }): Promise<{ stop(): Promise<void>, flushes: number }>`
+  - `flushNativeSessions(projectRoot, agentId, options)` — the same incremental capture + import used by post-exit and recovery.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/native-watch.test.mjs
+import assert from "node:assert/strict";
+import { readCanonicalSession } from "../packages/core/src/runtime/canonical-sessions.mjs";
+import { flushNativeSessions, watchNativeSessions } from "../packages/core/src/runtime/native-watch.mjs";
+import { withClaudeProject } from "./helpers/session-fixture.mjs";
+import test from "node:test";
+
+test("a mid-run native append reaches canonical before the watcher stops", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds, appendRecords }) => {
+    await flushNativeSessions(projectRoot, "claude", { environment });
+    const before = (await readCanonicalSession(projectRoot, `claude-${sessionIds[0]}`)).events.length;
+    const watcher = await watchNativeSessions({ projectRoot, agentId: "claude", environment, intervalMs: 60, debounceMs: 20 });
+    await appendRecords(sessionIds[0], 3);
+    await watcher.waitForFlush(1500);
+    await watcher.stop();
+    const after = (await readCanonicalSession(projectRoot, `claude-${sessionIds[0]}`)).events.length;
+    assert.ok(after > before, "the appended records must be durable before the process exits");
+  });
+});
+
+test("the watcher never writes to native storage", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, nativeRoot, sessionIds, snapshotNative }) => {
+    const watcher = await watchNativeSessions({ projectRoot, agentId: "claude", environment, intervalMs: 60, debounceMs: 20 });
+    await watcher.stop();
+    assert.deepEqual(await snapshotNative(), await snapshotNative());
+    assert.ok(nativeRoot.length > 0);
+    assert.ok(sessionIds.length > 0);
+  });
+});
+
+test("an idle watcher performs no capture work", async () => {
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    await flushNativeSessions(projectRoot, "claude", { environment });
+    const watcher = await watchNativeSessions({ projectRoot, agentId: "claude", environment, intervalMs: 50, debounceMs: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await watcher.stop();
+    assert.equal(watcher.captures, 0, "no native change means no capture");
+  });
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/native-watch.test.mjs`
+Expected: FAIL — `Cannot find module .../native-watch.mjs`
+
+- [ ] **Step 3: Implement the watcher**
+
+```js
+// packages/core/src/runtime/native-watch.mjs
+import { getSessionAdapter } from "./adapters/index.mjs";
+import { importProjectSessions } from "./session-interop.mjs";
+import { stampOf } from "./cursors.mjs";
+
+// One incremental durability primitive for the running phase, the exit phase
+// and crash recovery. It never writes to native storage and never calls a model.
+export async function flushNativeSessions(projectRoot, agentId, options = {}) {
+  return importProjectSessions(projectRoot, agentId, { ...options, skipCapture: false, setActive: options.setActive ?? false });
+}
+```
+
+The watcher polls the **already-discovered** native directories (plus any directory that appears) at `intervalMs`, comparing a directory listing stamp. It only calls `flushNativeSessions` when a stamp moved, and debounces so a burst of appends produces one flush:
+
+```js
+export async function watchNativeSessions({ projectRoot, agentId, environment, intervalMs = 1500, debounceMs = 400, signal }) {
+  const adapter = getSessionAdapter(agentId);
+  let captures = 0;
+  let stopped = false;
+  let last = await nativeStamp(adapter, projectRoot, environment);
+  let pending = null;
+  let lastFlush = Promise.resolve();
+  const tick = async () => {
+    if (stopped) return;
+    const current = await nativeStamp(adapter, projectRoot, environment);
+    if (current !== last) {
+      last = current;
+      captures += 1;
+      lastFlush = flushNativeSessions(projectRoot, agentId, { environment, setActive: false }).catch(() => {});
+      await lastFlush;
+    }
+  };
+  const timer = setInterval(() => { void tick(); }, intervalMs);
+  timer.unref?.();
+  return {
+    captures,
+    get flushes() { return captures; },
+    waitForFlush: async (timeoutMs = 2000) => { await Promise.race([lastFlush, new Promise((resolve) => setTimeout(resolve, timeoutMs))]); },
+    stop: async () => { stopped = true; clearInterval(timer); await lastFlush; },
+  };
+}
+```
+
+`nativeStamp` is a cheap `readdir` + `stat` signature over the discovered native directories — no file is opened and no JSON is parsed. It uses `adapter.nativeRoots(projectRoot, environment)`; add that export to the claude and codex adapters (a thin wrapper over their existing `locations` + `discoverNativeProjectDirectories` hints, without the cwd scan).
+
+- [ ] **Step 4: Run the tests**
+
+Run: `node --test test/native-watch.test.mjs test/incremental-capture.test.mjs`
+Expected: PASS
+
+- [ ] **Step 5: Wire the watcher into the launch**
+
+In `dispatchAgent`, after the lease is acquired and before spawn, start the watcher for the launched agent only; in the `finally`, `stop()` it before the exit capture. Wrap in `try/catch` so a watcher failure never blocks or fails a launch.
+
+Keep the watcher in-process (a `setInterval` with `unref`) rather than a separate child process; the agent owns the terminal and the wrapper is blocked in `spawnSync`, so a second process would need its own coordination file for no benefit. If profiling later shows the polling interferes with the TUI, move it behind the existing `watchdog.mjs` child.
+
+- [ ] **Step 6: Commit**
+
+```bash
+npm run sync-core
+git add -A packages/core packages/cli test
+git commit -m "feat(core): keep shared history durable while the agent is running"
+```
+
+---
+
+## Task 6: Recovery for unmapped and crashed sessions
+
+**Files:**
+- Modify: `packages/core/src/runtime/session-interop.mjs` (`recoverSharedNativeSessions` gains a project-identity inventory watermark)
+- Modify: `packages/cli/src/cli/dispatcher.mjs` (`dispatchSessions` runs recovery before list/continue)
+- Test: `test/session-recovery.test.mjs`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/session-recovery.test.mjs
+import assert from "node:assert/strict";
+import test from "node:test";
+import { listCanonicalSessions } from "../packages/core/src/runtime/canonical-sessions.mjs";
+import { recoverSharedNativeSessions } from "../packages/core/src/runtime/session-interop.mjs";
+import { withClaudeProject } from "./helpers/session-fixture.mjs";
+
+test("a session created with no mapping is discovered on the next recovery", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, createUnmappedSession }) => {
+    const id = await createUnmappedSession(4);
+    const results = await recoverSharedNativeSessions(projectRoot, ["claude"], { environment });
+    assert.equal(results[0].changed, true);
+    const sessions = await listCanonicalSessions(projectRoot);
+    assert.ok(sessions.some((session) => session.id === `claude-${id}`));
+  });
+});
+
+test("recovery is idempotent and creates no duplicates", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, createUnmappedSession }) => {
+    const id = await createUnmappedSession(4);
+    await recoverSharedNativeSessions(projectRoot, ["claude"], { environment });
+    const first = (await listCanonicalSessions(projectRoot)).length;
+    const again = await recoverSharedNativeSessions(projectRoot, ["claude"], { environment });
+    assert.equal(again[0].changed, false);
+    assert.equal((await listCanonicalSessions(projectRoot)).length, first);
+    assert.ok(id.length > 0);
+  });
+});
+
+test("recovery after a truncated tail imports the valid records and keeps a diagnostic", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, createUnmappedSession, truncateTail }) => {
+    const id = await createUnmappedSession(4);
+    await truncateTail(id);
+    const results = await recoverSharedNativeSessions(projectRoot, ["claude"], { environment });
+    assert.equal(results[0].changed, true);
+    const sessions = await listCanonicalSessions(projectRoot);
+    assert.ok(sessions.some((session) => session.id === `claude-${id}`));
+  });
+});
+```
+
+- [ ] **Step 2–3: Implement and verify**
+
+`recoverSharedNativeSessions` already walks agents through `observeSharedNativeSessions`; with Tasks 2–3 the walk is cheap when nothing changed. Add the project-identity check the spec calls an inventory watermark: before scanning, compare each agent's native directory signature against `cursors.agents[agentId].scan`; when it matches, return `{ changed: false }` without listing files. Record the signature after a successful scan.
+
+- [ ] **Step 4: Make `dispatchSessions` recover first**
+
+In `dispatchSessions`, before `listCanonicalSessions`, call `recoverSharedNativeSessions(projectRoot, Object.keys(projectConfig(state).agents), ...)`. This is an explicit command, so the cost is acceptable and the user sees an accurate list.
+
+- [ ] **Step 5: Run the tests and commit**
+
+Run: `node --test test/session-recovery.test.mjs test/session-continuation.test.mjs`
+Expected: PASS
+
+```bash
+npm run sync-core
+git add -A packages/core packages/cli test
+git commit -m "fix(core): recover unmapped native sessions on explicit commands"
+```
+
+---
+
+## Task 7: One diagnostic surface for malformed native history
+
+**Files:**
+- Modify: `packages/core/src/runtime/adapters/canonical.mjs` (tolerant parse already exists — extend to per-record kinds)
+- Modify: `packages/cli/src/cli/dispatcher.mjs` (dedupe and print once per launch cycle)
+- Test: `test/malformed-native.test.mjs`
+
+**Requirements:** a malformed middle record skips one record with a diagnostic and parsing continues; a truncated final record is an incomplete tail, not an error; a source that is unreadable or entirely unexpected is the only source-level failure; the same `(source, revision, kind)` is reported at most once per launch cycle.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/malformed-native.test.mjs
+import assert from "node:assert/strict";
+import test from "node:test";
+import { parseJsonLines } from "../packages/core/src/runtime/adapters/canonical.mjs";
+
+test("a malformed middle record is skipped and later records still parse", () => {
+  const content = ['{"a":1}', "{ not json", '{"a":2}'].join("\n");
+  const parsed = parseJsonLines(content, "claude", { diagnostics: true });
+  assert.equal(parsed.records.length, 2);
+  assert.equal(parsed.diagnostics.length, 1);
+  assert.equal(parsed.diagnostics[0].kind, "malformed-record");
+  assert.equal(parsed.diagnostics[0].line, 2);
+});
+
+test("a truncated final record is an incomplete tail, not a malformed record", () => {
+  const content = ['{"a":1}', '{"a":2', ].join("\n");
+  const parsed = parseJsonLines(content, "claude", { diagnostics: true });
+  assert.equal(parsed.records.length, 1);
+  assert.equal(parsed.diagnostics.length, 1);
+  assert.equal(parsed.diagnostics[0].kind, "truncated-tail");
+});
+
+test("one malformed record produces exactly one diagnostic", () => {
+  const lines = Array.from({ length: 20 }, (_, i) => (i === 7 ? "x{" : `{"i":${i}}`));
+  const parsed = parseJsonLines(lines.join("\n"), "codex", { diagnostics: true });
+  assert.equal(parsed.diagnostics.filter((item) => item.kind === "malformed-record").length, 1);
+});
+```
+
+- [ ] **Step 2–4: Implement, verify, commit**
+
+Extract the diagnostic formatter used by the CLI into `formatSessionDiagnostics(diagnostics)` in core (one function, one wording), where the CLI prints `diagnostics.slice(0, 5)` plus `… and N more` once per cycle. Deduplicate by `agentId + file + kind + line`.
+
+---
+
+## Task 8: End-user README and help
+
+**Files:**
+- Modify: `README.md`
+- Modify: `packages/cli/src/cli/dispatcher.mjs` (`printHelp` ordering)
+- Test: `test/cli-surface.test.mjs`
+
+**Required structure:** Quick Start leads with `avenic init`, `avenic claude|codex|opencode`, `avenic change`, `avenic sessions`, `avenic self-update`, `avenic --version`. Then: what Authentication scope means, what Session storage scope means, Shared vs Isolated (including "Shared lets the selected agents continue the same Avenic conversation history" and "Isolated keeps each agent's own history; import and migration stay available"), crash recovery, Codex install provenance, and "private Hub sync uses your system Git credentials". Low-level per-agent auth/session commands move to an "Advanced / compatibility" section. No architecture content.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/cli-surface.test.mjs (append)
+test("the README leads with the end-user command surface", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const quickStart = readme.slice(readme.indexOf("## Quick Start"), readme.indexOf("## Quick Start") + 900);
+  for (const command of ["avenic init", "avenic change", "avenic sessions", "avenic self-update", "avenic claude"]) {
+    assert.ok(quickStart.includes(command), `Quick Start must show ${command}`);
+  }
+  assert.ok(readme.includes("Shared"), "README must explain Shared");
+  assert.ok(readme.includes("Isolated"), "README must explain Isolated");
+  assert.ok(/system Git credentials|系统 Git/i.test(readme), "README must document Hub credentials");
+});
+
+test("--version matches the published package metadata", async () => {
+  const metadata = JSON.parse(await readFile(new URL("../packages/cli/package.json", import.meta.url), "utf8"));
+  const result = runCli("skills.mjs", ["--version"]);
+  assert.equal(result.stdout.trim(), `Avenic ${metadata.version}`);
+});
+```
+
+- [ ] **Step 2–4: Write the README, run `node --test test/cli-surface.test.mjs`, commit**
+
+---
+
+## Task 9: Hub sync is asynchronous and classifies its failures
+
+**Files:**
+- Modify: `packages/core/src/skills/git.mjs` (add async `gitAsync`; keep `git` for the synchronous callers)
+- Modify: `packages/core/src/skills/catalog.mjs` (`ensureCatalog` async path; typed failures)
+- Modify: `packages/vscode/src/services/catalog.ts` (delete the mirrored slug; use the exported core helper)
+- Modify: `packages/vscode/src/commands/catalog-commands.ts` (`Syncing…` → `Synced · <short sha> · <time>`)
+- Modify: `packages/cli/src/cli/skills-cli.mjs` (`hub sync` prints short sha and time)
+- Modify: `packages/core/index.d.ts`
+- Test: `test/catalog-cache.test.mjs`, `packages/vscode/test/catalog-commands.test.ts`
+
+**Required error kinds:** `authentication`, `repo-missing`, `network`, `git-missing`, `ref-missing`, `cache-filesystem`. Each carries a one-line user-facing message; classification reads git's stderr.
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+// test/catalog-cache.test.mjs (append)
+test("sync failures carry a kind that distinguishes auth from network", async () => {
+  const cases = [
+    ["fatal: Authentication failed for 'https://github.com/x/y'", "authentication"],
+    ["fatal: repository 'https://github.com/x/y' not found", "repo-missing"],
+    ["fatal: unable to access 'https://github.com/x/y': Could not resolve host", "network"],
+    ["fatal: couldn't find remote ref main", "ref-missing"],
+  ];
+  for (const [stderr, kind] of cases) assert.equal(classifyGitFailure(stderr), kind);
+  assert.equal(classifyGitFailure("spawn git ENOENT"), "git-missing");
+});
+
+test("a sync failure is one typed error, not a wrapped message", async () => {
+  await withFakeGit(async ({ environment }) => {
+    await assert.rejects(
+      ensureCatalog("owner/repo#main", { environment, run: failingGit("fatal: Authentication failed") }),
+      (error) => error.kind === "authentication",
+    );
+  });
+});
+```
+
+- [ ] **Step 2–6: Implement, export `cacheDirectory` from core, delete the mirror in `services/catalog.ts`, add the timestamped success line, run `npm --prefix packages/vscode test` and `node --test test/catalog-cache.test.mjs`, commit**
+
+---
+
+## Task 10: self-update verification coverage
+
+**Files:**
+- Test: `test/runtime.test.mjs`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+test("self-update fails loudly when npm exits 0 but PATH still resolves the old version", async () => {
+  await assert.rejects(
+    updateAvenic({ currentVersion: "1.5.1", latestVersion: "1.5.2", install: () => ({ status: 0 }), probeVersion: () => "1.5.1" }),
+    /update verification failed: registry=1\.5\.2, active=1\.5\.1/,
+  );
+});
+
+test("self-update reports already up to date without installing", async () => {
+  let installed = false;
+  const result = await updateAvenic({
+    currentVersion: "1.5.2", latestVersion: "1.5.2", install: () => { installed = true; return { status: 0 }; }, probeVersion: () => "1.5.2",
+  });
+  assert.equal(result.updated, false);
+  assert.equal(installed, false);
+});
+```
+
+- [ ] **Step 2–4: Run, fix any behaviour the tests expose, commit**
+
+---
+
+## Task 11: Code consolidation
+
+Produce the before/after numbers the release gate requires.
+
+- [ ] **Step 1: Record before numbers**
+
+Run and save output:
+```bash
+find packages/core/src packages/cli/src packages/cli/scripts packages/vscode/src -type f \( -name '*.mjs' -o -name '*.ts' \) | xargs wc -l | tail -1
+```
+
+- [ ] **Step 2: Apply the consolidation list**
+
+- Delete the mirrored cache-slug in `packages/vscode/src/services/catalog.ts` (Task 9) and any other core logic re-implemented in VS Code.
+- Collapse `observeSharedNativeSessions` / `recoverSharedNativeSessions` / `importProjectSessions` into one capture pipeline with flags, not three near-copies.
+- Extract `isImportableSession` and the diagnostic formatter once (Tasks 3, 7) and delete the duplicates.
+- Delete adapter code paths that only exist for tests.
+- Confirm no `Manager` / `Controller` / `Coordinator` / `Engine` modules exist.
+- Verify deprecated verbs (`catalog`, per-agent `sessions import/writeback`) are thin wrappers with no second implementation.
+
+- [ ] **Step 3: Re-run the full suite and record after numbers**
+
+Run: `npm test`
+Expected: PASS. Record LOC before/after in the plan's Results section.
+
+- [ ] **Step 4: Commit**
+
+---
+
+## Task 12: Committed performance harness
+
+**Files:**
+- Create: `test/performance.test.mjs`
+- Move: `.tmp/perf/launch-profile.mjs` → `scripts/perf/launch-profile.mjs`
+
+- [ ] **Step 1: Add a budget test**
+
+```js
+// test/performance.test.mjs
+import assert from "node:assert/strict";
+import test from "node:test";
+import { withClaudeProject } from "./helpers/session-fixture.mjs";
+
+// Generous ceilings: this guards against a return of whole-history work on the
+// launch path, not against CI noise. Local numbers are an order of magnitude lower.
+const BUDGET_MS = 2500;
+
+test("a warm plain launch stays well under a second locally", async () => {
+  await withClaudeProject(async ({ runCli }) => {
+    await runCli(["init", "--agents", "claude,codex,opencode", "--auth", "global", "--sessions", "project", "--history", "shared"]);
+    await runCli(["claude"]);
+    const started = process.hrtime.bigint();
+    await runCli(["claude"]);
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < BUDGET_MS, `warm launch took ${ms.toFixed(0)} ms`);
+  }, { sessions: 40, records: 400 });
+});
+```
+
+- [ ] **Step 2: Run, adjust the ceiling to a value the real machine clears with margin, commit**
+
+---
+
+## Task 13: Versions, changelog, packaging
+
+- [ ] **Step 1:** `npm view @avenic/core version` and `npm view avenic dist-tags --json` — record the real published versions.
+- [ ] **Step 2:** Bump `packages/core`, `packages/cli` and `packages/vscode` to the next patch/minor above the published ones. Never reuse a published version.
+- [ ] **Step 3:** Write `CHANGELOG.md` entries for core/CLI and `packages/vscode/CHANGELOG.md`, and VS Code release notes.
+- [ ] **Step 4:** Run the full gate:
+
+```bash
+npm test
+npm run test:install
+npm run pack:cli
+cd packages/cli && npm pack --dry-run --json
+npm --prefix packages/vscode run typecheck
+npm --prefix packages/vscode run build
+npm --prefix packages/vscode test
+npm --prefix packages/vscode run package
+```
+
+- [ ] **Step 5:** Install the packed tarballs into a temp prefix and smoke `--version`, `init`, `change`, `sessions`, plain launches, Shared/Isolated, `self-update`.
+- [ ] **Step 6:** Secret scan the diff; commit.
+
+---
+
+## Task 14: Release gates
+
+- [ ] **Step 1:** Install the final VSIX into a real VS Code and exercise Initialize, Configure, Launch, Sessions, Hub Sync, Shared/Isolated.
+- [ ] **Step 2:** Confirm the npm artifacts are complete, then hand the two manual steps to the owner: npm OTP/browser authorization, and the VSIX upload.
+- [ ] **Step 3:** After the owner publishes, verify `npm view avenic version`, `npm install -g avenic@latest`, `avenic --version`, `npm list -g avenic --depth=0`, `where.exe avenic`, and `avenic self-update`.
+
+---
+
+## Results
+
+Filled in during execution.
+
+### Launch latency
+
+Two numbers matter, and they are measured separately (`scripts/perf/launch-profile.mjs`):
+
+- **time to agent** — how long until the official agent process starts, i.e. what the user waits for.
+- **wrapper total** — how long until the shell prompt returns after quitting the agent, which includes the capture that makes the run durable.
+
+Fixture: 40 Claude sessions × 400 records, 120 Codex rollouts, one project.
+
+| Command | Before (wrapper) | After (wrapper) | Time to agent (after) |
+|---|---|---|---|
+| `avenic claude` (cold) | 10 945 ms | 244 ms | 244 ms |
+| `avenic claude` (warm) | 7 677 ms | 339 ms | 284–331 ms |
+| `avenic codex` (warm) | 4 446 ms | 210 ms | 187–201 ms |
+| `avenic opencode` (warm) | 3 670 ms | 275 ms | 256–305 ms |
+
+Per-step, warm (`.tmp/perf/step-profile.mjs`):
+
+| Step | Before | After |
+|---|---|---|
+| `claude.capture` (warm) | 2 301 ms | 48 ms |
+| `importProjectSessions(claude)` (warm) | 2 799 ms | 27 ms |
+| `codex.capture` (warm) | 273 ms | 24 ms |
+| `importProjectSessions(codex)` (warm) | 509 ms | 25 ms |
+| `recoverSharedNativeSessions` (3 agents) | 3 298 ms | 125 ms |
+| exit capture, claude | 2 706 ms | 26 ms |
+| exit capture, codex | 498 ms | 29 ms |
+| `claude.revertNative` | 192 ms | 17 ms |
+| `codex.revertNative` | 519 ms | 38 ms |
+
+### Production LOC
+
+| Area | Before | After |
+|---|---|---|
+| core | 6 609 | |
+| CLI | 2 858 | |
+| CLI scripts | 68 | |
+| VS Code | 3 102 | |
+| **Total** | **12 637** | |

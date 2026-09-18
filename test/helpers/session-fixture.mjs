@@ -58,10 +58,25 @@ async function writeRuntime(projectRoot, agents, sessionInterop) {
   );
 }
 
+// The stand-in agent records what the project looked like at the instant the
+// official TUI would have appeared, so a launch test can assert what Avenic
+// did and did not do on the critical path.
 async function writeFakeAgent(bin, name) {
   await mkdir(bin, { recursive: true });
   const target = path.join(bin, `${name}.mjs`);
-  await writeFile(target, "process.exit(0);\n");
+  await writeFile(target, `import { readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
+const startedAt = Date.now();
+const probe = process.env.AVENIC_AGENT_PROBE;
+if (probe) {
+  const canonical = path.join(process.cwd(), ".agents", "sessions", "canonical");
+  let sessions = [];
+  try { sessions = readdirSync(canonical); } catch {}
+  mkdirSync(path.dirname(probe), { recursive: true });
+  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: sessions, startedAt }));
+}
+process.exit(0);
+`);
   if (process.platform === "win32") {
     await writeFile(path.join(bin, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${target}" %*\r\n`);
   } else {
@@ -150,6 +165,15 @@ export async function withClaudeProject(run, options = {}) {
       await appendFile(file, '{"type":"assistant","uuid":"torn');
     },
 
+    /** The launch group's native isolation: snapshot before, revert after. */
+    async snapshotAndRevert(agent = "claude") {
+      const { getSessionAdapter } = await import("../../packages/core/src/runtime/adapters/index.mjs");
+      const adapter = getSessionAdapter(agent);
+      const snapshotRoot = path.join(root, "snapshot");
+      await adapter.snapshotNative(projectRoot, snapshotRoot, { environment });
+      await adapter.revertNative(snapshotRoot, projectRoot, { environment });
+    },
+
     /** Every native byte, for asserting that Avenic never rewrites it. */
     async nativeSnapshot() {
       const snapshot = {};
@@ -171,11 +195,52 @@ export async function withClaudeProject(run, options = {}) {
         { cwd: projectRoot, env: { ...environment, ...overrides }, encoding: "utf8" },
       );
     },
+
+    /**
+     * Run a launch and report both what the agent saw at spawn time and how
+     * long the wrapper took to get there.
+     */
+    async launch(argumentsList) {
+      const probe = path.join(projectRoot, ".agent-probe.json");
+      await rm(probe, { force: true });
+      const startedAt = Date.now();
+      const started = process.hrtime.bigint();
+      const result = helpers.runCli(argumentsList, { AVENIC_AGENT_PROBE: probe });
+      let observed = null;
+      try {
+        observed = JSON.parse(await readFile(probe, "utf8"));
+      } catch {}
+      return {
+        ...result,
+        elapsedMs: Number(process.hrtime.bigint() - started) / 1e6,
+        // What a user actually waits for: the delay before the official agent
+        // process starts, not the wrapper's total lifetime (which includes the
+        // capture that runs after the agent exits).
+        toAgentMs: observed?.startedAt ? observed.startedAt - startedAt : null,
+        probe: observed,
+      };
+    },
   };
 
   try {
     await run(helpers);
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeTree(root);
+  }
+}
+
+// Launches may leave a detached watchdog that finishes the run's bookkeeping
+// after the CLI process is gone, so a temp tree can still be written to while
+// it is being removed. Windows reports that as ENOTEMPTY/EBUSY/EPERM, which is
+// always transient here: retry until the writer is done.
+export async function removeTree(root, attempts = 10) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+      return;
+    } catch (error) {
+      if (attempt >= attempts || !["ENOTEMPTY", "EBUSY", "EPERM", "EACCES"].includes(error.code)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
   }
 }
