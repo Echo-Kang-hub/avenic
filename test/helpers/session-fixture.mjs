@@ -1,7 +1,7 @@
 // Shared fixture for the session tests: a temp HOME with real-shaped native
 // history, a temp project, a valid runtime config and a fake agent binary, so
 // every launch, capture and recovery test exercises the production paths.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -64,16 +64,36 @@ async function writeRuntime(projectRoot, agents, sessionInterop) {
 async function writeFakeAgent(bin, name) {
   await mkdir(bin, { recursive: true });
   const target = path.join(bin, `${name}.mjs`);
-  await writeFile(target, `import { readdirSync, writeFileSync, mkdirSync } from "node:fs";
+  await writeFile(target, `import { appendFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 const startedAt = Date.now();
 const probe = process.env.AVENIC_AGENT_PROBE;
+const canonical = path.join(process.cwd(), ".agents", "sessions", "canonical");
+const snapshot = () => { try { return readdirSync(canonical); } catch { return []; } };
 if (probe) {
-  const canonical = path.join(process.cwd(), ".agents", "sessions", "canonical");
-  let sessions = [];
-  try { sessions = readdirSync(canonical); } catch {}
   mkdirSync(path.dirname(probe), { recursive: true });
-  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: sessions, startedAt }));
+  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), startedAt }));
+}
+// AVENIC_AGENT_WRITE lets a test drive a live agent: the file a working agent
+// is appending to, how many records, and how long to stay alive afterwards.
+if (process.env.AVENIC_AGENT_WRITE) {
+  const { file, records, sleepMs } = JSON.parse(process.env.AVENIC_AGENT_WRITE);
+  const lines = [];
+  for (let i = 0; i < records; i += 1) {
+    lines.push(JSON.stringify({
+      type: i % 2 === 0 ? "assistant" : "user",
+      uuid: \`live-\${i}\`,
+      sessionId: path.basename(file, ".jsonl"),
+      timestamp: new Date(Date.UTC(2026, 5, 1) + i * 1000).toISOString(),
+      cwd: process.cwd(),
+      message: { role: i % 2 === 0 ? "assistant" : "user", model: "claude-sonnet-5", content: [{ type: "text", text: \`live message \${i}\` }] },
+    }));
+  }
+  appendFileSync(file, \`\${lines.join("\\n")}\\n\`);
+  if (sleepMs) {
+    if (probe) writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), startedAt, wroteAt: Date.now() }));
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
+  }
 }
 process.exit(0);
 `);
@@ -194,6 +214,36 @@ export async function withClaudeProject(run, options = {}) {
         [path.join(packageRoot, "packages", "cli", "scripts", "skills.mjs"), ...argumentsList],
         { cwd: projectRoot, env: { ...environment, ...overrides }, encoding: "utf8" },
       );
+    },
+
+    /**
+     * Start a launch without waiting for it, so a test can watch what Avenic
+     * does while the agent is still running.
+     */
+    async launchAsync(argumentsList, overrides = {}) {
+      const probe = path.join(projectRoot, ".agent-probe.json");
+      await rm(probe, { force: true });
+      const startedAt = Date.now();
+      const child = spawn(
+        process.execPath,
+        [path.join(packageRoot, "packages", "cli", "scripts", "skills.mjs"), ...argumentsList],
+        { cwd: projectRoot, env: { ...environment, ...overrides, AVENIC_AGENT_PROBE: probe }, stdio: "ignore" },
+      );
+      const completion = new Promise((resolve) => {
+        child.on("exit", (status) => resolve({ status, elapsedMs: Date.now() - startedAt }));
+      });
+      return {
+        child,
+        completion,
+        elapsedMs: () => Date.now() - startedAt,
+        async probe() {
+          try {
+            return JSON.parse(await readFile(probe, "utf8"));
+          } catch {
+            return null;
+          }
+        },
+      };
     },
 
     /**

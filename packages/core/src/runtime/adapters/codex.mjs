@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promis
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
-import { cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
+import { agentCursors, cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
 import {
   PROJECT_ROOT_TOKEN,
   listFiles,
@@ -142,8 +142,13 @@ async function rolloutMeta(file, cursors) {
 }
 
 async function matchingRollouts(root, projectRoot, options = {}) {
+  // A capture that runs while the agent is working only has to re-read the
+  // rollouts this project already matched, which are exactly the ones the
+  // cursor store knows. Rediscovering them means opening the head of every
+  // Codex session on the machine.
+  const candidates = options.knownOnly ? Object.keys(agentCursors(options.cursors, agentId)) : await listFiles(root);
   const matches = [];
-  for (const relative of await listFiles(root)) {
+  for (const relative of candidates) {
     if (!relative.endsWith(".jsonl")) {
       continue;
     }
@@ -182,7 +187,11 @@ export async function capture(projectRoot, options = {}) {
   const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
   const ownsCursors = options.cursors === undefined;
   const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
-  const rollouts = await matchingRollouts(nativeSessions, projectRoot, { cursors });
+  let rollouts = await matchingRollouts(nativeSessions, projectRoot, { cursors, knownOnly: options.knownOnly });
+  if (options.knownOnly && rollouts.length === 0) {
+    // Nothing has been captured here yet, so there is no known rollout to watch.
+    rollouts = await matchingRollouts(nativeSessions, projectRoot, { cursors });
+  }
   if (rollouts.length === 0) {
     if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
     return {

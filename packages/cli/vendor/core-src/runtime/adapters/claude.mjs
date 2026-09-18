@@ -4,7 +4,7 @@ import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
-import { cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
+import { cachedHead, knownDirectories, loadCursors, rememberDirectories, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
 import {
   PROJECT_ROOT_TOKEN,
   listFiles,
@@ -117,6 +117,12 @@ async function discoverNativeProjectDirectories(projectRoot, environment = proce
   if (!existsSync(projectsRoot)) {
     return { directories: [], diagnostics: [`Claude session root not found: ${projectsRoot}`] };
   }
+  // A capture that runs while the agent is working only has to re-read the
+  // directories this project already matched; rediscovering them means
+  // opening the head of every Claude session on the machine.
+  if (options.knownOnly) {
+    return { directories: knownDirectories(options.cursors, agentId).filter((directory) => existsSync(directory)), diagnostics: [] };
+  }
   const directories = [hinted];
   try {
     for (const entry of await readdir(projectsRoot, { withFileTypes: true })) {
@@ -146,6 +152,7 @@ async function discoverNativeProjectDirectories(projectRoot, environment = proce
     // a compatibility fallback only when there was no contradicting metadata.
     if (!hasMetadata && path.resolve(directory) === path.resolve(hinted)) matches.push(directory);
   }
+  if (options.cursors) rememberDirectories(options.cursors, agentId, matches);
   if (matches.length > 0) return { directories: matches, diagnostics: [] };
   if (candidateSessions > 0) {
     const suffix = unreadable > 0 ? `; ${unreadable} session file(s) had no readable cwd metadata` : "";
@@ -167,7 +174,11 @@ export async function capture(projectRoot, options = {}) {
   const { portable } = locations(projectRoot, options.environment);
   const ownsCursors = options.cursors === undefined;
   const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
-  const discovery = await discoverNativeProjectDirectories(projectRoot, options.environment, { cursors });
+  let discovery = await discoverNativeProjectDirectories(projectRoot, options.environment, { cursors, knownOnly: options.knownOnly });
+  if (options.knownOnly && discovery.directories.length === 0) {
+    // Nothing has been captured here yet, so there is no known root to watch.
+    discovery = await discoverNativeProjectDirectories(projectRoot, options.environment, { cursors });
+  }
   const sources = [];
   for (const native of discovery.directories) {
     for (const relative of await listFiles(native)) sources.push({ relative, source: path.join(native, relative) });

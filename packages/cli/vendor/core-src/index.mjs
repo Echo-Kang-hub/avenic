@@ -32,12 +32,15 @@ export {
   agentCursors,
   cachedHead,
   cursorFilePath,
+  knownDirectories,
   loadCursors,
+  rememberDirectories,
   rememberHead,
   sameStamp,
   saveCursors,
   stampOf,
 } from "./runtime/cursors.mjs";
+export { WATCH_INTERVAL_MS, flushNativeSessions, startNativeWatch } from "./runtime/native-watch.mjs";
 export { resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export { spawnExecutableSync } from "./runtime/process.mjs";
 export {

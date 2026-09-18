@@ -67,6 +67,19 @@ export function agentCursors(cursors, agentId) {
   return cursors.agents[agentId].files;
 }
 
+// The native directories discovery matched for this project last time. A
+// background capture during a run must not re-enumerate an agent's entire
+// history root to rediscover them; the full walk belongs to the exit and
+// recovery paths.
+export function knownDirectories(cursors, agentId) {
+  return cursors.agents[agentId]?.directories ?? [];
+}
+
+export function rememberDirectories(cursors, agentId, directories) {
+  cursors.agents[agentId] ??= { files: {}, heads: {} };
+  cursors.agents[agentId].directories = [...directories];
+}
+
 // Discovery has to read the first bytes of every session on the machine to
 // learn which project it belongs to. That is the most expensive part of a
 // launch, and the answer never changes while the file is untouched, so cache

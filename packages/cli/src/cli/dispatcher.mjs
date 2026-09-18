@@ -1,7 +1,8 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
@@ -84,6 +85,15 @@ function launchCaptured(executable, argumentsList, options = {}) {
   });
   if (result.error) throw new Error(`Unable to launch ${executable}: ${result.error.message}`);
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+// Tell the detached durability watch that this launch is finishing, so it
+// stops its periodic capture and leaves the exit sequence sole ownership of
+// the last pass. Best-effort: a missing marker only costs a redundant capture.
+function markLaunchClosing(agentId, projectRoot) {
+  try {
+    writeFileSync(path.join(sessionLeasePath(agentId, projectRoot), "closing"), "");
+  } catch {}
 }
 
 function isActiveSessionError(output) {
@@ -463,6 +473,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
   const isolatesNative = typeof adapter.snapshotNative === "function"
     && typeof adapter.revertNative === "function";
   let leaveLaunchGroup = null;
+  let leaseMember = null;
   if (portableSessions && isolatesNative) {
     const snapshotRoot = path.join(sessionLeasePath(agentId, projectRoot), "snapshot");
     const lease = await acquireSessionLease(agentId, projectRoot, {
@@ -480,8 +491,13 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       },
     });
     leaveLaunchGroup = lease.release;
+    leaseMember = lease.member;
+  }
+  if (portableSessions) {
+    // Every project-scoped launch gets a durability watch, whether or not the
+    // agent's native storage is isolated for the run.
     try {
-      await spawnSessionWatchdog(agentId, projectRoot, lease.member, environment);
+      await spawnSessionWatchdog(agentId, projectRoot, leaseMember, environment);
     } catch {}
   }
   if (portableSessions && !options.skipRestore) {
@@ -535,16 +551,22 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     status = options.capture ? launchResult.status : launchResult;
   } finally {
     if (portableSessions) {
+      // The run is over: stop the detached durability watch before this
+      // process starts its own exit sequence, so the two never capture the
+      // same tree at once.
+      markLaunchClosing(agentId, projectRoot);
       try {
         await observeSharedNativeSessions(projectRoot, agentId, {
           environment,
           setActive: !options.skipCanonical && sharedSessions,
-          force: true,
         });
         if (typeof options.onExit === "function") await options.onExit({ environment, projectRoot });
       } finally {
         if (leaveLaunchGroup) {
           await leaveLaunchGroup();
+        } else {
+          // Without a launch group nothing else removes the watch state.
+          await rm(sessionLeasePath(agentId, projectRoot), { recursive: true, force: true });
         }
       }
     }
