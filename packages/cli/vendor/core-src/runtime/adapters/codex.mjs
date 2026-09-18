@@ -1,18 +1,19 @@
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
+import { cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
 import {
   PROJECT_ROOT_TOKEN,
   listFiles,
   mergeFiles,
   readFirstJsonLine,
-  replaceDirectory,
   revertFrom,
   samePath,
   snapshotInto,
+  syncDirectory,
   transformJsonLines,
 } from "../sessions.mjs";
 import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
@@ -114,23 +115,47 @@ function rewriteCwd(content, projectRoot, restore) {
   });
 }
 
-async function matchingRollouts(root, projectRoot) {
+// The rollout's identity lives in its first line and never changes while that
+// line is intact, so the parsed head is cached against the file's stamp.
+async function rolloutMeta(file, cursors) {
+  const stamp = cursors ? await stampOf(file) : null;
+  if (cursors && stamp) {
+    const cached = cachedHead(cursors, agentId, file, stamp);
+    if (cached !== undefined) return cached;
+  }
+  let meta = null;
+  try {
+    const first = await readFirstJsonLine(file);
+    if (first?.type === "session_meta") {
+      meta = {
+        cwd: first.payload?.cwd ?? null,
+        id: first.payload?.id ?? first.payload?.session_id ?? null,
+        parentThreadId: first.payload?.parent_thread_id,
+        multiAgentVersion: first.payload?.multi_agent_version,
+      };
+    }
+  } catch {
+    meta = null;
+  }
+  if (cursors && stamp) rememberHead(cursors, agentId, file, stamp, meta);
+  return meta;
+}
+
+async function matchingRollouts(root, projectRoot, options = {}) {
   const matches = [];
   for (const relative of await listFiles(root)) {
     if (!relative.endsWith(".jsonl")) {
       continue;
     }
-    try {
-      const first = await readFirstJsonLine(path.join(root, relative));
-      if (first.type === "session_meta" && samePath(first.payload?.cwd, projectRoot)) {
-        matches.push({
-          relative,
-          id: first.payload?.id ?? first.payload?.session_id,
-          parentThreadId: first.payload?.parent_thread_id,
-          multiAgentVersion: first.payload?.multi_agent_version,
-        });
-      }
-    } catch {}
+    const meta = await rolloutMeta(path.join(root, relative), options.cursors);
+    if (meta && samePath(meta.cwd, projectRoot)) {
+      matches.push({
+        relative,
+        id: meta.id,
+        parentThreadId: meta.parentThreadId,
+        multiAgentVersion: meta.multiAgentVersion,
+      });
+    }
   }
   return matches;
 }
@@ -155,8 +180,11 @@ async function filteredIndex(codexHome, ids) {
 
 export async function capture(projectRoot, options = {}) {
   const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
-  const rollouts = await matchingRollouts(nativeSessions, projectRoot);
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  const rollouts = await matchingRollouts(nativeSessions, projectRoot, { cursors });
   if (rollouts.length === 0) {
+    if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
     return {
       count: 0,
       changed: false,
@@ -166,18 +194,36 @@ export async function capture(projectRoot, options = {}) {
     };
   }
   const ids = new Set(rollouts.map(({ id }) => id).filter(Boolean));
-  await replaceDirectory(portable, async (temporary) => {
-    for (const { relative } of rollouts) {
-      const target = path.join(temporary, "sessions", relative);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, rewriteCwd(await readFile(path.join(nativeSessions, relative)), projectRoot, false));
-    }
-    const index = await filteredIndex(codexHome, ids);
-    if (index) {
-      await writeFile(path.join(temporary, "session_index.jsonl"), `${index}\n`, "utf8");
-    }
-  });
-  return { count: rollouts.length, changed: true, diagnostics: [] };
+  const result = await syncDirectory(
+    rollouts.map(({ relative }) => ({ relative, source: path.join(nativeSessions, relative) })),
+    path.join(portable, "sessions"),
+    (content) => rewriteCwd(content, projectRoot, false),
+    cursors,
+    agentId,
+  );
+  const index = await filteredIndex(codexHome, ids);
+  const indexChanged = await writeIndex(path.join(portable, "session_index.jsonl"), index);
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  return {
+    count: rollouts.length,
+    changed: result.added + result.updated + result.removed > 0 || indexChanged,
+    diagnostics: [],
+  };
+}
+
+// The filtered index is derived from native state, so it is rewritten only
+// when its content actually moved.
+async function writeIndex(file, index) {
+  if (!index) {
+    if (!existsSync(file)) return false;
+    await rm(file, { force: true });
+    return true;
+  }
+  const content = `${index}\n`;
+  if (existsSync(file) && (await readFile(file, "utf8")) === content) return false;
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, content, "utf8");
+  return true;
 }
 
 async function restoreIndex(portable, codexHome) {

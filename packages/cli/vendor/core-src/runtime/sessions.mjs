@@ -6,6 +6,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -13,6 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { agentCursors, sameStamp, stampOf } from "./cursors.mjs";
 
 export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 
@@ -120,6 +122,57 @@ export async function snapshotFiles(sourceRoot, relativeFiles, destination, tran
       await writeFile(target, transform ? await transform(content, relative) : content);
     }
   });
+}
+
+// Copy only the native files whose stamp moved since the last capture, and
+// drop destination files whose native source is gone. A repeated capture with
+// nothing new must touch nothing: that is the common case for every launch
+// after the first.
+export async function syncDirectory(entries, destinationRoot, transform, cursors, agentId) {
+  const files = agentCursors(cursors, agentId);
+  const seen = new Set();
+  let added = 0;
+  let updated = 0;
+  let unchanged = 0;
+  for (const { relative, source } of entries) {
+    seen.add(relative);
+    const native = await stampOf(source);
+    if (!native) continue;
+    const destination = path.join(destinationRoot, relative);
+    const entry = files[relative] ?? {};
+    const destinationStamp = await stampOf(destination);
+    if (sameStamp(entry.native, native) && sameStamp(entry.portable, destinationStamp)) {
+      unchanged += 1;
+      continue;
+    }
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, transform ? await transform(await readFile(source), relative) : await readFile(source));
+    files[relative] = { ...entry, native, portable: await stampOf(destination) };
+    if (destinationStamp) updated += 1; else added += 1;
+  }
+  let removed = 0;
+  for (const relative of await listFiles(destinationRoot)) {
+    if (seen.has(relative)) continue;
+    await rm(path.join(destinationRoot, relative), { force: true });
+    await removeEmptyDirectories(path.dirname(path.join(destinationRoot, relative)), destinationRoot);
+    delete files[relative];
+    removed += 1;
+  }
+  return { added, updated, unchanged, removed };
+}
+
+async function removeEmptyDirectories(directory, stopAt) {
+  const stop = path.resolve(stopAt);
+  let current = path.resolve(directory);
+  while (current !== stop && current.startsWith(stop)) {
+    try {
+      if ((await readdir(current)).length > 0) return;
+      await rmdir(current);
+    } catch {
+      return;
+    }
+    current = path.dirname(current);
+  }
 }
 
 function isPrefix(prefix, content) {

@@ -4,14 +4,15 @@ import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runtimePaths } from "../config.mjs";
+import { cachedHead, loadCursors, rememberHead, saveCursors, stampOf } from "../cursors.mjs";
 import {
   PROJECT_ROOT_TOKEN,
   listFiles,
   mergeFiles,
   revertFrom,
-  replaceDirectory,
   samePath,
   snapshotInto,
+  syncDirectory,
   transformJsonLines,
 } from "../sessions.mjs";
 import { eventTimestamp, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
@@ -74,7 +75,7 @@ function isRootSession(relative) {
   return relative.endsWith(".jsonl") && !relative.includes(`${path.sep}subagents${path.sep}`);
 }
 
-async function jsonlCwd(file) {
+async function readCwdHead(file) {
   let handle;
   try {
     handle = await open(file, "r");
@@ -92,11 +93,25 @@ async function jsonlCwd(file) {
   return null;
 }
 
+// A session's cwd never changes while the file that records it is untouched,
+// so the head read is cached against the file's stamp. Without this, every
+// launch reopens the head of every Claude session on the machine.
+async function jsonlCwd(file, cursors) {
+  const stamp = cursors ? await stampOf(file) : null;
+  if (cursors && stamp) {
+    const cached = cachedHead(cursors, agentId, file, stamp);
+    if (cached !== undefined) return cached;
+  }
+  const cwd = await readCwdHead(file);
+  if (cursors && stamp) rememberHead(cursors, agentId, file, stamp, cwd);
+  return cwd;
+}
+
 // Claude's encoded `projects/<name>` directory is not a stable API. Keep it
 // as a cheap hint, then identify every other candidate from the native cwd
 // recorded in its JSONL. This keeps custom config roots and Windows URI/path
 // spelling from silently hiding existing project history.
-async function discoverNativeProjectDirectories(projectRoot, environment = process.env) {
+async function discoverNativeProjectDirectories(projectRoot, environment = process.env, options = {}) {
   const { native: hinted } = locations(projectRoot, environment);
   const projectsRoot = path.dirname(hinted);
   if (!existsSync(projectsRoot)) {
@@ -119,7 +134,7 @@ async function discoverNativeProjectDirectories(projectRoot, environment = proce
     candidateSessions += rootSessions.length;
     let hasMetadata = false;
     for (const relative of rootSessions) {
-      const cwd = await jsonlCwd(path.join(directory, relative));
+      const cwd = await jsonlCwd(path.join(directory, relative), options.cursors);
       if (cwd) hasMetadata = true;
       else unreadable += 1;
       if (samePath(cwd, projectRoot)) {
@@ -150,24 +165,26 @@ function rewriteCwd(content, projectRoot, restore) {
 
 export async function capture(projectRoot, options = {}) {
   const { portable } = locations(projectRoot, options.environment);
-  const discovery = await discoverNativeProjectDirectories(projectRoot, options.environment);
-  const natives = discovery.directories;
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  const discovery = await discoverNativeProjectDirectories(projectRoot, options.environment, { cursors });
   const sources = [];
-  for (const native of natives) {
-    for (const relative of await listFiles(native)) sources.push({ native, relative });
+  for (const native of discovery.directories) {
+    for (const relative of await listFiles(native)) sources.push({ relative, source: path.join(native, relative) });
   }
-  if (sources.length === 0) {
-    return { count: 0, changed: false, diagnostics: discovery.diagnostics };
-  }
-  await replaceDirectory(portable, async (temporary) => {
-    for (const { native, relative } of sources) {
-      const content = await readFile(path.join(native, relative));
-      const target = path.join(temporary, relative);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, false) : content);
-    }
-  });
-  return { count: sources.filter(({ relative }) => isRootSession(relative)).length, changed: true, diagnostics: [] };
+  const result = await syncDirectory(
+    sources,
+    portable,
+    (content, relative) => (relative.endsWith(".jsonl") ? rewriteCwd(content, projectRoot, false) : content),
+    cursors,
+    agentId,
+  );
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  return {
+    count: sources.filter(({ relative }) => isRootSession(relative)).length,
+    changed: result.added + result.updated + result.removed > 0,
+    diagnostics: discovery.diagnostics,
+  };
 }
 
 export async function restore(projectRoot, options = {}) {

@@ -10,17 +10,17 @@ const SCHEMA_VERSION = 1;
 // up to. They are derived state: losing them costs one full re-read and never
 // loses history, so they live in machine state rather than in the project tree
 // (a committed cursor would be meaningless on another checkout).
-export function cursorFilePath(projectRoot) {
+export function cursorFilePath(projectRoot, environment = process.env) {
   const key = createHash("sha256").update(path.resolve(projectRoot)).digest("hex").slice(0, 16);
-  return path.join(stateRoot(), "runtime", key, "cursors.json");
+  return path.join(stateRoot(environment), "runtime", key, "cursors.json");
 }
 
 export function emptyCursors() {
   return { schemaVersion: SCHEMA_VERSION, agents: {} };
 }
 
-export function loadCursors(projectRoot) {
-  const file = cursorFilePath(projectRoot);
+export function loadCursors(projectRoot, environment = process.env) {
+  const file = cursorFilePath(projectRoot, environment);
   if (!existsSync(file)) return emptyCursors();
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8"));
@@ -34,8 +34,8 @@ export function loadCursors(projectRoot) {
   }
 }
 
-export async function saveCursors(projectRoot, cursors) {
-  const file = cursorFilePath(projectRoot);
+export async function saveCursors(projectRoot, cursors, environment = process.env) {
+  const file = cursorFilePath(projectRoot, environment);
   const content = `${JSON.stringify(cursors, null, 2)}\n`;
   if (existsSync(file) && (await readFile(file, "utf8")) === content) return false;
   await mkdir(path.dirname(file), { recursive: true });
@@ -61,21 +61,27 @@ export function sameStamp(left, right) {
 }
 
 export function agentCursors(cursors, agentId) {
-  cursors.agents[agentId] ??= { files: {} };
+  cursors.agents[agentId] ??= { files: {}, heads: {} };
   cursors.agents[agentId].files ??= {};
+  cursors.agents[agentId].heads ??= {};
   return cursors.agents[agentId].files;
 }
 
-// Reading the first bytes of every session on the machine to recover its cwd is
-// the most expensive part of discovery, and a cwd never changes for a file that
-// has not been rewritten. Cache it against the file's stamp.
-export function rememberCwd(cursors, agentId, file, stamp, cwd) {
-  const files = agentCursors(cursors, agentId);
-  files[file] = { ...files[file], cwd, cwdStamp: stamp };
+// Discovery has to read the first bytes of every session on the machine to
+// learn which project it belongs to. That is the most expensive part of a
+// launch, and the answer never changes while the file is untouched, so cache
+// it against the file's stamp. Heads are keyed by absolute path, separately
+// from the per-agent destination state in `files`.
+export function rememberHead(cursors, agentId, file, stamp, head) {
+  cursors.agents[agentId] ??= { files: {}, heads: {} };
+  cursors.agents[agentId].heads ??= {};
+  cursors.agents[agentId].heads[file] = { stamp, head };
 }
 
-export function cachedCwd(cursors, agentId, file, stamp) {
-  const entry = cursors.agents[agentId]?.files?.[file];
-  if (!entry || entry.cwd == null) return null;
-  return sameStamp(entry.cwdStamp, stamp) ? entry.cwd : null;
+// `undefined` means "not cached"; a stored `null` means "already known to have
+// no readable head" and is a hit.
+export function cachedHead(cursors, agentId, file, stamp) {
+  const entry = cursors.agents[agentId]?.heads?.[file];
+  if (!entry || !("head" in entry) || !sameStamp(entry.stamp, stamp)) return undefined;
+  return entry.head;
 }

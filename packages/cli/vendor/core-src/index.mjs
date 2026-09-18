@@ -30,10 +30,10 @@ export {
 export { locateProjectRoot } from "./runtime/project-root.mjs";
 export {
   agentCursors,
-  cachedCwd,
+  cachedHead,
   cursorFilePath,
   loadCursors,
-  rememberCwd,
+  rememberHead,
   sameStamp,
   saveCursors,
   stampOf,
