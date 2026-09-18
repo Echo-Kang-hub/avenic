@@ -601,6 +601,99 @@ function reportSessionDiagnostics(diagnostics) {
   for (const warning of warnings) console.warn(`⚠ ${warning}`);
 }
 
+// One continuation sequence for every agent: capture what the target already
+// has, prepare the delta, let the official CLI run in the foreground, capture
+// what it produced, and only then commit the mapping. Claude and Codex reach it
+// by resuming their mapped native session; OpenCode reaches it with a fresh
+// official session when the one Avenic projected will not start.
+async function runCanonicalContinuation({ projectRoot, state, environment, mode, agentId, forceBootstrap = false }) {
+  const targetAdapter = getSessionAdapter(agentId);
+  // A stale cursor means the target needs a semantic delta, not a new native
+  // thread. Let the official resume command preserve the target's native
+  // context; only an unavailable mapping or a failed resume falls back to a
+  // fresh official thread below.
+  let capturedDuringLaunch = null;
+  const result = await continueCanonicalSession({
+    projectRoot,
+    canonicalId: mode,
+    targetAgent: agentId,
+    environment,
+    forceBootstrap,
+    // Every call resolves the normal auth/runtime environment for that agent.
+    // Sessions never manufacture or migrate credential directories.
+    captureKnown: async () => {
+      const results = await reconcileCanonicalSession(projectRoot, mode, {
+        environmentForAgent: (sourceAgent) => agentEnvironment(state, projectRoot, sourceAgent),
+      });
+      for (const result of results.filter((entry) => entry.stale)) {
+        console.warn(`${getAgent(result.agentId).displayName} native mapping is stale; rehydrating from canonical history.`);
+      }
+    },
+    capture: async (stage, context = {}) => {
+      if (stage === "after" && context.launched?.capturedDuringLaunch) return context.launched.capturedDuringLaunch;
+      const nativeSessionId = context.launched?.nativeSessionId
+        ?? context.continuation?.nativeSessionId
+        ?? (await readCanonicalSession(projectRoot, mode)).mappings.projections[agentId]?.nativeSessionId;
+      if (!nativeSessionId) return null;
+      return targetAdapter.readCanonical(projectRoot, nativeSessionId, { environment });
+    },
+    launch: async (continuation) => {
+      let launchedContinuation = continuation;
+      let nativeSessionId = continuation.nativeSessionId
+        ?? (agentId === "claude" ? randomUUID() : null);
+      const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
+      const launchStartedAt = Date.now() - 1000;
+      console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}; delta ${continuation.handoff.delta.length} event(s).`);
+      const launchOptions = {
+        projectRoot,
+        environment,
+        input: launch.input,
+        skipCanonical: true,
+        skipRestore: true,
+        onExit: async () => {
+          const nativeId = nativeSessionId ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
+          capturedDuringLaunch = await targetAdapter.readCanonical(projectRoot, nativeId, { environment, canonicalSessionId: mode });
+        },
+      };
+      let status;
+      if (continuation.mode === "resume") {
+        const statusFromInteractiveResume = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+        if (statusFromInteractiveResume !== 0 && agentId === "codex") {
+          // A Codex v2 sub-agent may be known to canonical history but be
+          // unresumable by the current app-server. Rebuild from canonical,
+          // rather than reusing an incremental (possibly empty) handoff.
+          const fallbackContinuation = await prepareCanonicalContinuation(projectRoot, mode, agentId, {
+            environment,
+            forceBootstrap: true,
+          });
+          launchedContinuation = fallbackContinuation;
+          const bootstrap = continuationLaunchArguments({
+            ...fallbackContinuation,
+            nativeSessionId: null,
+          });
+          nativeSessionId = null;
+          console.log(`${getAgent(agentId).displayName} session could not be resumed; starting a new native thread from shared canonical history.`);
+          status = await dispatchAgent(agentId, bootstrap.argumentsList, {
+            ...launchOptions,
+            input: bootstrap.input,
+          });
+        } else {
+          status = statusFromInteractiveResume;
+        }
+      } else {
+        status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+      }
+      if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
+      const discoveredId = nativeSessionId
+        ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
+      return { nativeSessionId: discoveredId, projectionHash: launchedContinuation.handoff.hash, capturedDuringLaunch };
+    },
+  });
+  reportSessionDiagnostics(result.diagnostics);
+  await setActiveCanonicalSession(projectRoot, mode);
+  return result;
+}
+
 async function dispatchSessions(argumentsList, options = {}) {
   const [command, mode = "status", ...extra] = argumentsList;
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
@@ -697,97 +790,22 @@ async function dispatchSessions(argumentsList, options = {}) {
     }
     const environment = agentEnvironment(state, projectRoot, agentId);
     if (agentId === "opencode") {
+      // OpenCode's history is only reachable through its own CLI, so the
+      // projection is created by `opencode import` and continued with
+      // `opencode --session`. When that session will not start — most often a
+      // message, or a configured model, naming a provider this machine does not
+      // have — the shared history is still intact, so continue it the way the
+      // other agents do: a fresh official session handed the canonical delta.
       const projection = await projectCanonicalSession(projectRoot, mode, agentId, { environment });
-      try {
-        return await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment });
-      } finally {
-        await captureCanonicalSession(projectRoot, mode, agentId, { environment });
-      }
+      const status = await dispatchAgent(agentId, ["--session", projection.nativeSessionId], { projectRoot, environment });
+      await captureCanonicalSession(projectRoot, mode, agentId, { environment });
+      if (status === 0) return 0;
+      console.warn(`${getAgent(agentId).displayName} could not be started with the projected session (exit ${status}); continuing in a fresh official session from shared canonical history.`);
+      const fallback = await runCanonicalContinuation({ projectRoot, state, environment, mode, agentId, forceBootstrap: true });
+      return fallback.launched.status ?? 0;
     }
 
-    const targetAdapter = getSessionAdapter(agentId);
-    // A stale cursor means the target needs a semantic delta, not a new native
-    // thread. Let the official resume command preserve the target's native
-    // context; only an unavailable mapping or a failed resume falls back to a
-    // fresh official thread below.
-    let capturedDuringLaunch = null;
-    const result = await continueCanonicalSession({
-      projectRoot,
-      canonicalId: mode,
-      targetAgent: agentId,
-      environment,
-      // Every call resolves the normal auth/runtime environment for that
-      // agent. Sessions never manufacture or migrate credential directories.
-      captureKnown: async () => {
-        const results = await reconcileCanonicalSession(projectRoot, mode, {
-          environmentForAgent: (sourceAgent) => agentEnvironment(state, projectRoot, sourceAgent),
-        });
-        for (const result of results.filter((entry) => entry.stale)) {
-          console.warn(`${getAgent(result.agentId).displayName} native mapping is stale; rehydrating from canonical history.`);
-        }
-      },
-      capture: async (stage, context = {}) => {
-        if (stage === "after" && context.launched?.capturedDuringLaunch) return context.launched.capturedDuringLaunch;
-        const nativeSessionId = context.launched?.nativeSessionId
-          ?? context.continuation?.nativeSessionId
-          ?? (await readCanonicalSession(projectRoot, mode)).mappings.projections[agentId]?.nativeSessionId;
-        if (!nativeSessionId) return null;
-        return targetAdapter.readCanonical(projectRoot, nativeSessionId, { environment });
-      },
-      launch: async (continuation) => {
-        let launchedContinuation = continuation;
-        let nativeSessionId = continuation.nativeSessionId
-          ?? (agentId === "claude" ? randomUUID() : null);
-        const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
-        const launchStartedAt = Date.now() - 1000;
-        console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}; delta ${continuation.handoff.delta.length} event(s).`);
-        const launchOptions = {
-          projectRoot,
-          environment,
-          input: launch.input,
-          skipCanonical: true,
-          skipRestore: true,
-          onExit: async () => {
-            const nativeId = nativeSessionId ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
-            capturedDuringLaunch = await targetAdapter.readCanonical(projectRoot, nativeId, { environment, canonicalSessionId: mode });
-          },
-        };
-        let status;
-        if (continuation.mode === "resume") {
-          const statusFromInteractiveResume = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
-          if (statusFromInteractiveResume !== 0 && agentId === "codex") {
-            // A Codex v2 sub-agent may be known to canonical history but be
-            // unresumable by the current app-server. Rebuild from canonical,
-            // rather than reusing an incremental (possibly empty) handoff.
-            const fallbackContinuation = await prepareCanonicalContinuation(projectRoot, mode, agentId, {
-              environment,
-              forceBootstrap: true,
-            });
-            launchedContinuation = fallbackContinuation;
-            const bootstrap = continuationLaunchArguments({
-              ...fallbackContinuation,
-              nativeSessionId: null,
-            });
-            nativeSessionId = null;
-            console.log(`${getAgent(agentId).displayName} session could not be resumed; starting a new native thread from shared canonical history.`);
-            status = await dispatchAgent(agentId, bootstrap.argumentsList, {
-              ...launchOptions,
-              input: bootstrap.input,
-            });
-          } else {
-            status = statusFromInteractiveResume;
-          }
-        } else {
-          status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
-        }
-        if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
-        const discoveredId = nativeSessionId
-          ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
-        return { nativeSessionId: discoveredId, projectionHash: launchedContinuation.handoff.hash, capturedDuringLaunch };
-      },
-    });
-    reportSessionDiagnostics(result.diagnostics);
-    await setActiveCanonicalSession(projectRoot, mode);
+    const result = await runCanonicalContinuation({ projectRoot, state, environment, mode, agentId });
     return result.launched.status ?? 0;
   }
   if (command === "sync" && argumentsList.length === 1) {

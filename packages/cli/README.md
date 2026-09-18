@@ -89,7 +89,9 @@ avenic sessions sync                        # 把原生历史增量导入共享�
 avenic sessions git on|off|status           # 共享会话记录是否进 Git
 ```
 
-`continue` 会说明这次是新建投射还是续接，以及新补入了多少条共享事件。Claude Code 与 Codex 走 L3a 语义续接，OpenCode 走 L3 原生续接。
+`continue` 会说明这次是新建投射还是续接，以及新补入了多少条共享事件。Claude Code 与 Codex 走 L3a 语义续接，OpenCode 走 L3 原生续接（`opencode import` + `--session`）。
+
+OpenCode 的投射不会替用户选模型：它用你在 OpenCode 配置里指定的模型（没配就用 OpenCode 自带默认），也不会把别的 Agent 的 provider/model 写进 OpenCode 会话——否则这条会话在你没有该供应商时根本启动不了。万一投射出来的会话仍然启动失败，Avenic 会自动改用一条全新的官方会话、把共享历史增量作为开场内容交过去，而不是让共享历史整体失败。
 
 ## Agent 运行时
 

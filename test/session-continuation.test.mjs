@@ -57,6 +57,11 @@ test("continuation launch arguments use official resume commands and handoff as 
   assert.equal(claude.input, undefined);
   const codex = continuationLaunchArguments({ agentId: "codex", mode: "resume", nativeSessionId: "thread-1", handoff });
   assert.deepEqual(codex.argumentsList, ["resume", "thread-1", prompt]);
+  // OpenCode names the conversation with a flag and takes the handoff as a
+  // prompt; a bootstrap is a fresh official session that opens with it.
+  const opencode = continuationLaunchArguments({ agentId: "opencode", mode: "resume", nativeSessionId: "ses_one", handoff });
+  assert.deepEqual(opencode.argumentsList, ["--session", "ses_one", "--prompt", prompt]);
+  assert.deepEqual(continuationLaunchArguments({ agentId: "opencode", mode: "bootstrap", nativeSessionId: null, handoff }).argumentsList, ["--prompt", prompt]);
   const newClaude = continuationLaunchArguments({ agentId: "claude", mode: "bootstrap", handoff, nativeSessionId: "123e4567-e89b-12d3-a456-426614174001" });
   assert.deepEqual(newClaude.argumentsList, ["--session-id", "123e4567-e89b-12d3-a456-426614174001", prompt]);
 });

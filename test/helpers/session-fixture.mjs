@@ -109,22 +109,65 @@ process.exit(0);
  * A stand-in `opencode` that answers the session commands a capture uses and
  * records every invocation. OpenCode is the one agent whose history is only
  * reachable through its CLI, so "did anything move?" has to be asked rather
- * than stat'ed; this fake is how a test proves the asking stays cheap.
+ * than stat'ed; this fake is how a test proves the asking stays cheap. It also
+ * answers the shapes a continuation uses — `import`, `debug config`, and the
+ * interactive CLI itself (`--session`, `--prompt`) — because OpenCode is the
+ * only agent whose launches are also its storage API.
  */
 async function writeOpenCodeCli(bin, stateFile, logFile) {
   await mkdir(bin, { recursive: true });
   const target = path.join(bin, "opencode.mjs");
-  await writeFile(target, `import { appendFileSync, readFileSync } from "node:fs";
-const state = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, "utf8"));
+  await writeFile(target, `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const log = ${JSON.stringify(logFile)};
+const state = () => JSON.parse(readFileSync(${JSON.stringify(stateFile)}, "utf8"));
+const save = (value) => writeFileSync(${JSON.stringify(stateFile)}, \`\${JSON.stringify(value, null, 2)}\\n\`);
 const [command, ...rest] = process.argv.slice(2);
 appendFileSync(log, \`\${[command, ...rest].join(" ")}\\n\`);
+// The official interactive CLI. Avenic starts it with --session to continue a
+// projected session, or with --prompt to start a fresh one from a handoff.
+if (command?.startsWith("--")) {
+  const current = state();
+  if (command === "--session") {
+    if (current.failContinue) {
+      process.stderr.write("Error: the selected session could not be started\\n");
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+  if (command === "--prompt") {
+    const id = current.nextSessionId ?? "ses_bootstrap";
+    const created = Date.now();
+    current.sessions.push({ id, created, updated: created, directory: process.cwd() });
+    current.exports[id] = JSON.stringify({
+      id,
+      messages: [{ info: { id: \`\${id}-0-user\`, role: "user", time: { created } }, parts: [{ type: "text", text: rest[0] ?? "" }] }],
+    });
+    save(current);
+    process.exit(0);
+  }
+  process.exit(0);
+}
 if (command === "session" && rest[0] === "list") {
-  process.stdout.write(JSON.stringify(state.sessions ?? []));
+  process.stdout.write(JSON.stringify(state().sessions ?? []));
   process.exit(0);
 }
 if (command === "export") {
-  process.stdout.write(state.exports?.[rest[0]] ?? "{}");
+  process.stdout.write(state().exports?.[rest[0]] ?? "{}");
+  process.exit(0);
+}
+// A projection is created by OpenCode itself: importing the envelope makes the
+// session real, exactly as it does on a machine whose OpenCode accepted it.
+if (command === "import") {
+  const current = state();
+  const payload = JSON.parse(readFileSync(rest[0], "utf8"));
+  const created = Date.now();
+  current.sessions.push({ id: payload.info.id, title: payload.info.title, created, updated: created, directory: payload.info.directory ?? process.cwd() });
+  current.exports[payload.info.id] = JSON.stringify(payload);
+  save(current);
+  process.exit(0);
+}
+if (command === "debug" && rest[0] === "config") {
+  process.stdout.write(JSON.stringify(state().config ?? { $schema: "https://opencode.ai/config.json" }));
   process.exit(0);
 }
 process.exit(0);
@@ -183,8 +226,13 @@ export async function withOpenCodeProject(run, options = {}) {
   };
 
   const sessions = new Map();
+  const state = { config: { $schema: "https://opencode.ai/config.json" }, failContinue: false, nextSessionId: "ses_bootstrap" };
+  // OpenCode reports a session's revision as a flat millisecond timestamp
+  // (`updated`), not as a nested time object — the fixture answers the shape
+  // the installed CLI actually prints.
   const writeState = async () => writeFile(stateFile, `${JSON.stringify({
-    sessions: [...sessions.entries()].map(([id, session]) => ({ id, directory: projectRoot, time: { created: session.created, updated: session.updated } })),
+    ...state,
+    sessions: [...sessions.entries()].map(([id, session]) => ({ id, directory: projectRoot, created: session.created, updated: session.updated })),
     exports: Object.fromEntries([...sessions].map(([id, session]) => [id, session.exported])),
   }, null, 2)}\n`);
   await writeState();
@@ -198,7 +246,7 @@ export async function withOpenCodeProject(run, options = {}) {
 
     /** Add a session the way OpenCode would: it exists, then it grows. */
     async createSession(id = `ses_${sessions.size}`, { updated = 1 } = {}) {
-      sessions.set(id, { created: 1, updated, exported: openCodeExport(id, 1) });
+      sessions.set(id, { created: updated, updated, exported: openCodeExport(id, 1) });
       await writeState();
       return id;
     },
@@ -218,9 +266,43 @@ export async function withOpenCodeProject(run, options = {}) {
       sessions.get(id).updated = undefined;
       await writeState();
     },
+    /** What `opencode debug config` resolves to — the model the user chose. */
+    async setConfiguredModel(model) {
+      state.config = { ...state.config, model };
+      await writeState();
+    },
+    /** A projection OpenCode imports but cannot start (a model it lacks). */
+    async failProjectedContinue() {
+      state.failContinue = true;
+      await writeState();
+    },
+    /** The session the next fresh `--prompt` launch should create. */
+    async setNextSessionId(id) {
+      state.nextSessionId = id;
+      await writeState();
+    },
     /** Every `opencode <command>` this fixture has answered. */
     async invocations() {
       return (await readFile(logFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    },
+
+    /** Run the real CLI in this project with the fixture environment. */
+    runCli(argumentsList, overrides = {}) {
+      return spawnSync(
+        process.execPath,
+        [path.join(packageRoot, "packages", "cli", "scripts", "skills.mjs"), ...argumentsList],
+        { cwd: projectRoot, env: { ...environment, ...overrides }, encoding: "utf8" },
+      );
+    },
+
+    /** Start the official agent itself, the way Avenic hands it a user's tty. */
+    launchAgent(argumentsList, overrides = {}) {
+      const windows = process.platform === "win32";
+      return spawnSync(
+        windows ? `"${path.join(bin, "opencode.cmd")}" ${argumentsList.join(" ")}` : path.join(bin, "opencode"),
+        windows ? [] : argumentsList,
+        { cwd: projectRoot, env: { ...environment, ...overrides }, encoding: "utf8", shell: windows },
+      );
     },
     async resetInvocations() {
       await writeFile(logFile, "");

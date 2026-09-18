@@ -475,6 +475,13 @@ export function continuationLaunchArguments({ agentId, mode, nativeSessionId, ha
     codex: () => mode === "resume"
       ? ["resume", nativeSessionId, prompt]
       : [prompt],
+    // OpenCode names the conversation with a flag and takes the handoff as a
+    // prompt. A bootstrap continuation is a fresh official session that opens
+    // with the canonical delta, which is also the way back from a projected
+    // session OpenCode refuses to start.
+    opencode: () => mode === "resume" && nativeSessionId
+      ? ["--session", nativeSessionId, "--prompt", prompt]
+      : ["--prompt", prompt],
   };
   const createArguments = launchers[agentId];
   if (!createArguments) throw new Error(`No semantic continuation launcher for ${agentId}`);

@@ -26,7 +26,13 @@
 - Reconcile shared history when the user opens the Sessions view, not on every
   launch.
 - Ask OpenCode which sessions moved instead of exporting its whole history
-  again.
+  again, and read the revision current builds actually report.
+- Continue OpenCode on the model the user's own OpenCode resolves, instead of
+  one Avenic picked, and keep another agent's provider and model out of the
+  projected session — a session naming a provider this machine does not have
+  is one OpenCode refuses to start. When a projected session still will not
+  start, continue in a fresh official session handed the shared history rather
+  than failing the launch.
 - Decide what an agent CLI version is, and whether it is usable, in one place
   shared by the CLI and the VS Code extension; the probe never blocks the UI.
 - Decide unmanaged Skills against the managed set rather than against what the

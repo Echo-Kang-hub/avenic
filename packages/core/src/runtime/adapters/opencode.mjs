@@ -63,10 +63,15 @@ function epoch(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+// Every OpenCode install ships this model, so it is the one projection that can
+// always start. It is a fallback, not a choice: `writeCanonical` asks OpenCode
+// for the model this environment resolves to first.
+const BUILT_IN_MODEL = { id: "big-pickle", providerID: "opencode", variant: "default" };
+
 export function fromCanonical(events, options = {}) {
   const canonicalSessionId = options.canonicalSessionId ?? "unknown";
   const sessionID = options.nativeSessionId ?? nativeId("ses", canonicalSessionId);
-  const sessionModel = options.model ?? { id: "big-pickle", providerID: "opencode", variant: "default" };
+  const sessionModel = options.model ?? BUILT_IN_MODEL;
   const messageModel = {
     providerID: sessionModel.providerID ?? sessionModel.provider ?? "opencode",
     modelID: sessionModel.modelID ?? sessionModel.id ?? "big-pickle",
@@ -92,10 +97,16 @@ export function fromCanonical(events, options = {}) {
       diagnostics.push({ eventId: event.id, code: "missing_parent", message: "OpenCode assistant messages require a parent message" });
       continue;
     }
-    const model = {
-      providerID: event.provider ?? messageModel.providerID,
-      modelID: event.model ?? messageModel.modelID,
-    };
+    // A message's model is a claim about what produced it. OpenCode can only
+    // make that claim about its own runs: carrying another agent's provider and
+    // model into an OpenCode session produces a conversation OpenCode cannot
+    // start — the model belongs to a provider this machine may not have, which
+    // is what surfaces as a 403 the first time the user continues it. The
+    // producer of a foreign event stays in canonical history, which is where
+    // fidelity is owed.
+    const model = event.provider === agentId && event.model
+      ? { providerID: event.provider, modelID: event.model }
+      : messageModel;
     messages.push({
       info: {
         role: event.role,
@@ -193,6 +204,39 @@ function matchingSessions(projectRoot, options) {
   return sessions.filter((session) => samePath(session.directory, projectRoot));
 }
 
+// The model a projected session will run on. Avenic does not choose it: the
+// user's own configuration does, and `debug config` is OpenCode reporting what
+// that configuration resolves to — including through the config home Avenic
+// scopes for project authentication, which a hand-parsed config file would
+// miss. A CLI that cannot answer (an older build, a broken config) leaves the
+// bundled default, which every install can run.
+function resolvedModel(projectRoot, options) {
+  if (options.model) return options.model;
+  try {
+    const resolved = JSON.parse(run(["debug", "config"], projectRoot, { ...options, timeoutMs: 10_000 }));
+    if (typeof resolved?.model !== "string") return null;
+    const [providerID, ...rest] = resolved.model.split("/");
+    if (!providerID || rest.length === 0) return null;
+    return { id: rest.join("/"), providerID, variant: "default" };
+  } catch {
+    return null;
+  }
+}
+
+// Bootstrap discovery is capture-only: the official OpenCode CLI created the
+// session, and afterwards we identify the newest one for this project.
+export async function discoverNativeSession(projectRoot, options = {}) {
+  const candidates = matchingSessions(projectRoot, options)
+    .map((session) => ({ id: session.id, created: session.created ?? session.time?.created }))
+    .filter((item) => item.id && Number.isFinite(item.created));
+  const eligible = options.notBefore === undefined
+    ? candidates
+    : candidates.filter((item) => item.created >= options.notBefore);
+  eligible.sort((left, right) => right.created - left.created);
+  if (!eligible[0]?.id) throw new Error("OpenCode did not create a discoverable native session after launch");
+  return eligible[0].id;
+}
+
 // Project a canonical conversation through OpenCode's supported export/import
 // CLI. The native id is deterministic, so re-running the projection updates
 // the same OpenCode session instead of manufacturing another conversation.
@@ -206,7 +250,7 @@ export async function writeCanonical(projectRoot, canonical, options = {}) {
     title: canonical.title,
     directory: projectRoot,
     agent: options.agent,
-    model: options.model,
+    model: resolvedModel(projectRoot, options) ?? BUILT_IN_MODEL,
     version: options.version,
   });
   const nativeSessionId = projected.data.info.id;
@@ -240,6 +284,16 @@ export function readCanonical(projectRoot, nativeSessionId, options = {}) {
 // to skip the expensive half: a session is re-exported only when the revision
 // OpenCode reports for it moved, exactly like a file is re-read only when its
 // mtime moved.
+// OpenCode reports a session's own revision as a millisecond stamp, and the
+// installed CLI prints it flat (`updated`) in `session list --format json`
+// while other builds nest it under `time`. Reading only one of the two means
+// every pass decides nothing is known and exports every session again, which is
+// the cost this cursor exists to avoid.
+function sessionRevision(session) {
+  const updated = session?.updated ?? session?.time?.updated;
+  return updated === undefined ? null : { revision: `${session.id}:${updated}` };
+}
+
 export async function capture(projectRoot, options = {}) {
   const ownsCursors = options.cursors === undefined;
   const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
@@ -250,9 +304,9 @@ export async function capture(projectRoot, options = {}) {
   const result = await syncDirectory(
     sessions.map((session) => ({
       relative: `${session.id}.json`,
-      // `time.updated` is OpenCode's own revision for the session. Without it
-      // there is nothing to compare, and the export has to be read again.
-      stamp: session.time?.updated === undefined ? null : { revision: `${session.id}:${session.time.updated}` },
+      // Without a revision there is nothing to compare, and the export has to
+      // be read again.
+      stamp: sessionRevision(session),
       produce: () => run(["export", session.id], projectRoot, options),
     })),
     portableRoot(projectRoot),

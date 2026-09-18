@@ -1393,3 +1393,45 @@ runs what a user runs against that install:
 
 Its assertions were checked for teeth: with the version expectation
 mutated to a wrong value the run fails with exit 1.
+
+### Release gates
+
+Run on this machine, in this order, after the release commit:
+
+| Gate | Result |
+|---|---|
+| `npm test` (root) | 486 tests, 483 pass, 3 skipped, 0 fail |
+| `npm run test:install` | passed (tarball + repo-root global install, agent runtime, Skills) |
+| `npm run test:release` | passed (the smoke above, Hub and self-update included) |
+| `npm run pack:cli` (`npm pack --dry-run --json`) | 60 files, `vendor/core-src/skills/uninstall.mjs` present |
+| `npm run typecheck` (VS Code) | clean |
+| `npm test` (VS Code) | 154 tests, 0 fail |
+| `npm run package` (VS Code) | `dist/avenic-agent-manager.vsix`, 19 files, 208 KB |
+| `code --install-extension dist/avenic-agent-manager.vsix` | installed into the real VS Code, 0.2.0 → 0.3.0 |
+
+Two gates found something and were fixed rather than waived:
+
+- The extension suite's first build test read `dist/extension.js`, which is
+  gitignored — on a checkout that had not been built yet it failed before
+  the packaging test built it. It now builds the bundle itself, from the
+  production options, into a temporary directory.
+- Nothing loaded the packaged bundle, so a command declared in the
+  manifest and never registered would have shipped as a palette entry
+  that throws when clicked. The bundle is now activated outside the
+  editor against a stub for the `vscode` module and its registry is
+  compared with the manifest both ways. Verified by mutating the
+  manifest: the test fails with the command it cannot find.
+
+What remains is the owner's two steps, and the verification that follows
+them: publish `@avenic/core` 1.4.2 then `avenic` 1.5.2 (npm OTP or browser
+authorization), upload the 0.3.0 VSIX, and then
+`npm view avenic version` / `npm install -g avenic@latest` /
+`avenic --version` / `npm list -g avenic --depth=0` / `where.exe avenic` /
+`avenic self-update`.
+
+The interactive click-through of the extension — Initialize, Configure,
+Launch, Sessions, Hub Sync, Shared/Isolated — is the one part of this
+release that no automated gate covers. The artifact is installed and its
+command set is proven registered; the flows behind those commands are
+exercised through the CLI in `npm run test:release` and through the
+sources in the VS Code suite, but nobody has clicked them in the editor.
