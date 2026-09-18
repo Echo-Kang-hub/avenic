@@ -1,6 +1,7 @@
 import { appendCanonicalEvents, canonicalSessionRevision, readCanonicalSession, syncNativeMapping } from "./canonical-sessions.mjs";
 import { createCanonicalSession } from "./canonical-sessions.mjs";
 import { getSessionAdapter } from "./adapters/index.mjs";
+import { agentCursors, loadCursors, sameStamp, saveCursors, stampOf } from "./cursors.mjs";
 import { buildHandoff } from "./handoff.mjs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -54,20 +55,34 @@ async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
 }
 
 // One import path for CLI and VS Code: native -> portable cache -> canonical.
+// A portable file that has not moved since its last successful import is not
+// read at all; only genuine native deltas cost a parse.
 export async function importProjectSessions(projectRoot, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);
   const portable = path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
+  const ownsCursors = options.cursors === undefined;
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  const files = agentCursors(cursors, agentId);
   const captured = options.skipCapture
     ? { count: 0, changed: false, diagnostics: [] }
-    : await adapter.capture(projectRoot, options);
-  let discovered = 0; let imported = 0; let unchanged = 0; let failed = 0;
+    : await adapter.capture(projectRoot, { ...options, cursors });
+  let discovered = 0; let imported = 0; let unchanged = 0; let skipped = 0; let failed = 0;
   const diagnostics = [...(captured.diagnostics ?? [])];
   for (const relative of await listFiles(portable)) {
-    if (!(relative.endsWith(".jsonl") || relative.endsWith(".json"))
-      || relative.includes(`${path.sep}subagents${path.sep}`)
-      || path.basename(relative) === "session_index.jsonl") continue;
+    if (!isImportableSession(relative)) continue;
+    const absolute = path.join(portable, relative);
+    const bookmark = files[relative];
+    // The bookmark records the portable file as it was when it was last
+    // imported, which is deliberately not the same stamp the capture just
+    // refreshed: a capture that copied new bytes must still be imported.
+    if (bookmark?.canonicalId && bookmark.imported === true && sameStamp(bookmark.importedStamp, await stampOf(absolute))) {
+      discovered += 1;
+      skipped += 1;
+      unchanged += 1;
+      continue;
+    }
     let native;
-    try { native = adapter.toCanonical(await readFile(path.join(portable, relative), "utf8")); }
+    try { native = adapter.toCanonical(await readFile(absolute, "utf8")); }
     catch (error) {
       failed += 1;
       diagnostics.push(`Could not parse ${agentId} session ${relative}: ${error.message}`);
@@ -90,9 +105,25 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
     });
     if (options.setActive !== false) await setActiveCanonicalSession(projectRoot, canonicalId);
     if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
+    files[relative] = {
+      ...bookmark,
+      importedStamp: await stampOf(absolute),
+      canonicalId,
+      nativeSessionId: native.nativeSessionId,
+      imported: true,
+    };
     if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
   }
-  return { ...captured, discovered, imported, unchanged, failed, diagnostics };
+  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  return { ...captured, discovered, imported, unchanged, skipped, failed, diagnostics };
+}
+
+// Portable entries that carry conversation history. The Codex index is a
+// derived lookup, not a session; subagent transcripts belong to their parent.
+function isImportableSession(relative) {
+  if (!(relative.endsWith(".jsonl") || relative.endsWith(".json"))) return false;
+  if (relative.includes(`${path.sep}subagents${path.sep}`)) return false;
+  return path.basename(relative) !== "session_index.jsonl";
 }
 
 // Switching policy never rewrites or deletes native history. Moving into
