@@ -345,7 +345,7 @@ test("help works from the main and agent positions", async () => {
     assert.match(main.stdout, /self-update/);
     const agent = runCli(projectRoot, "skills.mjs", ["claude", "--help"]);
     assert.equal(agent.status, 0, agent.stderr);
-    assert.match(agent.stdout, /Agent runtimes/);
+    assert.match(agent.stdout, /Per-agent commands/);
   });
 });
 

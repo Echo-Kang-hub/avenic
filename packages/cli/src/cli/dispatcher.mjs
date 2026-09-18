@@ -228,22 +228,41 @@ async function dispatchProjectSetup(argumentsList, editing = false) {
 }
 
 export function printHelp(io = console) {
-  io.log(`Avenic
+  io.log(`Avenic ${packageVersion}
 
 CLI: avenic (shorthand: ave)
 
-Agent runtimes:
-  avenic init [--agents <claude,codex,opencode>] [--auth global|project] [--sessions global|project] [--history shared|isolated]
-  avenic change [same options] [--replace-agents]  Reconfigure this project
+Everyday use:
+  avenic init                         Set up this project (interactive on a terminal)
+  avenic claude | codex | opencode    Start an agent's own TUI
+  avenic sessions                     Manage shared sessions (interactive)
+  avenic change                       Change auth, session storage or history mode
+  avenic self-update                  Update Avenic from the registry
+  avenic --version                    Print the installed version
+
+Options for init/change:
+  --agents <claude,codex,opencode>  --replace-agents  Replace the enabled set
+  --auth global|project             Credentials from your machine, or from this project
+  --sessions global|project         Keep sessions in the agent's own storage, or in the project
+  --history shared|isolated         One shared history across agents, or separate histories
+Shared history starts empty and is imported from whatever the agents already
+have; isolated histories are imported on request with \`avenic sessions sync\`.
+
+Sessions:
+  avenic sessions list|status          Show shared history and per-agent cursors
+  avenic sessions continue <id> --agent <claude|codex|opencode>
+  avenic sessions sync                 Import native history into the shared workspace
+  avenic sessions git [on|off|status]  Whether project session records are committed
+
+Per-agent commands (thin wrappers over the project settings):
   avenic <claude|codex|opencode> init [--auth global|project] [--sessions global|project]
   avenic <claude|codex|opencode> deinit [--purge]
   avenic <claude|codex|opencode> auth [global|project|reset]
   avenic <claude|codex|opencode> status
   avenic <claude|codex|opencode> sessions [import|writeback|status]
   avenic <claude|codex|opencode> [official CLI arguments...]
-  avenic sessions list                 List unified canonical sessions
-  avenic sessions continue <id> --agent <claude|codex|opencode>
-  avenic sessions git [on|off|status]
+
+Diagnostics:
   avenic status                       Show all three agents
   avenic doctor                       Check the environment
 

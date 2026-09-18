@@ -140,6 +140,39 @@ test("version output identifies Avenic without contacting the registry", async (
   });
 });
 
+test("help leads with the end-user commands and keeps the per-agent ones below", async () => {
+  await withTempDirectory("avenic-help-surface-", async (projectRoot) => {
+    const help = runAgent(projectRoot, ["--help"]).stdout;
+    for (const line of ["avenic init", "avenic change", "avenic sessions", "avenic self-update", "avenic --version"]) {
+      assert.ok(help.includes(line), `help must show ${line}`);
+    }
+    assert.ok(help.indexOf("avenic init") < help.indexOf("avenic <claude|codex|opencode> init"), "the per-agent wrappers belong below the everyday commands");
+    assert.match(help, /global auth|global\|project/, "help must say what the auth scope chooses");
+    assert.match(help, /shared\|isolated/, "help must name both history modes");
+  });
+});
+
+test("the README documents the same surface the CLI prints", async () => {
+  // The package README is the end-user document: it is what npm renders and
+  // what the help text has to agree with. The repository README only points at
+  // it, so the two never drift into two different descriptions of one surface.
+  const cliReadme = await readFile(path.join(packageRoot, "packages", "cli", "README.md"), "utf8");
+  for (const command of ["avenic init", "avenic change", "avenic sessions", "avenic self-update", "avenic claude"]) {
+    assert.ok(cliReadme.includes(command), `the README must show ${command}`);
+  }
+  assert.match(cliReadme, /Select at least one item/, "the TUI contract must be documented where users read it");
+  assert.match(cliReadme, /Shared/);
+  assert.match(cliReadme, /Isolated/);
+  assert.match(cliReadme, /AVENIC_WATCH_INTERVAL_MS/);
+  assert.match(cliReadme, /system Git|本机 git 认证/, "Hub credentials must be documented as the user's own git");
+
+  const repoReadme = await readFile(path.join(packageRoot, "README.md"), "utf8");
+  assert.match(repoReadme, /packages\/cli\/README\.md/, "the repository README must hand readers to the package README");
+  for (const command of ["avenic init", "avenic claude", "avenic sessions", "avenic change"]) {
+    assert.ok(repoReadme.includes(command), `the repository README must still show ${command}`);
+  }
+});
+
 test("unknown commands fail with a clear error", async () => {
   await withTempDirectory("avenic-unknown-", async (projectRoot) => {
     // Point at a local fixture so the Pack-vs-typo catalog check stays offline.
@@ -378,7 +411,7 @@ test("skills help and unknown Pack errors stay offline", async () => {
   await withTempDirectory("avenic-skills-help-", async (projectRoot) => {
     const help = runAgent(projectRoot, ["skills", "help"]);
     assert.equal(help.status, 0, help.stderr);
-    assert.match(help.stdout, /Agent runtimes/);
+    assert.match(help.stdout, /Per-agent commands/);
 
     const missingSource = runAgent(projectRoot, ["skills", "add"]);
     assert.equal(missingSource.status, 1);

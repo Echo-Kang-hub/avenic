@@ -1,6 +1,16 @@
 # Avenic CLI
 
-Avenic 是一个命令行工具，用于统一管理编码 Agent（Claude Code、Codex、OpenCode）的运行时配置与 Skills，支持 Windows、macOS 和 Linux。
+Avenic 用一个命令统一管理编码 Agent（Claude Code、Codex、OpenCode）的运行时配置、会话历史与 Skills，支持 Windows、macOS 和 Linux。
+
+日常只需要五条命令：
+
+```bash
+avenic init          # 配置本项目（在终端上是交互式界面）
+avenic claude        # 启动某个 Agent 的原生 TUI（codex / opencode 同理）
+avenic sessions      # 查看与管理共享会话
+avenic change        # 随时改认证、会话存储或历史模式
+avenic self-update   # 从 npm 更新
+```
 
 ## 安装
 
@@ -21,17 +31,65 @@ npm uninstall -g avenic
 ## 快速开始
 
 ```bash
-avenic claude init                            # 初始化 Claude Code（默认全局认证 + 项目便携会话）
-avenic claude init --auth project             # 项目级认证（凭据随项目，不进 Git）
-avenic codex init --sessions global           # Codex 会话留在全局原生存储
-avenic claude sessions import                 # 把本机会话复制进项目便携存储
-avenic claude sessions writeback              # 把项目便携会话显式回写本机
-avenic sessions git off                       # 会话不进 Git
-avenic hub add <owner/repo>               # 导入 Hub（可导入多个，会打印 Pack 预览树）
-avenic hub select                         # 上下键切换当前 Hub
-avenic skills install                         # 安装默认 Pack（common）
-avenic skills add <owner/repo>                # 从任意 GitHub 仓库直接安装 Skills
+cd <你的项目>
+avenic init          # 交互式配置：选 Agent → 选认证 → 选会话存储 → 选历史模式 → 确认
+avenic claude        # 进入 Claude Code；avenic codex / avenic opencode 同理
 ```
+
+`avenic init` 只在你确认后写入。之后：
+
+```bash
+avenic change                       # 重开配置界面，改完确认才生效
+avenic sessions                     # 交互式会话管理
+avenic sessions list                # 或直接用子命令
+avenic --version                    # 打印已安装版本
+avenic self-update                  # 更新到 npm 上的最新版
+```
+
+不改配置也能用：不带参数运行 `avenic init` 之外的任何命令都不会改动已有配置；`avenic claude` 在未配置的项目里按默认设置启动。
+
+## 交互式配置（TUI）
+
+`avenic init`、`avenic change`、`avenic sessions` 在终端上打开同一套交互界面：
+
+| 按键 | 作用 |
+|---|---|
+| ↑ / ↓ | 移动光标 |
+| Space | 多选时切换勾选 |
+| Enter | 确认；**一项都没选时 Enter 无效**，并提示 `Select at least one item.` |
+| Ctrl+C | 安全取消：不写任何配置，退出码 0 |
+
+流程固定为：读取当前配置 → 在内存中生成草稿 → 校验 → 打印变更摘要 → 确认 → **只在最后一步确认后原子写入**。中途取消不会留下半成品配置。
+
+非终端环境（管道、CI、脚本）自动回退为参数模式，不会卡在提示上：
+
+```bash
+avenic init --agents claude,codex --auth global --sessions project --history shared
+avenic change --agents codex --auth project --replace-agents
+```
+
+`--agents` 指定要启用的 Agent；`avenic change` 默认只改你点名的 Agent，`--replace-agents` 才会整体替换。
+
+## 会话历史：Shared 与 Isolated
+
+`avenic init` 的最后一个选择是历史模式：
+
+- **Shared**（共享）：Avenic 的 canonical 历史是唯一持久来源，各 Agent 的原生会话是它的投影。Claude Code、Codex、OpenCode 可以继续同一条会话；原生历史会被增量导入，不会重复。
+- **Isolated**（独立）：各 Agent 保留自己的原生历史，互不干扰；仍可导入、查看，并可随时用 `avenic change` 无损切换到 Shared（每条会话保留自己的身份与出处，不做拼接）。
+
+认证与历史完全解耦：**继续一条共享会话不改变你现有的登录**——Claude 的 provider（含 DeepSeek/API/cc-switch）、Codex 的登录、OpenCode 的配置都保持原样。Avenic 不是凭据管理器。
+
+```bash
+avenic sessions list                        # 列出共享会话与各 Agent 游标
+avenic sessions status                      # 当前活动会话与同步状态
+avenic sessions continue <id> --agent codex # 换一个 Agent 继续同一条会话
+avenic sessions continue <id> --agent claude
+avenic sessions continue <id> --agent opencode
+avenic sessions sync                        # 把原生历史增量导入共享工作区
+avenic sessions git on|off|status           # 共享会话记录是否进 Git
+```
+
+`continue` 会说明这次是新建投射还是续接，以及新补入了多少条共享事件。Claude Code 与 Codex 走 L3a 语义续接，OpenCode 走 L3 原生续接。
 
 ## Agent 运行时
 
@@ -41,15 +99,16 @@ avenic skills add <owner/repo>                # 从任意 GitHub 仓库直接安
 
 | 命令 | 说明 |
 |---|---|
-| `avenic <agent> init [--auth global\|project] [--sessions global\|project]` | 初始化运行时 |
+| `avenic <agent>` | 启动 Agent，其余参数透传给官方 CLI |
+| `avenic <agent> init [--auth global\|project] [--sessions global\|project]` | 初始化该 Agent 的运行时 |
 | `avenic <agent> deinit [--purge]` | 移除运行时；`--purge` 一并删除数据 |
 | `avenic <agent> auth [global\|project\|reset]` | 设置认证作用域；不带参数时查看当前状态 |
 | `avenic <agent> status` | 查看该 Agent 的配置与状态 |
 | `avenic <agent> sessions import\|writeback\|status` | 管理便携会话 |
-| `avenic <agent> [args...]` | 启动 Agent，其余参数透传给官方 CLI |
 | `avenic status` | 三个 Agent 一览 |
 | `avenic doctor` | 环境自检 |
-| `avenic sessions git on\|off\|status` | 便携会话的 Git 同步开关 |
+
+这些按 Agent 的子命令是项目配置的薄包装：它们读写的仍是 `avenic init` 建的同一份配置，不会另起一套状态。
 
 `init` 的输出会列出实际创建或修改的内容（`.agents/runtime.json`、`.agents/sessions/<agent>/`、`.agents/local/<agent>/`、`.gitignore`）及使用方法。`init` 可重复执行：结构已符合时不作修改，有缺失时只增量补齐。
 
@@ -65,23 +124,38 @@ avenic claude auth reset          # 清除本项目覆盖，恢复默认
 avenic claude auth                # 查看当前生效的认证作用域
 ```
 
+认证作用域与历史模式是独立的两个维度，四种组合都成立：全局认证 + 共享历史、项目认证 + 独立历史等。
+
 ### 会话记录
 
-- `project`（默认）：启动前把项目内的会话记录提供给 Agent，退出后把本次会话写回 `.agents/sessions/<agent>/`（可跨设备迁移），并把本机原生存储恢复到启动前的状态。会话只更新在项目里，全局存储完全不受影响；删除项目后，会话随项目消失。
+- `project`（默认）：启动前把项目内的会话记录提供给 Agent，退出后把本次会话写回项目，并把本机原生存储恢复到启动前的状态。会话只更新在项目里，全局存储完全不受影响；删除项目后，会话随项目消失。
 - `global`：会话直接留在 Agent 的原生全局存储，不产生项目副本。
 
 ```bash
 avenic codex sessions import      # 全局会话 → 项目会话记录（复制不删除）
 avenic codex sessions writeback   # 项目会话记录 → 原生存储（显式回写）
 avenic codex sessions status
-avenic sessions git on|off|status # 项目会话记录的 Git 同步开关
 ```
 
-若同一会话在本机原生存储与项目内都有记录，`avenic <agent>` 启动时以项目内的会话记录为准（覆盖本机副本）。运行 `avenic claude` 优先使用项目内的会话记录；要用全局会话记录时，直接运行 `claude`（其他 Agent 同理直接运行官方 CLI）即可。
+若同一会话在本机原生存储与项目内都有记录，`avenic <agent>` 启动时以项目内的会话记录为准（覆盖本机副本）。要用全局会话记录时，直接运行 `claude`（其他 Agent 同理直接运行官方 CLI）即可。
 
 项目内的会话记录不会自动回写本机原生存储；需要回写时显式执行 `avenic <agent> sessions writeback`：原生存储中该项目的会话记录会被项目内记录覆盖；原生存储中没有该项目的会话记录时，则按 Agent 的原生目录结构创建后放入会话，效果与直接用官方 CLI 产生的会话一致。
 
-同一项目同一 Agent 可同时启动多个 `avenic` 会话：第一个启动时保存原生存储快照，最后一个退出时回滚。每次启动还会派一个脱离终端的后台看门狗进程监视本次会话：直接关闭终端、关闭 VS Code、强杀进程都不会影响收尾——看门狗检测到 CLI 进程消失后自动把会话收进项目并恢复原生存储原状。看门狗自身被终止（断电、强制重启）且系统临时目录被清理时无法自动补救，残留会话留在原生存储里，可手动执行 `avenic <agent> sessions import` 收进项目；临时目录还在时，下次启动 `avenic` 会自动补救。
+### 运行时持久化与恢复
+
+会话在三个层面保持持久，任何一层失效都不会丢：
+
+1. **运行中**：后台看门狗按固定间隔增量读取当前项目的原生会话文件，只读新增的字节，随时把新内容并入共享历史。
+2. **退出后**：Agent 正常退出时立即完成一次捕获。
+3. **下次启动 / 再次查看**：启动或 `avenic sessions` 时补齐上一次没来得及收尾的部分。
+
+同一项目同一 Agent 可同时启动多个 `avenic` 会话：第一个启动时保存原生存储快照，最后一个退出时回滚。看门狗是脱离终端的独立进程：直接关闭终端、关闭 VS Code、强杀 CLI 都不会影响收尾。断电或强制重启导致看门狗也没能收尾时，残留会话留在原生存储里，可手动 `avenic <agent> sessions import`，或在下次启动 `avenic` 时自动补齐。
+
+看门狗只监视当前项目已知的原生目录，不递归扫描整个 HOME；空闲时几乎不占 CPU、不发起网络请求、不调用模型，也从不修改 Agent 的原生文件。轮询间隔可用环境变量调整：
+
+```bash
+AVENIC_WATCH_INTERVAL_MS=1000 avenic claude   # 默认 3000
+```
 
 > OpenCode 例外：其会话存储由官方 CLI 自行管理，`avenic opencode` 启动后原生存储仍保留本次运行产生的会话，不受上述回滚保护。
 
@@ -89,39 +163,37 @@ avenic sessions git on|off|status # 项目会话记录的 Git 同步开关
 
 ## Models（模型配置）
 
-模型配置分两层：**本机配置库是唯一事实来源，项目只存绑定与回滚账本**。
+Avenic 用两层结构管理模型配置：**本机配置库是唯一事实来源，项目只存绑定与回滚账本**。
 
-- 本机配置库：默认 `~/.config/avenic/models.json`（状态根受 `AVENIC_STATE_DIR`、`XDG_CONFIG_HOME` 影响），CLI 与 VS Code 插件读同一份。
-- 项目绑定：`.agents/model.json`，记录当前项目的 profile 与 Claude 投影账本（写入了哪些键、写入前的原值）；profile 本身不复制进项目。
+- **本机配置库**：默认 `~/.config/avenic/models.json`（状态根受 `AVENIC_STATE_DIR`、`XDG_CONFIG_HOME` 影响），保存 profile——端点、API 类型、密钥、模型与开关。库是设备级的，不随项目迁移。
+- **项目绑定**：`.agents/model.json`，记录当前项目用的是哪个 profile，以及 Claude 投影的账本（写入了哪些键、写入前的原值）；profile 本身只存在于库里。
 
-### 命令
+```bash
+avenic model                    # 查看库路径、项目绑定与投影状态
+avenic model list               # 列出本机 profile（> 标记当前项目绑定）
+avenic model add --name <名称> --base-url <URL> --api-key <密钥> [--model <id>]
+avenic model use <id>           # 绑定到当前项目；不带 id 时在终端上选择
+avenic model test <id>          # 发一次最小真实请求（失败退出码 2）
+avenic model clear              # 解绑并恢复绑定前的项目设置
+```
 
-| 命令 | 说明 |
-|---|---|
-| `avenic model` | 显示库路径、项目绑定与投影状态（等同 `avenic model show`） |
-| `avenic model list` | 列出本机 profile（`>` 标记当前项目绑定） |
-| `avenic model add --name <n> --base-url <u> --api-key <k> [--api <anthropic\|openai-chat\|openai-responses>] [--model <id>] [--id <id>]` | 新建 profile；`--id` 缺省时优先使用当前绑定 id，否则由名称生成 |
-| `avenic model set\|edit <id> […]` | 更新库中 profile（`set` 要求 profile 已存在）；接受与 `add` 相同的 flag |
-| `avenic model use [id]` | 绑定到当前项目；不带 id 时在终端上交互选择 |
-| `avenic model clear` | 解绑并恢复绑定前的设置；用户手改过的键保持不动并逐条提示 |
-| `avenic model remove <id>` | 从本机库删除 profile；绑定它的项目在下次启动时回退到 Agent 默认配置 |
-| `avenic model test [id]` | 向端点发一次最小真实请求测试连接；失败退出码 2 |
-| `avenic model presets` | 列出内置端点预设 |
-
-`avenic model add|set|edit … --json <文件|->` 只做粘贴识别预览：读取 JSON 或自由文本，打印识别到的字段与候选值（密钥类字段只显示掩码），**不写库**；`-` 表示从 stdin 读取。正式写入仍需显式 flag。
+完整子命令与参数表见上文的命令表，或运行 `avenic --help`。
 
 ### 三个 Agent 的生效方式
 
-绑定只作用于当前项目，模型配置不写 Agent 全局配置：
+绑定只作用于**本项目**；模型配置不写 Agent 的全局配置（如 `~/.claude/settings.json`、`~/.codex/config.toml`）：
 
-- **Claude Code**：绑定与启动时把 profile 投影写入项目 `.claude/settings.local.json`——逐键记账，指纹一致时零写入；解绑按账本精确还原，用户手改过的键保持不动。启动时另注入进程环境变量兜底（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL` 及角色模型变量等）。
-- **Codex**：只在本次启动的 argv 注入——`-c model_provider=…`、`model_providers.<id>.*`（`wire_api=responses`）与 `-m <model>`；用户已自带 `-m`/`model_provider=` 时对应项跳过。Codex 需要 Responses API 端点；profile 不具备时启动不改配置，按 Codex 全局配置继续。
-- **OpenCode**：只在本次启动注入 `OPENCODE_CONFIG_CONTENT`——Anthropic 端点覆盖内置 provider，其他端点定义自定义 provider。
+| Agent | 生效方式 |
+|---|---|
+| Claude Code | 绑定与启动时把 profile 投影进项目 `.claude/settings.local.json`（逐键记账，指纹一致时零写入；解绑按账本还原，用户手改过的键保持不动）；启动时同时注入进程环境变量兜底（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL` 及角色模型变量）。 |
+| Codex | 只注入本次启动的 argv：`-c model_provider=…`、`model_providers.<id>.*`（`wire_api=responses`）与 `-m <model>`；用户自带 `-m`/`model_provider=` 时对应项跳过。Codex 需要 Responses API 端点；profile 不具备时启动不改配置，按 Codex 全局配置继续。 |
+| OpenCode | 只注入本次启动的 `OPENCODE_CONFIG_CONTENT`：Anthropic 端点覆盖内置 provider，其他端点定义自定义 provider。 |
 
 ### 密钥与 Git
 
-- CLI 输出与插件面板只显示掩码（`maskSecret`，前 3 后 4 位，过短全掩）；**底层仍是明文 JSON 存储**，库文件与项目投影中的密钥不做任何加密或混淆，请按凭据对待。
-- 绑定时 Avenic 自动在项目 `.gitignore` 补齐以下规则（缺少 `# Agent Runtime` 分节时一并写入分节头）：`.agents/model.json`、`.claude/settings.local.json`、`.agents/model.lock`、`.agents/tmp/`。**不要提交这些文件**（绑定文件含投影账本，可能包含用户原值）；本机配置库 `~/.config/avenic/models.json` 含明文密钥，同样不要提交。
+- CLI 与插件面板只显示掩码（前 3 后 4 位）；**底层仍是明文 JSON 存储**——库文件与项目投影里的密钥不加密，请按凭据对待。
+- 绑定时 Avenic 自动在项目 `.gitignore` 补齐以下规则（缺少 `# Agent Runtime` 分节时一并写入分节头）：`.agents/model.json`、`.claude/settings.local.json`、`.agents/model.lock`、`.agents/tmp/`。**不要提交这些文件**（绑定文件含投影账本，可能包含用户原值），本机配置库同样不要提交。
+- `avenic model test` 会向配置的端点发送一次真实请求，消耗极少量额度。
 
 ## Skills
 
@@ -158,9 +230,9 @@ Pack 定义示例（`packs/development.json`）：
 
 ```bash
 avenic hub add <owner/repo>         # 导入 Hub（owner/repo[#ref]、URL 或本地路径），成功后打印 Pack 预览树
-avenic skills install                   # 无参数：终端上交互多选（space 切换，common 预选）；管道/脚本回退默认 common
+avenic skills install                   # 安装默认 Pack（common）
 avenic skills install development       # 安装多个 Pack；common 自动包含
-avenic skills uninstall development     # 卸载 Pack（不带参数移除全部受管理 Skills，终端上先 Yes/No 确认）
+avenic skills uninstall development     # 卸载 Pack（不带参数移除全部受管理 Skills）
 avenic skills -g development            # 安装到全局作用域（skills <pack> 是 install 的简写）
 avenic skills tree [pack...]            # 查看 Hub 内容树
 avenic skills packs                     # 列出可用 Packs
@@ -177,6 +249,8 @@ avenic hub sync                     # 拉取或更新缓存（~/.config/avenic/c
 ```
 
 每次安装把 Hub commit 写入项目锁 `.avenic.lock.json`，跨设备可复现。
+
+Hub 内容树是**缓存优先**的：展开、浏览、`avenic skills tree` 都只读本地缓存，不会自动联网。只有显式执行 `avenic hub add` 或 `avenic hub sync` 才会访问网络——缓存未命中时 `git clone`，已缓存时 `git fetch` 后更新，成功后打印 `Synced · <short sha> · <时间>`。认证完全交给本机 git（SSH、credential helper、`gh`、git config 里的 PAT）；Avenic 不建立自己的 GitHub token 体系。
 
 > 默认 Hub 为维护者提供的示例；使用前请通过 `avenic hub add <owner/repo>` 指向自己的 Hub。
 
@@ -300,6 +374,8 @@ avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
 
 | 操作 | 撤回 |
 |---|---|
+| `avenic init` / `avenic change` | 再跑一次 `avenic change` 改回原值；对话框里 Ctrl+C 取消则什么都没写 |
+| `avenic sessions continue <id> --agent <x>` | 在 `avenic sessions` 界面里选 “Set active session” 换回原会话；或不再调用它 |
 | `avenic <agent> init` | `avenic <agent> deinit`（加 `--purge` 连会话数据一起删除） |
 | `avenic <agent> auth project` / `auth global` | 执行相反设置，或 `auth reset` 恢复默认 |
 | `avenic <agent> sessions import` | 只复制不删除；清除项目副本：`avenic <agent> deinit --purge` 后重新 `init` |
@@ -315,11 +391,17 @@ avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
 avenic self-update
 ```
 
-从 npm 更新 Avenic 到最新版本。
+从 npm 安装最新版本，并打印当前版本、registry 上的版本与安装来源：
 
-## 开发者
+```text
+Avenic self-update
+Current: 1.5.1
+Latest:  1.5.2
+Source:  Echo-Kang-hub/avenic#main
+Updated Avenic: 1.5.1 → 1.5.2
+```
 
-构建、测试与发布流程见 [docs/development.md](docs/development.md)。
+安装完成后会重新探测当前可执行文件。如果 npm 退出码为 0 但 PATH 上的仍是旧版本，命令会**报错失败**并指出 registry 版本与实际生效版本的差异，而不会假装成功——通常意味着 npm 全局前缀不在 PATH 上。
 
 ## License
 
