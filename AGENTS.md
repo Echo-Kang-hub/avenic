@@ -111,6 +111,9 @@ npm run sync-core                # required after ANY change under packages/core
 npm test                         # root suite (pretest runs sync-core for you)
 npm run test:vscode              # extension: tsc --noEmit + node --test
 npm run perf                     # launch/capture profile on a generated fixture
+npm run perf:tui                 # keypress→paint and logo render budgets
+npm run tui:visual               # compare every screen to its golden
+npm run tui:capture              # real-terminal screenshots into dist/tui-captures
 npm run pack:cli                 # npm pack --dry-run --json for the CLI
 npm run release:pack             # build the publishable artifacts into pack/
 npm run release:verify           # install those artifacts and run them
@@ -143,6 +146,22 @@ To work on the extension: `cd packages/vscode && node build.mjs` (esbuild →
   the same two commands for every release. `pack/` is a build output and is
   never committed; publishing it still needs npm authentication and the
   VSIX upload.
+- Every terminal surface also has a golden:
+  `test/helpers/tui-scenarios.mjs` renders each screen through the production
+  code, `test/fixtures/tui/*.ansi` holds them, and
+  `test/tui-visual.test.mjs` compares them inside `npm test`. The fixtures are
+  normalized — a colour is the token `{brand}`, a repaint is `{repaint}` — so
+  they read like a screen and diff like a design change. A fixture must never
+  depend on the machine that rendered it: no local timestamps, no ambient
+  `COLORTERM`; colour depth is pinned per scenario.
+- `node scripts/tui-visual.mjs --update` rewrites the goldens (only after
+  reviewing the diff); `npm run tui:capture` runs the same screens on a real
+  terminal and leaves the screenshots in `dist/` — those are acceptance
+  artifacts, they can contain real session data, and they are never committed.
+- A real terminal for tests means a pseudoconsole: ConPTY through
+  `test/helpers/conpty-capture.ps1` on Windows, `script -qfec` elsewhere, both
+  behind `test/helpers/pty-capture.mjs`. A frame only repaints when stdout is a
+  TTY, so nothing below a pty proves a screen.
 - VS Code tests are TypeScript, compiled by `build-tests.mjs` into `.test-out/`.
 
 Add or update tests with every behaviour change. A fix without a test that
@@ -161,6 +180,12 @@ node scripts/perf/launch-overhead.mjs --runs 5 --phases     # where the time goe
 Budgets are median < 300 ms and p95 < 500 ms; `test/launch-latency.test.mjs`
 holds the smaller subset that runs on every commit. Never measure while
 another build, test suite or agent run is competing for the machine.
+
+The terminal layer has its own budgets, held by `npm run perf:tui`
+(`scripts/perf/tui-render.mjs`): the logo renders in under 5 ms and a keypress
+paints its frame in under 16 ms, measured from the write to the next console
+write. Nothing on that path may touch the filesystem, the core, git, the
+registry or history — a keypress is a repaint, never a lookup.
 
 The fast path must stay free of: network, registry lookups, `git fetch`, Hub
 access, LLM calls, full canonical scans, full native-history scans, and

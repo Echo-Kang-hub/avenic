@@ -105,30 +105,30 @@ OpenCode 的投射不会替用户选模型：它用你在 OpenCode 配置里指�
 ```
 $ avenic status
 
-Avenic Status
+AVENIC · Status
+│  D:\FileDownload\Projects\agenthome-cli
 
-Project   agenthome-cli
-Root      D:\FileDownload\Projects\agenthome-cli
-Agents    claude, codex
-History   shared
+◇  Project
+│  Name      agenthome-cli
+│  Agents    claude, codex
 
-History
-  Mode      shared
-  Sessions  24
-  Active    claude-bee6f9b7-…  claude bee6f9b7-…
-  Events    5939
-  Updated   2026-09-19 09:51
+◇  History
+│  Mode      shared
+│  Sessions  24
+│  Active    claude-bee6f9b7-…  claude bee6f9b7-…
+│  Events    5939
+│  Updated   2026-09-19 09:51
 
-Agents
-  Agent        CLI    Auth             Sessions          History  Sync
-  Claude Code  found  global auth      project sessions  10       current
-  Codex        found  global auth      project sessions  10       current
-  OpenCode     found  not initialized  —                 0        —
+◇  Agents
+│  Agent        CLI    Auth             Sessions          History  Sync
+│  Claude Code  found  global auth      project sessions  10       current
+│  Codex        found  global auth      project sessions  10       current
+│  OpenCode     found  not initialized  —                 0        —
 
-Skills
-  Project  15 installed · optimized
-  Global   nothing installed
-  Hub      Echo-Kang-hub/SkillsHub · current · 9122e3a
+◇  Skills
+│  Project  15 installed · optimized
+│  Global   nothing installed
+│  Hub      Echo-Kang-hub/SkillsHub · current · 9122e3a
 ```
 
 `Sync` 一列的含义是「项目里的投射离共享历史还有多远」，每个值都对应一个可以动手的状态：
@@ -489,7 +489,7 @@ avenic self-update
 从 npm 安装最新版本，并打印当前版本、registry 上的版本与安装来源：
 
 ```text
-Avenic self-update
+AVENIC · self-update
 Current: 1.5.1
 Latest:  1.5.2
 Source:  Echo-Kang-hub/avenic#main
