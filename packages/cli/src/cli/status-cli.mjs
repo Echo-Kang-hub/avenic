@@ -18,7 +18,11 @@ const SYNC_LABELS = {
 
 const SYNC_REMEDIES = {
   stale: "run: avenic sessions continue <id> --agent <agent> to extend it",
-  missing: "run: avenic sessions sync to import this agent's history",
+  // 有两种「missing」：这个 agent 还没有任何副本（sync 就能导入 native 历史），
+  // 以及映射指向的会话哪个存储里都没有了（只有 continue 能从共享历史里重建）。
+  // 先写那个总是有效的动作 —— 让人去 sync 一个已经无处可寻的会话，正是这条
+  // 状态行过去会给出的错误方向。
+  missing: "run: avenic sessions continue <id> --agent <agent> to rebuild it, or avenic sessions sync",
   dirty: "a launch was interrupted — run: avenic sessions sync to finish it",
   running: "a launch is running in this project right now",
 };

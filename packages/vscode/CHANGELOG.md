@@ -18,8 +18,8 @@
   multi-root workspace still asks which folder rather than guessing.
 - Ships core 1.6.4: a plain launch is a new conversation every time, capture no
   longer deletes the project's durable copy of a session whose native file is
-  gone, and a mapping whose session is held nowhere is rebuilt from canonical
-  history instead of being resumed.
+  gone, and a mapping whose session has vanished from the stores Avenic can
+  check is rebuilt from canonical history instead of being resumed.
 
 ## 0.5.3
 

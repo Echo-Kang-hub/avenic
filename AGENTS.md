@@ -85,6 +85,12 @@ Agent provenance is metadata on an event, not a boundary: every event keeps its
 id, role, content, agent, tool call and result, timestamp, order and branch, and
 a projection must never let provenance break continuity. Concretely:
 
+- A plain launch is a new conversation. `avenic claude` spawns the official CLI
+  with exactly the arguments the user typed — never the project's active
+  conversation, in any mode. Shared says what the project *can* do, never what
+  one launch must do. Entering the shared conversation is explicit: `avenic
+  sessions continue <id> --agent <agent>`, the sessions menu, or the agent's
+  own `/resume`. Resume arguments on an unrequested launch were the 1.8.3 P0.
 - The target agent receives the *delta* it has not seen — its own turns are
   never sent back to it — projected through the agent's official surface
   (`session-interop.mjs`, `projection.mjs`, `adapters/*`).

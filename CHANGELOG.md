@@ -42,12 +42,13 @@
   watch also no longer starts before the native restore it would otherwise
   photograph half-filled.
 - **A mapping whose conversation is held nowhere is dropped, not resumed.** The
-  projection still asks whether the session a mapping names exists in either
-  store; when it does not, the mapping is discarded and the conversation is
-  rebuilt from canonical history, which is the one path that always works.
-  `avenic status` reports the same state as `missing` — asked of the
-  conversation the mapping names, not of the project's session count, since a
-  project with fifty healthy sessions and one ghost mapping is not current.
+  projection asks whether the session a mapping names still exists in either
+  store — a question Claude's and Codex's stores can answer directly; when the
+  answer is no, the mapping is discarded and the conversation is rebuilt from
+  canonical history, which is the one path that always works. `avenic status`
+  reports the same state as `missing` — asked of the conversation the mapping
+  names, not of the project's session count, since a project with fifty healthy
+  sessions and one ghost mapping is not current.
 - **`avenic init` initializes the directory you are in.** It used to walk up to
   the repository root, so running it in a subdirectory configured the whole
   checkout. It now configures exactly `process.cwd()`; `--root <path>` names
@@ -62,7 +63,10 @@
   and help line are the same in every prompt. Shift+Tab re-opens the previous
   step with the answer it already has, keeping later answers in memory and
   submitting only the agents still enabled; Esc and Ctrl+C cancel the whole
-  wizard, and nothing is written before the final Confirm. The two flows share
+  wizard, and nothing is written before the final Confirm. Once Apply is
+  writing, the keyboard stops counting: a second Enter is not a second write,
+  and a late Esc cannot turn a configuration that landed into a reported
+  cancel. The two flows share
   one state machine and one set of questions, which the VS Code extension
   consumes as well, so a host decides how to draw a step and never what the
   steps are.
