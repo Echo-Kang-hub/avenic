@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.6.0 / 1.5.0 - 2026-09-19
+
+- Ask one command what state this project is in. `avenic status` prints the
+  project's configuration, its shared history, one row per agent, the Skills
+  and the Hub from a single read-only model — no network, no git fetch, no
+  agent CLI started, and an agent whose CLI is not installed is reported
+  rather than fatal. `avenic status --json` is that same object unchanged, so
+  the CLI, the editor and any script cannot disagree about what they saw.
+- The extension's dashboard is that model, drawn. Agent rows, the shared
+  history block, the Hub revision and the Skills health all come from the
+  same `collectStatus` the terminal uses, so a project cannot read as
+  `current` in one host and uninitialized in the other.
+- `avenic skills` on a terminal opens the Skills menu: Add skills, Installed
+  skills, Update skills, Remove skills, Sync SkillsHub, Import from
+  repository, Back. Adding from the Hub or from a Git repository clones once,
+  reports what it found ("Found 14 skills"), lets you pick from a searchable
+  list, asks where to install it and in which scope, then shows the source,
+  revision, Skill count, targets and scope before it asks to confirm.
+- Which install targets a Skill is shared into is now remembered in the
+  lock file, so unchecking one target in the install step is not silently
+  undone by the next update.
+- Every prompt is one implementation with one keyboard: arrows and j/k move,
+  space toggles, Ctrl+A selects all, typing filters a searchable list,
+  Enter confirms, `y`/`n` answer a confirmation, and Esc or Ctrl+C cancels
+  without changing anything. Enter with nothing selected is refused in place
+  rather than treated as "no"; a pipe gets the script path instead of the
+  menu.
+- A launch measures itself: the wrapper's own cost — the part of the wait
+  that is Avenic rather than the agent — is recorded per agent and per
+  situation, and the launch path does no network, no registry, no Hub, no
+  history walk and no full canonical scan before handing over to the agent.
+- Timestamps are written one way in one place, so a session's "updated at"
+  reads the same in the terminal and in the editor, and an absent timestamp
+  reads as "—" instead of a 1970 date.
+- The command surface is the ten commands the README teaches. The older
+  spellings still work and say which one replaced them: `avenic doctor` →
+  `avenic status`, top-level `avenic add|install|uninstall|adopt|packs|tree`
+  → the same verb under `avenic skills`, `avenic catalog` → `avenic hub`.
+
 ## 1.5.2 / 1.4.2 - 2026-09-19
 
 - Remember what was already read: Claude and Codex native history is captured

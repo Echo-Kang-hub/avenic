@@ -1566,3 +1566,226 @@ release that no automated gate covers. The artifact is installed and its
 command set is proven registered; the flows behind those commands are
 exercised through the CLI in `npm run test:release` and through the
 sources in the VS Code suite, but nobody has clicked them in the editor.
+
+---
+
+# Reopened gate — final product requirements (P0–P17)
+
+The owner reopened the release gate with three new product requirements and
+fourteen checks around them. Everything above stayed in force; nothing was
+allowed to regress. This section records that pass.
+
+## P0 — plain-launch performance, measured as overhead
+
+The metric is **Avenic overhead = wrapped − direct**, paired per run so machine
+noise cancels. Both sides are measured through the same stub agent, which
+records the instant the operating system started the agent's launcher, so the
+difference is Avenic and nothing else.
+
+`node scripts/perf/launch-overhead.mjs --runs 15 --cold-fixtures 3`
+(Windows 11, Node 24, idle machine; fixture: 40 Claude sessions × 400 records,
+120 Codex rollouts):
+
+| agent | situation | runs | direct p50/p95 | avenic p50/p95 | overhead p50/p95 | budget |
+|---|---|---|---|---|---|---|
+| claude | cold | 3 | 71 / 84 | 289 / 291 | **219 / 220** | < 300 / 500 PASS |
+| claude | steady | 15 | 73 / 80 | 195 / 294 | **123 / 214** | PASS |
+| claude | recovery | 15 | 74 / 82 | 195 / 213 | **124 / 140** | PASS |
+| codex | cold | 3 | 84 / 95 | 279 / 293 | **195 / 198** | PASS |
+| codex | steady | 15 | 75 / 125 | 199 / 307 | **124 / 219** | PASS |
+| codex | recovery | 15 | 71 / 83 | 198 / 217 | **129 / 152** | PASS |
+| opencode | cold | 3 | 80 / 80 | 183 / 187 | **107 / 111** | PASS |
+| opencode | steady | 15 | 71 / 85 | 177 / 195 | **105 / 120** | PASS |
+| opencode | recovery | 15 | 71 / 90 | 174 / 191 | **102 / 123** | PASS |
+
+Worst case across all agents and situations: **median 219 ms, p95 220 ms** —
+inside both budgets with room. The complaint that a launch took four to five
+seconds is answered by the overhead column: the agent now starts 100–130 ms
+later than it would have on its own, and the cold first launch of a project
+costs about one extra tenth of a second while it records what it found.
+
+Where the remaining time goes, from the same harness with `--phases` (steady
+wrapped launch, 8 runs):
+
+| phase | cost |
+|---|---|
+| `modules` — node boot + CLI + core module graph | **62.9 ms** |
+| `launch-group` — native-storage snapshot | 10.1 ms |
+| `watchdog.spawn` | 12.3 ms |
+| `lease` (first) | 9.6 ms |
+| `restore`, `skills-repair`, `agent-runtime` | 4.7 ms |
+| `snapshot.stamp` + `copy` + `prune` | 2.5 ms |
+| agent spawned at | 93 ms since process start |
+
+Half of the overhead is Node starting and loading the module graph: it is
+process-startup bound, not history bound — no phase scales with session count.
+The measured total (123 ms median steady) minus the 93 ms mark is process
+spawn, teardown and the exit path. The fast path performs no network, no
+registry lookup, no `git fetch`, no Hub access, no LLM call, no full canonical
+scan, no full native-history walk, no unmapped-session materialization and no
+polling; `test/launch-latency.test.mjs` holds the invariant that a plain launch
+touches no canonical history before the agent's TUI starts.
+
+## P1 — `avenic status`
+
+One core model (`packages/core/src/status.mjs`, `STATUS_SCHEMA_VERSION = 1`)
+that the terminal renders, `--json` prints unchanged, and the extension draws —
+so all three hosts answer the same question with the same answer. Read-only:
+no network, no git, no launch reconciliation, no agent CLI started. A missing
+agent CLI is reported in its row rather than failing the command.
+
+Real output, in a project with three initialized agents, the `common` Pack
+installed from the real Hub, and the Hub cached:
+
+```
+Avenic Status
+
+Project   project
+Root      C:\Users\…\project
+Agents    claude, codex, opencode
+History   shared
+
+History
+  Mode      shared
+  Sessions  0
+  Active    none — run: avenic sessions list
+  Updated   —
+
+Agents
+  Agent        CLI    Auth         Sessions          History  Sync
+  Claude Code  found  global auth  project sessions  0        current
+  Codex        found  global auth  project sessions  0        current
+  OpenCode     found  global auth  project sessions  0        current
+
+Skills
+  Project  29 installed · Common · optimized
+  Global   nothing installed
+  Hub      Echo-Kang-hub/SkillsHub · current · 9122e3a
+```
+
+Two rendering defects were found by running it for real and fixed in this
+pass: the pack list printed `[object Object]` (the model handed renderers the
+lock file's full pack records instead of `{ id, name }`), and an absent
+timestamp printed `1970-01-01 08:00` (`shortTimestamp(null)` treated "no value"
+as the epoch).
+
+## P2 — Skills UX
+
+`avenic skills` on a terminal opens the menu: Add skills · Installed skills ·
+Update skills · Remove skills · Sync SkillsHub · Import from repository · Back.
+The Add flow is source → clone/discover (`Found 14 skills`) → searchable
+multi-select → Install to → Scope → summary → confirm → box. The summary names
+the source and its revision, the skills, the targets with their real paths and
+the scope, because those are the four things a user cannot undo by accident.
+The same flow serves the menu's Add and Import entries, a bare
+`avenic skills install`, and `avenic skills add <repo>` when no skill is named;
+naming skills keeps the old scriptable behaviour. Which targets were chosen is
+persisted in the lock file, so the next update does not silently re-share into
+a target the user unchecked.
+
+## P3 — one set of TUI primitives
+
+`packages/cli/src/cli/prompts.mjs` is the only keyboard and frame
+implementation: `banner`, `select`, `searchSelect`, `multiselect`, `text`,
+`confirm`, `spinner`, `intro`/`outro`/`cancel`/`error`, `box`. Arrows and
+`j`/`k` move with wrap-around, space toggles, `Ctrl+A` selects all, typing
+filters a searchable list, Enter confirms, `y`/`n` answer a confirmation, and
+Esc or `Ctrl+C` cancels. Enter with zero selections is refused in place
+(`Select at least one item`), a fixed row cannot be turned off, and a pipe
+takes the script path instead of the menu. No TUI framework is used.
+
+## P4 — the command surface
+
+The help output and the README teach ten commands: `init`, `change`, `status`,
+`skills`, `sessions`, `claude`, `codex`, `opencode`, `self-update`,
+`--version`. The older spellings still run, warn, and name their replacement:
+`avenic doctor` → `avenic status`, top-level `avenic add|install|uninstall|adopt|packs|tree`
+→ the same verb under `avenic skills`, `avenic catalog` → `avenic hub`. Each
+one forwards to the single implementation; there is no second code path.
+`avenic hub …` and `avenic model …` remain as maintenance surfaces outside the
+daily ten, documented in their own chapters.
+
+## P11 — programmatically drivable input layer
+
+`test/cli-prompts.test.mjs` drives the production prompt code through
+`FakeTTY` + `keys()`: arrows and `j`/`k` with wrap-around, space, `Ctrl+A`,
+`n`, Enter, `y`/`n` on a confirmation, Esc, `Ctrl+C` mid-edit, backspace,
+type-to-filter and its `⌕ ga  (1/3)` counter, a fixed row refusing to toggle,
+empty-input Enter staying in place, an empty required selection staying open,
+and a pipe (non-TTY) taking the script path with no control sequences in the
+output. 18 tests in that file, 515 in the suite.
+
+## P12 — CLI / VS Code parity
+
+`packages/vscode/src/dashboard/state.ts` now calls `collectStatus` and maps it
+for the webview instead of computing its own agent rows, Hub revision or
+Skills health. The dashboard gained a 共享历史 card and per-agent sync chips
+using core's six words. The extension typechecks, builds, and passes 154
+tests; three tests that asserted the old hand-computed dashboard were updated
+to assert the model instead.
+
+## P10 — production LOC
+
+Baseline is the last release commit (`104aaf1`, avenic 1.5.2 / core 1.4.2 /
+extension 0.3.0). Counted over production sources only — vendor copies, tests,
+docs and binary assets (codicon.ttf, icon.png) excluded, non-blank lines:
+
+| Area | Before | After | Net |
+|---|---|---|---|
+| core (`packages/core/src`) | 7 164 | 7 596 | **+432** |
+| CLI (`packages/cli/src`) | 2 701 | 3 098 | **+397** |
+| CLI scripts | 69 | 87 | **+18** |
+| VS Code src | 2 761 | 2 792 | **+31** |
+| VS Code media (js/css/html/svg) | 1 803 | 1 838 | **+35** |
+| **Total** | **14 498** | **15 411** | **+913** |
+
+`git diff --numstat` counts the churn behind the net figures: 941 added and
+512 removed in `packages/cli/src`, 526 added and 72 removed in
+`packages/core/src` (both excluding the files below, which are new).
+
+New files: `core/status.mjs` (228), `cli/launch.mjs` (181),
+`cli/status-cli.mjs` (98), `core/runtime/timing.mjs` (42),
+`core/util/stamp.mjs` (15), `cli/agent-commands.mjs` (8) — 572 lines, no file
+deleted. The reshaping is consolidation inside existing files rather than
+growth for its own sake: `dispatcher.mjs` shrank from 909 to 803 raw lines by
+handing the launch sequence to `launch.mjs` and the legacy spellings to one
+forwarding table, and `skills-cli.mjs` traded its one-off orchestration for the
+single Add flow that four entry points now share.
+
+Duplicated orchestration, before → after:
+
+| Behaviour | Before | After |
+|---|---|---|
+| Interactive Skills install (pick → confirm → install → box) | `interactiveInstall`, 85 lines, one entry point | `addSkillsFlow` + four named steps, four entry points (menu Add, menu Import, bare `skills install`, `skills add <repo>` with no names) |
+| Repository install | installs every Skill in the repo, no discovery step | clone once, discover, searchable pick, then install |
+| Project status for hosts | CLI rendered it, the extension computed its own agent rows, Hub revision and Skills health | one `core/status.mjs` model; CLI renders, `--json` prints, the extension maps |
+| Launch sequence | inline in the dispatcher | `cli/launch.mjs`, one implementation for all three agents |
+| Timestamp formatting | each host formatted its own | `core/util/stamp.mjs` |
+| Install targets | implicit (every share target) | recorded in the lock, honoured by update/uninstall |
+
+## P13–P17 — version, artifacts, docs
+
+- `avenic --version` prints `Avenic 1.6.0` from `package.json` metadata alone;
+  the release smoke asserts it is not a constant, and self-update reports
+  Current / Latest / Source for the executable `PATH` would run.
+- Versions: core 1.4.2 → **1.5.0**, CLI 1.5.2 → **1.6.0**, extension 0.3.0 →
+  **0.4.0** (new capability in all three; no breaking removals).
+- Full regression: `npm test` 515 tests / 512 pass / 3 skipped / 0 fail;
+  `npm run test:install` PASS; `npm run test:release` PASS on the packed
+  tarball; VS Code typecheck + 154 tests + `npm run package` PASS;
+  `npm run pack:cli` reports 66 files and `avenic@1.6.0`.
+- Artifacts in `dist/release-20260919-1006/` with `SHA256SUMS.txt` and
+  `RELEASE-NOTES.md`: `avenic-1.6.0.tgz` (162 824 B), `avenic-core-1.5.0.tgz`
+  (118 799 B), `avenic-agent-manager.vsix` (217 461 B). This exact tarball,
+  installed into a temp global prefix, prints `Avenic 1.6.0` and teaches only
+  the converged surface.
+- Real Hub sync through the system's own git credentials: `git ls-remote`
+  `Echo-Kang-hub/SkillsHub` → `9122e3aa…`, `avenic hub sync` →
+  `Synced · 9122e3a`, packs and Skills listed from cache afterwards with the
+  network blocked (`https_proxy` pointed at a dead port).
+- `AGENTS.md` rewritten as a full agent guide (setup, commands, testing,
+  performance, code style, build/release, security) with the release-safety
+  rules preserved.
+
+Remaining: publishing `@avenic/core` 1.5.0 then `avenic` 1.6.0 (npm OTP or
+browser authorization) and uploading the 0.4.0 VSIX — the owner's two steps.

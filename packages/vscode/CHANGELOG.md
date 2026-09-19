@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- The dashboard is now the same status model `avenic status` prints. Agent
+  rows, the shared history block, the Hub revision and the Skills health all
+  come from core, so the panel cannot report a different project state than
+  the terminal — including the six sync words (current, stale, missing,
+  running, dirty, none), which the agent rows now show as a chip.
+- Added a 共享历史 card: history mode, how many shared sessions the project
+  holds, and which one is active.
+- Hub revision comes from the cached checkout, shortened in the panel, and
+  the card no longer claims "no Hub selected" when a default Hub is
+  registered but not yet fetched on this machine.
+
 ## 0.3.0
 
 - Added project-level configuration for enabled agents, independent auth and

@@ -17,10 +17,15 @@ test("buildDashboardData includes all sections on fresh project", async () => {
     assert.equal(data.projectRoot, dir, "projectRoot 为传入的项目根（null 分支由 UI 层呈现未打开状态）");
     assert.equal(data.agents.length, 3);
     assert.ok(data.agents.every((a) => a.statusText === "未初始化")); // 全新项目无 .avenic.json → 全部未初始化
-    assert.equal(data.catalog, null); // 隔离 env 下无默认 Catalog → null
+    // Hub 是设备级的、有内置默认（Echo-Kang-hub/SkillsHub），所以它总有 spec：
+    // 变的只是本机有没有缓存（无缓存 → revision 占位符，而不是「未选择 Hub」）。
+    assert.deepEqual(data.catalog, { spec: "Echo-Kang-hub/SkillsHub#main", revision: "—" });
+    // 共享历史块与 `avenic status` 同源：全新项目 = shared（无 .avenic.json 时的默认）+ 0 条会话
+    assert.deepEqual(data.history, { mode: "shared", sessions: 0, activeTitle: null });
     assert.ok(Array.isArray(data.skillsHealth));
     assert.equal(data.skillsHealth.length, 1);
     assert.equal(data.skillsHealth[0].ok, false);
+    assert.equal(data.skillsHealth[0].details, "尚未安装"); // 磁盘上没有 Skill，也没有锁文件
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -57,6 +62,8 @@ test("buildDashboardData reads the cached catalog revision (not the placeholder 
     const data = await buildDashboardData(project, env);
     assert.ok(data.catalog !== null);
     assert.equal(data.catalog.spec, catalogDir);
+    // 完整 sha 原样到达 webview（截短是渲染层的事）：既证明读到了缓存 fixture 的真实
+    // commit 而非占位符，也证明宿主没有在这里私自改写 core 报的版本。
     assert.match(data.catalog.revision, /^[0-9a-f]{40}$/, "revision 读取缓存 fixture 的真实 commit，而非 '—'");
   } finally {
     await rm(root, { recursive: true, force: true });

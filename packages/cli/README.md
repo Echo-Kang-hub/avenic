@@ -2,11 +2,13 @@
 
 Avenic 用一个命令统一管理编码 Agent（Claude Code、Codex、OpenCode）的运行时配置、会话历史与 Skills，支持 Windows、macOS 和 Linux。
 
-日常只需要五条命令：
+日常只需要这几条命令：
 
 ```bash
 avenic init          # 配置本项目（在终端上是交互式界面）
 avenic claude        # 启动某个 Agent 的原生 TUI（codex / opencode 同理）
+avenic status        # 这个项目现在是什么样：配置 / 历史 / Agent / Skills
+avenic skills        # 交互式 Skills 菜单：添加 / 已装 / 更新 / 移除 / 同步 Hub / 从仓库导入
 avenic sessions      # 查看与管理共享会话
 avenic change        # 随时改认证、会话存储或历史模式
 avenic self-update   # 从 npm 更新
@@ -40,8 +42,9 @@ avenic claude        # 进入 Claude Code；avenic codex / avenic opencode 同�
 
 ```bash
 avenic change                       # 重开配置界面，改完确认才生效
+avenic status                       # 这个项目的配置、Agent、历史、Skills 一览
 avenic sessions                     # 交互式会话管理
-avenic sessions list                # 或直接用子命令
+avenic skills                       # 交互式 Skills 菜单
 avenic --version                    # 打印已安装版本
 avenic self-update                  # 更新到 npm 上的最新版
 ```
@@ -50,14 +53,16 @@ avenic self-update                  # 更新到 npm 上的最新版
 
 ## 交互式配置（TUI）
 
-`avenic init`、`avenic change`、`avenic sessions` 在终端上打开同一套交互界面：
+`avenic init`、`avenic change`、`avenic sessions`、`avenic skills` 在终端上打开同一套交互界面：
 
 | 按键 | 作用 |
 |---|---|
-| ↑ / ↓ | 移动光标 |
+| ↑ / ↓ | 移动光标（`j` / `k` 同义；搜索框里它们属于过滤词） |
 | Space | 多选时切换勾选 |
-| Enter | 确认；**一项都没选时 Enter 无效**，并提示 `Select at least one item.` |
-| Ctrl+C | 安全取消：不写任何配置，退出码 0 |
+| Ctrl+A | 多选时全选（搜索框里字母键让给过滤词，所以全选是 Ctrl+A） |
+| 直接打字 | 带搜索的列表按输入即时过滤，下拉里显示 `(命中/总数)` |
+| Enter | 确认；**一项都没选时 Enter 无效**，并提示 `Select at least one item.`；`y` / `n` 在 Yes/No 确认里立即作答 |
+| Esc / Ctrl+C | 安全取消：不写任何配置，退出码 0 |
 
 流程固定为：读取当前配置 → 在内存中生成草稿 → 校验 → 打印变更摘要 → 确认 → **只在最后一步确认后原子写入**。中途取消不会留下半成品配置。
 
@@ -93,6 +98,54 @@ avenic sessions git on|off|status           # 共享会话记录是否进 Git
 
 OpenCode 的投射不会替用户选模型：它用你在 OpenCode 配置里指定的模型（没配就用 OpenCode 自带默认），也不会把别的 Agent 的 provider/model 写进 OpenCode 会话——否则这条会话在你没有该供应商时根本启动不了。万一投射出来的会话仍然启动失败，Avenic 会自动改用一条全新的官方会话、把共享历史增量作为开场内容交过去，而不是让共享历史整体失败。
 
+## 状态：`avenic status`
+
+一个命令回答「这个项目现在是什么样」：配置了什么、历史模式与活动会话、三个 Agent 各自的初始化/认证/会话/同步状态、Skills 与 Hub。
+
+```
+$ avenic status
+
+Avenic Status
+
+Project   agenthome-cli
+Root      D:\FileDownload\Projects\agenthome-cli
+Agents    claude, codex
+History   shared
+
+History
+  Mode      shared
+  Sessions  24
+  Active    claude-bee6f9b7-…  claude bee6f9b7-…
+  Events    5939
+  Updated   2026-09-19 09:51
+
+Agents
+  Agent        CLI    Auth             Sessions          History  Sync
+  Claude Code  found  global auth      project sessions  10       current
+  Codex        found  global auth      project sessions  10       current
+  OpenCode     found  not initialized  —                 0        —
+
+Skills
+  Project  15 installed · optimized
+  Global   nothing installed
+  Hub      Echo-Kang-hub/SkillsHub · current · 9122e3a
+```
+
+`Sync` 一列的含义是「项目里的投射离共享历史还有多远」，每个值都对应一个可以动手的状态：
+
+| 值 | 含义 | 下一步 |
+|---|---|---|
+| `current` | 投射停在共享历史的最后一个事件上 | 无事可做 |
+| `stale` | 共享历史有了新事件，投射还没跟上 | `avenic <agent>` 启动时会自动补齐 |
+| `missing` | 有映射，但项目里没有对应会话 | `avenic <agent> sessions import` |
+| `running` | 这个项目里正有一个该 Agent 在跑 | 无 |
+| `dirty` | 上次启动没走完退出流程 | 下次启动会自动恢复 |
+| `none` | 该 Agent 未初始化 | `avenic <agent> init` |
+
+`avenic status --json` 输出同一份模型的 JSON（`schemaVersion: 1`），VS Code 插件展示的就是它。
+
+`status` 只读本地状态：不联网、不跑 `git fetch`、不启动任何 Agent CLI。某个 Agent 没装也不影响整体输出——那一行会写 `not found`，其余照常。
+
 ## Agent 运行时
 
 ### 命令
@@ -107,8 +160,8 @@ OpenCode 的投射不会替用户选模型：它用你在 OpenCode 配置里指�
 | `avenic <agent> auth [global\|project\|reset]` | 设置认证作用域；不带参数时查看当前状态 |
 | `avenic <agent> status` | 查看该 Agent 的配置与状态 |
 | `avenic <agent> sessions import\|writeback\|status` | 管理便携会话 |
-| `avenic status` | 三个 Agent 一览 |
-| `avenic doctor` | 环境自检 |
+| `avenic status [--json]` | 这个项目的一览：配置 / 历史 / Agent / Skills |
+| `avenic doctor` | 环境自检（已弃用：用 `avenic status`） |
 
 这些按 Agent 的子命令是项目配置的薄包装：它们读写的仍是 `avenic init` 建的同一份配置，不会另起一套状态。
 
@@ -230,6 +283,33 @@ Pack 定义示例（`packs/development.json`）：
 
 #### 使用
 
+裸 `avenic skills` 在终端里打开菜单：
+
+```
+◇  Skills
+│  ●  Add skills                 SkillsHub Packs or a Git repository
+│  ○  Installed skills           what this scope holds now
+│  ○  Update skills              re-install from the latest Hub revision
+│  ○  Remove skills              Packs, direct Skills, or everything
+│  ○  Sync SkillsHub             fetch the Hub with your git credentials
+│  ○  Import from repository     clone, then pick Skills
+│  ○  Back
+```
+
+`Add skills` 与 `Import from repository` 是同一个流程的两个来源，步骤固定为：来源 → 发现（`✓  Found 14 skills`）→ 多选 → `Install to` → `Scope` → 摘要 → 确认。带搜索的多选对长清单按输入即时过滤，`Ctrl+A` 全选。
+
+`Install to` 列出的是技能实际会落到的目录：真身写在 `.agents/skills`（Codex / OpenCode / 通用 Agent 读的那个，固定勾选），`Claude Code` 读的是它指向真身的链接（`.claude/skills`，可取消）。这个选择会记进锁文件——之后 `uninstall`、`update` 重装剩余 Pack 时沿用，不会把技能重新链接到一个你明确没勾的目标上。
+
+同一条流程也能直接走命令行（脚本里同样可用，不需要终端）：
+
+```bash
+avenic skills add <owner/repo>          # 点名仓库：终端里进发现→多选，管道里装它的全部 Skill
+avenic skills add <owner/repo> a b      # 点名 Skill：直接安装，不询问
+avenic skills remove <skill...>         # 移除直装 Skill
+```
+
+Hub 这边则是 Pack 为单位：
+
 ```bash
 avenic hub add <owner/repo>         # 导入 Hub（owner/repo[#ref]、URL 或本地路径），成功后打印 Pack 预览树
 avenic skills install                   # 安装默认 Pack（common）
@@ -240,6 +320,8 @@ avenic skills tree [pack...]            # 查看 Hub 内容树
 avenic skills packs                     # 列出可用 Packs
 avenic skills status [-g]               # 当前安装状态
 ```
+
+非终端环境（管道、CI、脚本）不会卡在提示上：裸 `avenic skills` 回退为安装默认 Pack（common），`avenic skills install` 同理。
 
 `hub add` 拉取失败不影响源保存，之后 `avenic hub sync` 重试。可反复 `add` 注册多个 Hub，同一时间生效一个（该 Hub 聚合的多个上游源共享所有 Pack）：
 
@@ -379,7 +461,7 @@ avenic skills add <owner/repo> [skill...] [-g]
 avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
 ```
 
-从任意 GitHub 仓库直接安装 Skill（递归发现），锁定 commit 并保存许可证。公开仓库直接可用；私有仓库使用本机 git 认证（`gh auth login` 或 SSH）。与 Pack 管理的 Skill 重名会被拒绝。
+从任意 GitHub 仓库直接安装 Skill（递归发现），锁定 commit 并保存许可证。公开仓库直接可用；私有仓库使用本机 git 认证（`gh auth login` 或 SSH）。与 Pack 管理的 Skill 重名会被拒绝。在终端里不点名 Skill 时，这条命令进入 `avenic skills` 的「发现 → 多选」流程。
 
 ## 撤回操作
 
@@ -393,6 +475,7 @@ avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
 | `avenic sessions git off` | `avenic sessions git on` |
 | `avenic skills install [pack...]`（简写 `avenic skills [pack...]`） | `avenic skills uninstall`（全部）或 `avenic skills uninstall <pack>` |
 | `avenic skills add <owner/repo>` | `avenic skills remove <skill...>` |
+| `avenic skills` 菜单里的 Add / Import | 菜单里的 Remove skills；或 `avenic skills uninstall`、`avenic skills remove` |
 | `avenic hub add <spec>` | `avenic hub select` 选回已注册 Hub，或再次 `avenic hub add <原 spec>` |
 | `avenic self-update` | `npm install -g avenic@<旧版本>` |
 
