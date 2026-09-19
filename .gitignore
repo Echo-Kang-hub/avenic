@@ -1,5 +1,7 @@
 node_modules/
 *.tgz
+# Release artifacts built for a version: publishable, not source.
+pack/
 .tmp/
 .claude/
 .agents/

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -29,22 +30,30 @@ const event = (id, role, value) => ({
   content: [{ type: "text", text: value }],
 });
 
-test("resume-catalog materialization creates one stable native mapping", async () => {
+test("a projection is launched by the agent that prepared it, and one that is already current costs no projection", async () => {
   await withProject(async (projectRoot) => {
     await createCanonicalSession(projectRoot, { id: "shared" });
     await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
     let calls = 0;
     const first = await ensureNativeProjection({
       projectRoot, canonicalId: "shared", targetAgent: "codex", intent: "resume-catalog",
-      materialize: async () => { calls += 1; return { nativeSessionId: "thread-1", projectionHash: "h1" }; },
+      materialize: async ({ mapping }) => {
+        calls += 1;
+        assert.equal(mapping, null, "the first projection has no mapping to continue");
+        return { nativeSessionId: "thread-1", materialized: true, projection: { lastEventId: "a", hash: "h1" }, launch: { argumentsList: ["resume", "thread-1"] } };
+      },
     });
     const second = await ensureNativeProjection({
       projectRoot, canonicalId: "shared", targetAgent: "codex", intent: "resume-catalog",
       materialize: async () => { calls += 1; return { nativeSessionId: "thread-2" }; },
     });
-    assert.equal(first.status, "created");
+    assert.equal(first.status, "materialized");
+    assert.deepEqual(first.launch.argumentsList, ["resume", "thread-1"]);
+    // Nothing new since the last switch: the mapping is current and no
+    // projection is asked for at all.
     assert.equal(second.status, "current");
     assert.equal(second.nativeSessionId, "thread-1");
+    assert.equal(second.launch, null);
     assert.equal(calls, 1);
   });
 });
@@ -52,6 +61,14 @@ test("resume-catalog materialization creates one stable native mapping", async (
 test("continuation launch arguments use official resume commands and handoff as an explicit prompt", () => {
   const handoff = { markdown: "# Avenic continuation\nNew shared events since your last sync:\n- assistant: D" };
   const prompt = "# Avenic continuation New shared events since your last sync: - assistant: D";
+  // A projection launches itself: the adapter decided between resuming a native
+  // session, resuming one it just built, and opening a fresh one.
+  const projected = continuationLaunchArguments({
+    agentId: "codex", mode: "resume", nativeSessionId: "thread-1",
+    launch: { argumentsList: ["resume", "thread-1"] }, handoff,
+  });
+  assert.deepEqual(projected.argumentsList, ["resume", "thread-1"]);
+  // The prompt path is the fallback for an agent with no projection at all.
   const claude = continuationLaunchArguments({ agentId: "claude", mode: "resume", nativeSessionId: "123e4567-e89b-12d3-a456-426614174000", handoff });
   assert.deepEqual(claude.argumentsList, ["--resume", "123e4567-e89b-12d3-a456-426614174000", prompt]);
   assert.equal(claude.input, undefined);
@@ -64,6 +81,7 @@ test("continuation launch arguments use official resume commands and handoff as 
   assert.deepEqual(continuationLaunchArguments({ agentId: "opencode", mode: "bootstrap", nativeSessionId: null, handoff }).argumentsList, ["--prompt", prompt]);
   const newClaude = continuationLaunchArguments({ agentId: "claude", mode: "bootstrap", handoff, nativeSessionId: "123e4567-e89b-12d3-a456-426614174001" });
   assert.deepEqual(newClaude.argumentsList, ["--session-id", "123e4567-e89b-12d3-a456-426614174001", prompt]);
+  assert.throws(() => continuationLaunchArguments({ agentId: "codex", mode: "resume" }), /projection or a handoff/);
 });
 
 test("continuation prompt keeps untrusted cmd metacharacters out of Windows shim arguments", () => {
@@ -126,52 +144,83 @@ test("prepare and complete continuation maintain an agent cursor without changin
   await withProject(async (projectRoot) => {
     await createCanonicalSession(projectRoot, { id: "shared", source: "claude" });
     await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A"), event("b", "assistant", "B")]);
+    const projected = [];
+    const materialize = async ({ events, mapping }) => {
+      projected.push({ ids: events.map((item) => item.id), mapping: mapping?.nativeSessionId ?? null });
+      return {
+        kind: "native-history",
+        nativeSessionId: "thread-1",
+        materialized: !mapping,
+        projection: { lastEventId: events.at(-1)?.id ?? null, hash: `h${projected.length}` },
+        launch: { argumentsList: ["resume", "thread-1"] },
+      };
+    };
 
-    const first = await prepareCanonicalContinuation(projectRoot, "shared", "codex");
+    const first = await prepareCanonicalContinuation(projectRoot, "shared", "codex", { materialize });
     assert.equal(first.mode, "bootstrap");
-    assert.deepEqual(first.handoff.delta.map((item) => item.id), ["a", "b"]);
+    assert.equal(first.kind, "native-history");
     assert.equal("environment" in first, false, "auth/runtime environment belongs to the caller");
-    const persistedHandoff = JSON.parse(await readFile(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.json"), "utf8"));
-    assert.equal(persistedHandoff.hash, first.handoff.hash);
-    assert.match(await readFile(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.md"), "utf8"), /New shared events/);
+    assert.deepEqual(first.launch.argumentsList, ["resume", "thread-1"]);
+    // A projection carries the turns themselves; the compatibility prompt is not
+    // written when one exists.
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.md")), false);
 
     await completeCanonicalContinuation(projectRoot, "shared", "codex", {
       nativeSessionId: "thread-1",
       nativeRevision: "native-1",
-      projectionHash: first.handoff.hash,
+      projectionHash: first.projection.hash,
     });
     await appendCanonicalEvents(projectRoot, "shared", [event("c", "user", "C"), event("d", "assistant", "D")]);
 
-    const resumed = await prepareCanonicalContinuation(projectRoot, "shared", "codex");
+    const resumed = await prepareCanonicalContinuation(projectRoot, "shared", "codex", { materialize });
     assert.equal(resumed.mode, "resume");
     assert.equal(resumed.nativeSessionId, "thread-1");
-    assert.deepEqual(resumed.handoff.delta.map((item) => item.id), ["c", "d"]);
+    assert.deepEqual(projected.map((entry) => entry.ids), [["a", "b"], ["a", "b", "c", "d"]]);
+    // The second projection continues the native session the first one made.
+    assert.deepEqual(projected.map((entry) => entry.mapping), [null, "thread-1"]);
 
     const stored = await readCanonicalSession(projectRoot, "shared");
-    assert.equal(stored.mappings.projections.codex.lastCanonicalEventId, "b");
-    assert.equal(stored.mappings.projections.codex.projectionHash, first.handoff.hash);
+    assert.equal(stored.mappings.projections.codex.lastCanonicalEventId, "d");
+    assert.equal(stored.mappings.projections.codex.projectionHash, "h2");
   });
 });
+
+// One projection per continuation, in the order the pipeline asks for it: the
+// target's own session first, then the delta it is missing.
+function testMaterializer(trace) {
+  return async ({ events, mapping }) => {
+    trace.push({ ids: events.map((item) => item.id), mapping: mapping?.nativeSessionId ?? null });
+    return {
+      nativeSessionId: trace.at(-1).mapping ?? `thread-${trace.length}`,
+      materialized: !mapping,
+      projection: { lastEventId: events.at(-1)?.id ?? null, hash: `h${trace.length}` },
+      launch: { argumentsList: ["resume", trace.at(-1).mapping ?? `thread-${trace.length}`] },
+    };
+  };
+}
 
 test("one continuation entry captures, launches, captures again, and advances one mapping cursor", async () => {
   await withProject(async (projectRoot) => {
     await createCanonicalSession(projectRoot, { id: "pipeline" });
     await appendCanonicalEvents(projectRoot, "pipeline", [event("a", "user", "A")]);
     const calls = [];
+    const projections = [];
     const result = await continueCanonicalSession({
       projectRoot,
       canonicalId: "pipeline",
       targetAgent: "codex",
+      materialize: testMaterializer(projections),
       capture: async (stage) => {
         calls.push(`capture:${stage}`);
         return stage === "after" ? { nativeSessionId: "thread-1", events: [event("b", "assistant", "B")], nativeRevision: "r2" } : null;
       },
       launch: async (continuation) => {
-        calls.push(`${continuation.mode}:${continuation.handoff.delta.map((item) => item.id).join(",")}`);
-        return { nativeSessionId: "thread-1", projectionHash: continuation.handoff.hash };
+        calls.push(`${continuation.mode}:${continuation.launch.argumentsList.join(" ")}`);
+        return { nativeSessionId: continuation.nativeSessionId, projectionHash: continuation.projection?.hash };
       },
     });
-    assert.deepEqual(calls, ["capture:before", "bootstrap:a", "capture:after"]);
+    assert.deepEqual(calls, ["capture:before", "bootstrap:resume thread-1", "capture:after"]);
+    assert.deepEqual(projections.map((entry) => entry.ids), [["a"]]);
     assert.equal(result.mapping.nativeSessionId, "thread-1");
     assert.equal(result.mapping.lastCanonicalEventId, "b");
     assert.deepEqual((await readCanonicalSession(projectRoot, "pipeline")).events.map((item) => item.id), ["a", "b"]);
@@ -182,10 +231,12 @@ test("continuation captures known source projections before preparing the target
   await withProject(async (projectRoot) => {
     await createCanonicalSession(projectRoot, { id: "known-source" });
     const calls = [];
+    const projections = [];
     await continueCanonicalSession({
       projectRoot,
       canonicalId: "known-source",
       targetAgent: "codex",
+      materialize: testMaterializer(projections),
       captureKnown: async () => {
         calls.push("known");
         await appendCanonicalEvents(projectRoot, "known-source", [event("a", "user", "A")]);
@@ -194,8 +245,8 @@ test("continuation captures known source projections before preparing the target
         calls.push(`capture:${stage}`);
         return stage === "after" ? { nativeSessionId: "thread-1", events: [] } : null;
       },
-      launch: async (continuation) => {
-        calls.push(`launch:${continuation.handoff.delta.map((item) => item.id).join(",")}`);
+      launch: async () => {
+        calls.push(`launch:${projections.at(-1).ids.join(",")}`);
         return { nativeSessionId: "thread-1" };
       },
     });
@@ -209,21 +260,26 @@ test("a stale native mapping rehydrates from canonical history without advancing
     await appendCanonicalEvents(projectRoot, "stale", [event("a", "user", "A"), event("b", "assistant", "B")]);
     await completeCanonicalContinuation(projectRoot, "stale", "claude", { nativeSessionId: "missing-session" });
     const calls = [];
+    const projections = [];
     const result = await continueCanonicalSession({
       projectRoot,
       canonicalId: "stale",
       targetAgent: "claude",
+      materialize: testMaterializer(projections),
       capture: async (stage) => {
         calls.push(`capture:${stage}`);
         if (stage === "before") throw new Error("Claude native session is unavailable: missing-session");
         return { nativeSessionId: "rehydrated-session", events: [event("c", "assistant", "C")], nativeRevision: "r3" };
       },
       launch: async (continuation) => {
-        calls.push(`${continuation.mode}:${continuation.handoff.delta.map((item) => item.id).join(",")}`);
-        return { nativeSessionId: "rehydrated-session", projectionHash: continuation.handoff.hash };
+        calls.push(`${continuation.mode}:${projections.at(-1).ids.join(",")}`);
+        return { nativeSessionId: continuation.nativeSessionId, projectionHash: continuation.projection?.hash };
       },
     });
+    // The dead session is gone, so the whole history is projected again — as a
+    // native session, never as a prompt.
     assert.deepEqual(calls, ["capture:before", "bootstrap:a,b", "capture:after"]);
+    assert.deepEqual(projections.map((entry) => entry.mapping), [null]);
     assert.equal(result.mapping.nativeSessionId, "rehydrated-session");
     assert.equal(result.mapping.lastCanonicalEventId, "c");
   });
@@ -235,18 +291,20 @@ test("a stale Codex rollout rehydrates without changing canonical history", asyn
     await appendCanonicalEvents(projectRoot, "stale-codex", [event("a", "user", "A"), event("b", "assistant", "B")]);
     await completeCanonicalContinuation(projectRoot, "stale-codex", "codex", { nativeSessionId: "missing-rollout" });
     const calls = [];
+    const projections = [];
     const result = await continueCanonicalSession({
       projectRoot,
       canonicalId: "stale-codex",
       targetAgent: "codex",
+      materialize: testMaterializer(projections),
       capture: async (stage) => {
         calls.push(`capture:${stage}`);
         if (stage === "before") throw new Error("Codex native session is unavailable: missing-rollout");
         return { nativeSessionId: "new-thread", events: [event("c", "assistant", "C")], nativeRevision: "r2" };
       },
       launch: async (continuation) => {
-        calls.push(`${continuation.mode}:${continuation.handoff.delta.map((item) => item.id).join(",")}`);
-        return { nativeSessionId: "new-thread", projectionHash: continuation.handoff.hash };
+        calls.push(`${continuation.mode}:${projections.at(-1).ids.join(",")}`);
+        return { nativeSessionId: continuation.nativeSessionId, projectionHash: continuation.projection?.hash };
       },
     });
     assert.deepEqual(calls, ["capture:before", "bootstrap:a,b", "capture:after"]);

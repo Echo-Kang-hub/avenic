@@ -26,7 +26,7 @@ test("a second listing does not re-import the same native session", async () => 
     assert.equal(first.status, 0, first.stderr);
     const second = runCli(["sessions", "status"]);
     assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /events 3\b/, "repeated recovery must stay idempotent");
+    assert.match(second.stdout, /3 events\b/, "repeated recovery must stay idempotent");
   }, { sessions: 0 });
 });
 

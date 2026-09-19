@@ -19,6 +19,8 @@ const ACTIONS = [
   { command: "agents.sessionsImport", label: "导入会话", iconName: "import" },
   // 模型配置（设计 §9.1 的第三个入口）：本机配置库是设备级的，未打开项目也能进。
   { command: "model.open", label: "模型配置", iconName: "settings-gear" },
+  // 会话页：读共享历史那份对话（与 `avenic sessions show` 同一个模型）。
+  { command: "sessions.open", label: "Sessions", iconName: "history" },
 ];
 // 依赖项目上下文的操作：未打开项目时置灰，避免点了才报错。
 const PROJECT_SCOPED = new Set([
@@ -26,6 +28,8 @@ const PROJECT_SCOPED = new Set([
   "skills.addDirect",
   "agents.init",
   "agents.sessionsImport",
+  // 会话页读的是项目里的共享历史：没有项目就没有可读的会话。
+  "sessions.open",
 ]);
 
 /** 安全的元素构造：文本只经 textContent 写入。 */

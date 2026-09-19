@@ -66,8 +66,61 @@ async function writeFakeAgent(bin, name) {
   const target = path.join(bin, `${name}.mjs`);
   await writeFile(target, `import { appendFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 const startedAt = Date.now();
 const probe = process.env.AVENIC_AGENT_PROBE;
+// Codex's app server is the one official surface that can append turns to a
+// thread's model-visible history, so the stand-in speaks it the way the real
+// one does: thread/start creates a real rollout, thread/resume refuses a thread
+// it does not have, injections are recorded for the test to assert on, and a
+// configured reply lands in the rollout exactly as a real Codex turn would.
+if (process.argv[2] === "app-server") {
+  const codexHome = process.env.CODEX_HOME ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".codex");
+  const day = new Date().toISOString().slice(0, 10);
+  const sessionsRoot = path.join(codexHome, "sessions", ...day.split("-"));
+  const rolloutFor = (id) => path.join(sessionsRoot, \`rollout-\${id}.jsonl\`);
+  const record = (entry) => {
+    if (!process.env.AVENIC_CODEX_INJECT_LOG) return;
+    appendFileSync(process.env.AVENIC_CODEX_INJECT_LOG, \`\${JSON.stringify(entry)}\\n\`);
+  };
+  const startThread = (id) => {
+    mkdirSync(sessionsRoot, { recursive: true });
+    writeFileSync(rolloutFor(id), \`\${JSON.stringify({ type: "session_meta", payload: { id, cwd: process.cwd(), model_provider: "openai" } })}\\n\`);
+  };
+  let next = 1;
+  createInterface({ input: process.stdin }).on("line", (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    const reply = (result) => process.stdout.write(\`\${JSON.stringify({ id: message.id, result })}\\n\`);
+    const fail = (text) => process.stdout.write(\`\${JSON.stringify({ id: message.id, error: { message: text } })}\\n\`);
+    if (message.method === "thread/start") {
+      const id = \`thread-\${process.pid}-\${next++}\`;
+      startThread(id);
+      return reply({ thread: { id } });
+    }
+    if (message.method === "thread/resume") {
+      const id = message.params?.threadId;
+      try {
+        readdirSync(sessionsRoot);
+        if (id && !id.startsWith("missing-")) return reply({});
+      } catch {}
+      return fail(\`no rollout for thread \${id}\`);
+    }
+    if (message.method === "thread/inject_items") {
+      record({ threadId: message.params.threadId, items: message.params.items });
+      const answer = process.env.AVENIC_CODEX_REPLY;
+      if (answer) {
+        appendFileSync(rolloutFor(message.params.threadId), \`\${JSON.stringify({
+          timestamp: new Date().toISOString(),
+          type: "response_item",
+          payload: { id: \`codex-live-\${next++}\`, type: "message", role: "assistant", content: [{ type: "output_text", text: answer }] },
+        })}\\n\`);
+      }
+      return reply({});
+    }
+    reply({});
+  });
+} else {
 const canonical = path.join(process.cwd(), ".agents", "sessions", "canonical");
 const snapshot = () => { try { return readdirSync(canonical); } catch { return []; } };
 if (probe) {
@@ -96,6 +149,7 @@ if (process.env.AVENIC_AGENT_WRITE) {
   }
 }
 process.exit(0);
+}
 `);
   if (process.platform === "win32") {
     await writeFile(path.join(bin, `${name}.cmd`), `@echo off\r\n"${process.execPath}" "${target}" %*\r\n`);

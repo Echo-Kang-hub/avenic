@@ -119,6 +119,36 @@ function entryRow({ colors, width, cursor = false, checked = false, label, hint 
 }
 
 // ---- 纯文本输出 ----
+//
+// 这一段里的每个输出都写到一个流上，而流永远有默认值：prompts 里的打印函数是
+// 产品代码直接调的（`avenic skills` 拿到的 prompts 是 `{}`），没有默认值时它们在
+// 真实终端上第一行就抛 `Cannot read properties of undefined`，而测试因为总是注入
+// 假流，看不到这个崩溃。交互帧（prompt 一族）一直有默认值，打印函数也必须一样。
+
+/**
+ * 把这些行收起来，最后一次性写出。分节的输出（status、每个命令的结果块）
+ * 都是先攒行再落地：中途不会被别的写入插进来，也不会在交互帧收尾之后
+ * 一行一行地往外挤。`columns` 跟着目标流走，窄终端下截断的判断才准。
+ */
+export function collectLines(io = console) {
+  const lines = [];
+  const sink = {
+    columns: io.columns,
+    write(text) {
+      const parts = String(text).split("\n");
+      if (parts.at(-1) === "") parts.pop();
+      lines.push(...parts);
+    },
+  };
+  return {
+    sink,
+    line: (text = "") => lines.push(text),
+    flush: () => {
+      if (lines.length > 0) io.log(lines.join("\n"));
+      return lines.length;
+    },
+  };
+}
 
 /** 品牌 banner：三行块状 AVENIC + 一行副标题（窄终端下自动省略副标题）。 */
 export function banner(stdout = process.stdout, options = {}) {
@@ -136,21 +166,21 @@ export function banner(stdout = process.stdout, options = {}) {
 }
 
 /** ◆ 标题行：一次输出的开头，或交互帧的顶行。 */
-export function intro(stdout, title, options = {}) {
+export function intro(stdout = process.stdout, title, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.title(`◆  ${title}`)}\n`);
   if (options.description) stdout.write(`│  ${colors.dim(truncate(options.description, columns(stdout) - 4))}\n`);
 }
 
 /** ◇ 分节标题：status 这类只读输出的骨架，与落定帧同一个符号。 */
-export function section(stdout, title, options = {}) {
+export function section(stdout = process.stdout, title, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.brand(`◇  ${title}`)}\n`);
   if (options.description) stdout.write(`│  ${colors.dim(truncate(options.description, columns(stdout) - 4))}\n`);
 }
 
 /** 一条「标签  值」的信息行，带 │ 竖线（status 的分节内容）。 */
-export function field(stdout, label, value, options = {}) {
+export function field(stdout = process.stdout, label, value, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   const labelWidth = options.labelWidth ?? 10;
   const label_ = label.padEnd(labelWidth);
@@ -159,35 +189,35 @@ export function field(stdout, label, value, options = {}) {
 }
 
 /** 区块里的一条提示行：│  ! 文本（黄）或 │  · 文本（灰）。 */
-export function note(stdout, text, options = {}) {
+export function note(stdout = process.stdout, text, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   const mark = options.mark ?? "·";
   const paint = mark === "!" ? colors.warn : colors.dim;
   stdout.write(`│  ${paint(mark)}  ${truncate(text, columns(stdout) - 6)}\n`);
 }
 
-export function success(stdout, text, options = {}) {
+export function success(stdout = process.stdout, text, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.ok("✓")}  ${text}\n`);
 }
 
-export function warning(stdout, text, options = {}) {
+export function warning(stdout = process.stdout, text, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.warn("!")}  ${text}\n`);
 }
 
-export function error(stdout, text, options = {}) {
+export function error(stdout = process.stdout, text, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.bad("✖")}  ${text}\n`);
 }
 
 /** 落定行：一次成功收尾（与 success 同形，语义上是「这一段结束了」）。 */
-export function outro(stdout, text, options = {}) {
+export function outro(stdout = process.stdout, text, options = {}) {
   success(stdout, text, options);
 }
 
 /** 取消行：Esc / Ctrl+C 之后由调用方打印。 */
-export function cancel(stdout, text = "Cancelled", options = {}) {
+export function cancel(stdout = process.stdout, text = "Cancelled", options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   stdout.write(`${colors.bad("✖")}  ${colors.dim(text)}\n`);
 }
@@ -196,7 +226,7 @@ export function cancel(stdout, text = "Cancelled", options = {}) {
  * 状态表：◇ 分节 + 竖线 + 列对齐（`avenic status` 的 Agents 一节）。
  * 列宽按内容算，整行按终端宽度截断，窄终端下不换行。
  */
-export function table(stdout, headers, rows, options = {}) {
+export function table(stdout = process.stdout, headers, rows, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
   const widths = headers.map((header, column) =>
     Math.max(displayWidth(header), ...rows.map((row) => displayWidth(row[column] ?? ""))));
@@ -699,27 +729,4 @@ export function progress(options = {}) {
       stdout.write(`\r\x1b[K${colors.bad("✖")}  ${errorText}\n`);
     },
   };
-}
-
-// ---- 摘要框（╭╮ 框 + ├/└ 内联列表）：结果信息在交互完成后的落定输出 ----
-
-/** 把内容行包进 ╭╮╰╯ 边框；返回成帧字符串数组（也方便单测）。 */
-export function boxLines(lines) {
-  const width = Math.max(0, ...lines.map((line) => displayWidth(line))) + 4;
-  return [
-    `╭${"─".repeat(width)}╮`,
-    ...lines.map((line) => {
-      const pad = width - 2 - displayWidth(line); // │ + 2 左边距
-      return `│  ${line}${" ".repeat(Math.max(0, pad - 2))}  │`;
-    }),
-    `╰${"─".repeat(width)}╯`,
-  ];
-}
-
-/**
- * 结果摘要框。框里的行自带层级（└ 是区块收尾），框本身只是把它们和终端上
- * 其他输出分开。交互完成后才用，所以它永远是纯文本、不参与帧重绘。
- */
-export function summary(stdout, lines) {
-  stdout.write(`\n${boxLines(lines).join("\n")}\n`);
 }

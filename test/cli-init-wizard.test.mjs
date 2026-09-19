@@ -86,7 +86,10 @@ test("avenic init writes exactly what the wizard asked for", async () => {
     assert.deepEqual(written.agents.claude, { auth: "global", sessions: "project" });
     assert.deepEqual(written.agents.codex, { auth: "global", sessions: "project" });
     assert.equal(written.sessionInterop, "shared");
-    assert.ok(logged.some((line) => line.includes("History: shared")), `the summary must state the mode: ${JSON.stringify(logged)}`);
+    // The result is a page of the same terminal layer the wizard drew: a ◇
+    // History section with the mode under it, not a hand-written summary line.
+    assert.ok(logged.some((line) => /◇ {2}History/.test(line)), `the result must have a History section: ${JSON.stringify(logged)}`);
+    assert.ok(logged.some((line) => /│ {2}Mode\s+shared/.test(line)), `the summary must state the mode: ${JSON.stringify(logged)}`);
     assert.ok(logged.some((line) => line.includes("Avenic project initialized")), `the run must say what it did: ${JSON.stringify(logged)}`);
     assert.ok(existsSync(path.join(projectRoot, ".agents", "runtime.json")), "the project config is on disk");
   });
@@ -141,7 +144,7 @@ test("avenic change adds an agent and switches history mode from the wizard", as
     const written = await config();
     assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex", "opencode"]);
     assert.equal(written.sessionInterop, "isolated");
-    assert.ok(logged.some((line) => line.includes("History: isolated")), JSON.stringify(logged));
+    assert.ok(logged.some((line) => /│ {2}Mode\s+isolated/.test(line)), JSON.stringify(logged));
     assert.ok(logged.some((line) => line.includes("Avenic project updated")), JSON.stringify(logged));
   });
 });

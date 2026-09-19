@@ -73,6 +73,17 @@ export function agentCursors(cursors, agentId) {
   return cursors.agents[agentId].files;
 }
 
+// Which canonical conversation a native session belongs to. The bookmark above
+// is keyed by the portable file that carried it; a shared-mode launch knows the
+// native session id it resumed and needs the canonical session that
+// conversation lives in, which is a different question. The mapping in the
+// canonical store is the authority; this is the constant-time copy of it.
+export function canonicalCursors(cursors, agentId) {
+  cursors.agents[agentId] ??= { files: {}, heads: {} };
+  cursors.agents[agentId].canonical ??= {};
+  return cursors.agents[agentId].canonical;
+}
+
 // Writing the project's sessions back into native storage is a launch step,
 // and native storage is put back the way it was when the run ends — so the
 // same files are written again and again with the same bytes. A restored file

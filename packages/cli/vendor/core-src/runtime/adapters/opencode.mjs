@@ -7,6 +7,7 @@ import { hashContent, listFiles, samePath, syncDirectory } from "../sessions.mjs
 import { spawnExecutableSync } from "../process.mjs";
 import { eventTimestamp, isConversationRole, nativeEventId } from "./canonical.mjs";
 import { createHash } from "node:crypto";
+import { PROJECTION_KIND, PROJECTION_SCHEMA_VERSION } from "../projection.mjs";
 
 export const agentId = "opencode";
 
@@ -269,6 +270,45 @@ export async function writeCanonical(projectRoot, canonical, options = {}) {
     throw new Error(`OpenCode import did not expose projected session ${nativeSessionId}`);
   }
   return { nativeSessionId, nativeRevision, diagnostics: projected.diagnostics, imported: true };
+}
+
+export function resumeArguments(nativeSessionId) {
+  return ["--session", nativeSessionId];
+}
+
+/**
+ * OpenCode's projection is its own import: the shared conversation becomes one
+ * of its sessions, and every later switch opens that session. Re-importing a
+ * grown conversation updates the messages Avenic already projected — their ids
+ * are derived from canonical event ids — instead of duplicating them, and a
+ * switch with nothing new costs no work at all because the mapping is current.
+ */
+export async function projectCanonical(projectRoot, { session, events, mapping = null }, options = {}) {
+  const result = await writeCanonical(projectRoot, { id: session.id, title: session.title, events }, {
+    ...options,
+    nativeSessionId: mapping?.nativeSessionId,
+    mapping,
+    canonicalRevision: options.canonicalRevision ?? null,
+  });
+  return {
+    kind: PROJECTION_KIND.native,
+    nativeSessionId: result.nativeSessionId,
+    injected: result.imported ? events.filter((event) => PROJECTABLE_ROLES.has(event.role)).length : 0,
+    materialized: !mapping,
+    diagnostics: result.diagnostics ?? [],
+    projection: {
+      schemaVersion: PROJECTION_SCHEMA_VERSION,
+      targetAgent: agentId,
+      nativeSessionId: result.nativeSessionId,
+      sessionId: session.id,
+      turns: [],
+      checkpoint: null,
+      lastEventId: events.at(-1)?.id ?? null,
+      hash: null,
+      counts: { events: events.length },
+    },
+    launch: { argumentsList: ["--session", result.nativeSessionId] },
+  };
 }
 
 export function readCanonical(projectRoot, nativeSessionId, options = {}) {

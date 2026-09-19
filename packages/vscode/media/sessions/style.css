@@ -1,0 +1,208 @@
+/* ===== Avenic Sessions —— 共享对话阅读器 =====
+   颜色只取 VS Code 注入的 --vscode-*（含 terminal.ansi* 终端色板），与 dashboard
+   同一套角色，也正是 CLI 调色板的角色：青（品牌）= 标题与标记、绿 = 成功/当前、
+   黄 = 警告/stale、红 = 错误、灰（descriptionForeground）= 次要信息。
+   角色差异靠颜色与粗细，不引入任何这个产品里不存在的配色。
+   排版铁律：竖直滚动，绝不横向滚动（换行 + overflow-x hidden）——终端里也不横着滚。 */
+
+html, body { height: 100%; }
+
+body {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-editor-font-family, ui-monospace, "Cascadia Mono", monospace);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: transparent;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+h1, h2, h3, p { margin: 0; font-size: inherit; font-weight: inherit; }
+
+/* ---------- 顶栏：AVENIC 提示符 + 刷新 ---------- */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0.35rem;
+  border-bottom: 1px solid var(--vscode-panel-border, rgb(128 128 128 / 0.3));
+}
+.topbar .brand { display: flex; align-items: center; gap: 0.35rem; min-width: 0; overflow: hidden; }
+.topbar h1 { font-size: 1rem; font-weight: 700; letter-spacing: 0.18em; color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.topbar .cursor {
+  display: inline-block;
+  width: 0.55em;
+  height: 1em;
+  background: var(--vscode-terminal-ansiCyan, var(--vscode-foreground));
+  animation: blink 1.1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+
+.icon-button {
+  padding: 0.1rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.icon-button:hover { border-color: var(--vscode-terminal-ansiCyan, var(--vscode-focusBorder)); color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.icon-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+/* 提示符行：$ avenic sessions show <id> —— 这一屏对应的那条命令 */
+.prompt-line {
+  padding: 0.35rem 0.75rem 0.45rem;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-line .dollar { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+.prompt-line .cmd { color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+
+/* ---------- 两栏：会话列表 + 对话 ----------
+   窄面板下改成上下两段（列表在上、对话在下），而不是把两栏各压成一条缝。 */
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 250px) minmax(0, 1fr);
+  gap: 0.6rem;
+  padding: 0 0.75rem 0.75rem;
+}
+.rail, .transcript {
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;   /* 竖直滚动是唯一的方向 */
+}
+.transcript {
+  border-left: 1px solid var(--vscode-panel-border, rgb(128 128 128 / 0.25));
+  padding-left: 0.7rem;
+  /* 文本可选中：读一段对话然后贴进别处是这个页面最常见的用法 */
+  user-select: text;
+}
+@media (max-width: 640px) {
+  .layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .rail { max-height: 32vh; }
+  .transcript { border-left: none; border-top: 1px solid var(--vscode-panel-border, rgb(128 128 128 / 0.25)); padding-left: 0; padding-top: 0.5rem; }
+}
+
+/* ---------- 标题与信息行（符号由 ::before 画，不进入可选文本） ---------- */
+.page-title { color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); font-weight: 700; overflow-wrap: anywhere; }
+.page-title::before { content: "◆  "; }
+.page-desc, .field, .note, .turn { overflow-wrap: anywhere; }
+.page-desc::before, .field::before, .turn::before { content: "│  "; color: var(--vscode-descriptionForeground); }
+.page-desc { color: var(--vscode-descriptionForeground); font-size: 0.82rem; }
+.section-title { margin-top: 0.7rem; color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); font-weight: 600; }
+.section-title::before { content: "◇  "; }
+.field { font-size: 0.85rem; }
+.field .field-label { display: inline-block; min-width: 10ch; color: var(--vscode-descriptionForeground); }
+.note { color: var(--vscode-descriptionForeground); font-size: 0.82rem; }
+.note::before { content: "│  ·  "; }
+.note.warn { color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground)); }
+.note.warn::before { content: "│  !  "; }
+.hint { color: var(--vscode-descriptionForeground); font-size: 0.8rem; }
+.empty { padding: 1.2rem 0; color: var(--vscode-descriptionForeground); }
+
+/* ---------- 会话列表（终端选择列表） ---------- */
+.list-head { display: flex; align-items: baseline; gap: 0.4rem; margin-bottom: 0.3rem; }
+.list-head .section-title { margin: 0; }
+.count {
+  padding: 0 0.35rem;
+  border: 1px solid var(--vscode-widget-border, rgb(128 128 128 / 0.4));
+  border-radius: 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.66rem;
+}
+.session-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.2rem 0.3rem;
+  border: none;
+  border-left: 2px solid transparent;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-row:hover { background: var(--vscode-list-hoverBackground, rgb(128 128 128 / 0.12)); }
+.session-row:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+/* 游标 ▸ 是「你正在读的这一条」，◉/○ 是「新启动会不会加入它」（与 CLI 的列表同义）。 */
+.session-row .cursor-mark { color: var(--vscode-descriptionForeground); }
+.session-row.selected { border-left-color: var(--vscode-terminal-ansiCyan, var(--vscode-focusBorder)); background: var(--vscode-list-activeSelectionBackground, rgb(128 128 128 / 0.16)); }
+.session-row.selected .cursor-mark { color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.session-row .active-mark { color: var(--vscode-descriptionForeground); }
+.session-row.active .active-mark { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+.session-row .row-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-row .row-id { grid-column: 3; color: var(--vscode-descriptionForeground); font-size: 0.74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-row .row-meta { grid-column: 3; color: var(--vscode-descriptionForeground); font-size: 0.74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 对话：一轮一块，工具行挂在轮下 ---------- */
+.turn { margin: 0.35rem 0; padding: 0.15rem 0 0.15rem 0; }
+/* 说话人左侧色条：人 = 绿（CLI 的 ok），代理 = 青（CLI 的 brand）。
+   一个对话里各代理共用同一个品牌色——CLI 也是这么画的，代理的身份由标签本身承担，
+   这里不新造一套「每个代理一个颜色」的配色。 */
+.turn.user { border-left: 2px solid var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder)); }
+.turn.agent { border-left: 2px solid var(--vscode-terminal-ansiCyan, var(--vscode-focusBorder)); }
+.turn-body { padding-left: 0.5rem; }
+.chip {
+  display: inline-block;
+  padding: 0 0.3rem;
+  border: 1px solid;
+  border-radius: 2px;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+.chip.you { border-color: var(--vscode-terminal-ansiGreen, var(--vscode-widget-border)); color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+.chip.agent { border-color: var(--vscode-terminal-ansiCyan, var(--vscode-widget-border)); color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.turn .at, .turn .model { margin-left: 0.4rem; color: var(--vscode-descriptionForeground); font-size: 0.74rem; }
+.turn-text {
+  margin: 0.15rem 0 0;
+  white-space: pre-wrap;      /* 保留换行，但不撑宽：配合 overflow-wrap 换行 */
+  overflow-wrap: anywhere;
+}
+.tool {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 状态词（current / stale）：与 `avenic sessions status` 一字不差地取 core 的判定。 */
+.state-current { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+.state-stale { color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground)); }
+.state-none { color: var(--vscode-descriptionForeground); }
+
+/* ---------- 按钮与错误态 ---------- */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-widget-border));
+  border-radius: 2px;
+  background: none;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  font-family: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.button:hover { border-color: var(--vscode-terminal-ansiCyan, var(--vscode-focusBorder)); color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+.state { display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 1.4rem 0.75rem; color: var(--vscode-descriptionForeground); }
+.state-error { color: var(--vscode-terminal-ansiRed, var(--vscode-errorForeground)); }
+.state-error .error-message { max-width: 100%; overflow-wrap: anywhere; }

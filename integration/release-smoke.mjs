@@ -192,7 +192,11 @@ async function main() {
   assert.equal(runtime.agents.claude.sessions, "project");
 
   const status = avenic(["status"], environment).stdout;
-  assert.match(status, /^History\s+shared$/m);
+  // `avenic status` is one page of blocks: the section is its own line and the
+  // values hang under it on the rails.
+  assert.match(status, /^◇\s+History$/m);
+  assert.match(status, /^│\s+Mode\s+shared$/m);
+  assert.match(status, /^◇\s+Agents$/m);
   assert.match(status, /Claude/);
   assert.match(status, /Codex/);
 
@@ -222,7 +226,10 @@ async function main() {
 
   const listed = avenic(["sessions", "list"], environment).stdout;
   assert.match(listed, new RegExp(`claude-${claudeSession}`));
-  assert.match(avenic(["sessions", "status"], environment).stdout, /claude cursor/);
+  // The status page names the agent's own session under the canonical one and
+  // says whether its cursor has caught up with the shared history.
+  const sessionStatus = avenic(["sessions", "status"], environment).stdout;
+  assert.match(sessionStatus, new RegExp(`^│\\s+Claude\\s+${claudeSession}\\s+current`, "m"), sessionStatus);
 
   // Isolated: each agent keeps its own history, and the shared workspace is
   // left alone until the user asks for it.

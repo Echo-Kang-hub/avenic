@@ -2,11 +2,13 @@ import * as vscode from "vscode";
 import { registerAgentsCommands } from "./commands/agents-commands.ts";
 import { registerCatalogCommands } from "./commands/catalog-commands.ts";
 import { registerModelCommands } from "./commands/model-commands.ts";
+import { registerSessionsCommands } from "./commands/sessions-commands.ts";
 import { registerSkillsCommands } from "./commands/skills-commands.ts";
 import { projectRootForActiveEditor, rememberedProjectRoot, resolveProjectRoot } from "./project.ts";
 import { pickProjectRoot } from "./ui/flows.ts";
 import { MutationQueue } from "./ui/mutation-queue.ts";
 import { OverviewProvider } from "./dashboard/overview.ts";
+import { SessionsPanel } from "./dashboard/sessions-panel.ts";
 import { AgentsViewProvider } from "./views/agents-view.ts";
 import { CatalogViewProvider } from "./views/catalog-view.ts";
 import { SkillsViewProvider } from "./views/skills-view.ts";
@@ -44,6 +46,8 @@ export function activate(context: vscode.ExtensionContext): void {
       invalidateSkillsSnapshot();
       invalidateAgentStatusCache();
       agents.refresh(); catalog.refresh(); skills.refresh(); overview.refresh();
+      // 启动/导入会往共享历史里追加事件：会话页开着就重读，闭着则什么也不做。
+      SessionsPanel.refreshCurrent();
     });
   };
   // 同步根解析：单根直接返回；多根/null 时经 T6 pickProjectRoot 引导用户选定（workspaceFolders 实时读取，避免激活期闭包过期）
@@ -65,6 +69,8 @@ export function activate(context: vscode.ExtensionContext): void {
   registerSkillsCommands(context, { queue, resolveRoot, refresh });
   // 模型面板的命令层：root 是同步的（面板每次刷新都取一次），resolveRoot 是异步的（没项目时引导用户选）
   registerModelCommands(context, { queue, root, resolveRoot, refresh });
+  // 会话页只读共享历史（不写任何东西），因此不进队列：它只需要一个项目根。
+  registerSessionsCommands(context, { root });
   markPerformance("extension.activate", activationStartedAt);
 }
 

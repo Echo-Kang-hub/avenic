@@ -92,11 +92,18 @@ async function verifyInstall(archive, environment) {
   const imported = runLauncher(launcher, ["codex", "sessions", "import"], projectRoot, fallback.environment);
   assert.match(imported.stdout, /imported/);
   const continued = runLauncher(launcher, ["sessions", "continue", "codex-child", "--agent", "codex"], projectRoot, fallback.environment);
-  assert.match(continued.stdout, /could not be resumed; starting a new native thread/);
+  assert.match(continued.stdout, /session could not be opened; rebuilding it from shared canonical history/);
   const calls = (await readFile(fallback.log, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
+  // A Codex that refuses `resume` is not the end of the conversation: the
+  // installed CLI rebuilds the thread through Codex's own app-server, and only
+  // when that cannot be spoken to either does it hand over the transcript —
+  // the order is the product's, so it is asserted here in that order.
   assert.deepEqual(calls[0].slice(0, 2), ["resume", "parent"]);
-  assert.match(calls[1][0], /- user: A/);
-  assert.match(calls[1][0], /- assistant: B/);
+  assert.deepEqual(calls[1].slice(0, 2), ["app-server", "--listen"], "a session Codex will not open is rebuilt through its own interface");
+  assert.match(calls[2][0], /# Avenic continuation \[codex\]/);
+  assert.match(calls[2][0], /- user: A/);
+  assert.match(calls[2][0], /- assistant: B/);
+  assert.equal(continued.status, 0);
   const deinitialized = runLauncher(launcher, ["codex", "deinit", "--purge"], projectRoot, environment);
   assert.match(deinitialized.stdout, /Runtime   Removed/);
   assert.match(deinitialized.stdout, /Data      Purged/);

@@ -15,33 +15,143 @@ import {
   snapshotInto,
   syncDirectory,
 } from "../sessions.mjs";
-import { eventTimestamp, isConversationRole, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
+import {
+  canonicalBlocks,
+  eventTimestamp,
+  isConversationRole,
+  nativeEventId,
+  parseJsonLines,
+} from "./canonical.mjs";
+import { isInjectedRecord, openCodexAppServer, startCodexThread, injectCodexItems } from "../codex-app-server.mjs";
+import { buildProjection, projectionItems, NATIVE_BUDGET, PROJECTION_KIND } from "../projection.mjs";
 
 export const agentId = "codex";
+
+// Reasoning records carry provider-encrypted blobs, and agent_message records
+// are Codex's own multi-agent chatter; neither is part of the conversation the
+// user had, so neither belongs in the shared history.
+const TOOL_RECORDS = new Set(["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"]);
 
 export function toCanonical(content, options = {}) {
   const records = parseJsonLines(content, agentId);
   const meta = records.find((record) => record.type === "session_meta");
   const nativeSessionId = options.nativeSessionId ?? meta?.payload?.id ?? meta?.payload?.session_id ?? "unknown";
   const events = records.flatMap((record, index) => {
-    if (record.type !== "response_item" || record.payload?.type !== "message") return [];
-    const role = record.payload.role;
+    if (record.type !== "response_item") return [];
+    const payload = record.payload;
+    // Avenic's own projection is written into the rollout by Codex itself; a
+    // capture must not read it back as work the agent did.
+    if (isInjectedRecord(record)) return [];
+    const isTool = TOOL_RECORDS.has(payload?.type);
+    if (payload?.type !== "message" && !isTool) return [];
+    const role = isTool ? "tool" : payload.role;
     if (!isConversationRole(role)) return [];
+    const attached = isTool
+      ? [{ type: payload.type, name: payload.name, input: payload.input ?? payload.arguments, output: payload.output }]
+      : payload.content;
+    const blocks = canonicalBlocks(attached);
+    if (blocks.length === 0) return [];
     return [{
-      id: nativeEventId(agentId, nativeSessionId, record.payload.id, index, record),
+      id: nativeEventId(agentId, nativeSessionId, payload.id, index, record),
+      agent: agentId,
       role,
       createdAt: eventTimestamp(record.timestamp),
-      content: textBlocks(record.payload.content),
-      model: record.payload.model,
+      content: blocks,
+      model: payload.model,
       provider: meta?.payload?.model_provider,
-      extensions: { codex: { record, payload: record.payload } },
+      extensions: { codex: { record, payload } },
     }];
   });
   return { nativeSessionId, events, revision: options.revision ?? null };
 }
 
-export function fromCanonical(events) {
-  return readonlyProjection(events);
+/**
+ * The interactive command that opens one Codex thread. A mapping that is
+ * already current needs nothing else, which is what keeps a switch with no new
+ * history from starting an app server at all.
+ */
+export function resumeArguments(nativeSessionId) {
+  return ["resume", nativeSessionId];
+}
+
+/**
+ * Give a Codex thread the turns it does not have yet.
+ *
+ * This is the native path, not a briefing: the turns are appended to the
+ * thread's own model-visible history through the app server's documented
+ * `thread/inject_items`, so the next turn continues the shared conversation
+ * instead of reading a summary of it. `codex resume <id>` then opens it as an
+ * ordinary session.
+ *
+ * The delta rule is the whole point of the mapping: turns that already live in
+ * the thread being resumed are left out, so the tenth switch costs the tenth
+ * delta, not the whole conversation.
+ */
+export async function projectCanonical(projectRoot, { session, events, mapping = null, intent = "resume" }, options = {}) {
+  const stored = mapping?.nativeSessionId ?? null;
+  // A v2 sub-agent thread cannot be resumed on its own; the parent is the
+  // thread that continues it. The mapping keeps naming the session Avenic saw,
+  // and both are excluded from the delta: the target already produced those
+  // turns either way.
+  const mapped = stored ? await resolveResumableSession(projectRoot, stored, options) : null;
+  const owned = [...new Set([stored, mapped].filter(Boolean))];
+  const project = (nativeSessionIds) => buildProjection({
+    session,
+    events,
+    targetAgent: agentId,
+    nativeSessionId: nativeSessionIds,
+    budget: NATIVE_BUDGET,
+  });
+  if (mapped) {
+    const current = project(owned);
+    if (current.turns.length === 0) {
+      // Nothing new since the last switch: the thread is already up to date and
+      // no server has to be started at all.
+      return {
+        kind: PROJECTION_KIND.native,
+        nativeSessionId: mapped,
+        injected: 0,
+        materialized: false,
+        projection: current,
+        launch: { argumentsList: ["resume", mapped] },
+      };
+    }
+  }
+  const client = await openCodexAppServer({ command: options.command, cwd: projectRoot, environment: options.environment, spawn: options.spawn });
+  try {
+    let threadId = mapped;
+    let materialized = false;
+    if (threadId) {
+      try {
+        await client.call("thread/resume", { threadId });
+      } catch {
+        // The mapping points at a thread that is gone. Canonical history is
+        // unaffected; the target is rehydrated from it below.
+        threadId = null;
+      }
+    }
+    if (!threadId) {
+      threadId = await startCodexThread(client, projectRoot);
+      materialized = true;
+    }
+    // A thread that was just created holds nothing, so its projection is the
+    // whole conversation; a resumed one only receives what it is missing.
+    const projection = materialized ? project(null) : project(owned);
+    const injected = projection.turns.length
+      ? await injectCodexItems(client, threadId, projectionItems(projection))
+      : 0;
+    return {
+      kind: PROJECTION_KIND.native,
+      nativeSessionId: threadId,
+      injected,
+      materialized,
+      intent,
+      projection,
+      launch: { argumentsList: ["resume", threadId] },
+    };
+  } finally {
+    await client.close();
+  }
 }
 
 // Reads one mapped rollout. No private files are written by the continuation
@@ -74,19 +184,35 @@ export async function discoverNativeSession(projectRoot, options = {}) {
   return eligible[0].id;
 }
 
+// A rollout's identity is its file name, so one thread is found by suffix
+// rather than by reading the head of every session on the machine.
+async function rolloutMetaById(root, nativeSessionId, cursors) {
+  const suffix = `-${nativeSessionId}.jsonl`;
+  const basename = `${nativeSessionId}.jsonl`;
+  for (const relative of await listFiles(root)) {
+    if (!relative.endsWith(suffix) && path.basename(relative) !== basename) continue;
+    return rolloutMeta(path.join(root, relative), cursors);
+  }
+  return null;
+}
+
 // Codex multi-agent v2 persists child rollouts with a parent_thread_id, but
 // the app-server cannot resume an unloaded child directly. Keep the canonical
 // mapping stable while resolving the native resume target to its parent.
+//
+// This is asked on every shared switch, so it reads the project's own portable
+// copies first (their heads are already cached) and only falls back to the
+// machine-wide native tree for a thread this project has never captured.
 export async function resolveResumableSession(projectRoot, nativeSessionId, options = {}) {
-  const { nativeSessions } = locations(projectRoot, options.environment);
-  const matches = await matchingRollouts(nativeSessions, projectRoot);
-  const byId = new Map(matches.filter((item) => item.id).map((item) => [item.id, item]));
+  const { nativeSessions, portable } = locations(projectRoot, options.environment);
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
   const seen = new Set([nativeSessionId]);
   let resumable = nativeSessionId;
   while (true) {
-    const rollout = byId.get(resumable);
-    const parent = rollout?.parentThreadId;
-    if (!parent || rollout.multiAgentVersion === undefined) return resumable;
+    const meta = await rolloutMetaById(path.join(portable, "sessions"), resumable, cursors)
+      ?? await rolloutMetaById(nativeSessions, resumable, cursors);
+    const parent = meta?.parentThreadId;
+    if (!parent || meta.multiAgentVersion === undefined) return resumable;
     // A corrupt/cyclic native rollout must not hang or change the stored
     // mapping. The official CLI can still give its normal diagnostic.
     if (seen.has(parent)) return nativeSessionId;

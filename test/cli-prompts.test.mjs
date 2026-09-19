@@ -16,7 +16,6 @@ process.env.NO_COLOR = "1";
 
 const {
   banner,
-  boxLines,
   cancel,
   colorEnabled,
   columns,
@@ -27,6 +26,7 @@ const {
   intro,
   isInteractive,
   multiSelect,
+  note,
   outro,
   paletteFor,
   progress,
@@ -34,7 +34,6 @@ const {
   section,
   singleSelect,
   success,
-  summary,
   table,
   text,
   truncate,
@@ -207,6 +206,43 @@ test("the printed line vocabulary is one line per meaning", () => {
   ].join("\n"));
 });
 
+// Every test above injects a stream, which is exactly why this one does not:
+// product code calls these emitters with the real terminal's stdout and nothing
+// else, so an emitter whose stream has no default works in every test and
+// throws `Cannot read properties of undefined` the first time a user runs it.
+test("the printed emitters work with no stream at all", () => {
+  const written = [];
+  const real = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    written.push(String(chunk));
+    return true;
+  };
+  try {
+    banner(undefined, { subtitle: "shared history" });
+    intro(undefined, "Install Skills");
+    section(undefined, "Agents");
+    field(undefined, "Mode", "shared");
+    note(undefined, "a note");
+    success(undefined, "Done");
+    warning(undefined, "careful");
+    error(undefined, "boom");
+    outro(undefined, "All good");
+    cancel(undefined);
+    table(undefined, ["Agent"], [["Claude Code"]]);
+  } finally {
+    process.stdout.write = real;
+  }
+  const text = written.join("");
+  assert.match(text, /█▀▀█/, "the banner draws the wordmark");
+  assert.match(text, /◆ {2}Install Skills/);
+  assert.match(text, /◇ {2}Agents/);
+  assert.match(text, /│ {2}Mode {6}shared/);
+  assert.match(text, /│ {2}· {2}a note/);
+  assert.match(text, /✓ {2}Done/);
+  assert.match(text, /✖ {2}boom/);
+  assert.match(text, /Claude Code/);
+});
+
 test("table aligns columns and stays inside the terminal", () => {
   const stdout = fakeStdout({ columns: 48 });
   table(stdout, ["Agent", "CLI", "History"], [
@@ -240,19 +276,6 @@ test("the banner is a readable three-line wordmark, not a control sequence", () 
   const narrow = fakeStdout({ columns: 30 });
   banner(narrow, { subtitle: "shared history · skills · sessions · models · the hub" });
   assert.equal(narrow.text().trimEnd().split("\n").length, 3);
-});
-
-test("boxLines pads CJK by display width, not by character count", () => {
-  assert.deepEqual(boxLines(["one", "two-three"]), [
-    "╭─────────────╮",
-    "│  one        │",
-    "│  two-three  │",
-    "╰─────────────╯",
-  ]);
-  const cjk = boxLines(["✓  OK", "  ├─ 中文 Skills"]);
-  const widths = cjk.map((line) => displayWidth(line));
-  assert.equal(widths[0], widths[1]);
-  assert.equal(widths[0], widths[2]);
 });
 
 test("truncate cuts by display width and marks what it cut", () => {
@@ -515,19 +538,22 @@ test("interactive install: source → packs → Install to → scope → confirm
       await waitFor("◆  Scope", stdout);
       keys(stdin, "\r"); // Project（默认）
       await waitFor("Install 2 Packs?", stdout);
-      assert.match(stdout.text(), /├─ Skills: 3 — alpha, beta, gamma/);
-      assert.match(stdout.text(), /└─ Scope: Project/);
+      // 落定的摘要与 status 的分节同形：◇ 标题 + │ 行，不再是一个专属的框。
+      assert.match(stdout.text(), /◇  Ready to install/);
+      assert.match(stdout.text(), /│  Skills {4}3 · alpha, beta, gamma/);
+      assert.match(stdout.text(), /│  Scope {5}Project/);
       keys(stdin, "\r"); // Yes
       await waitFor("Done!", stdout, 12000);
       assert.equal(await run, undefined);
       const text = stdout.text();
       assert.match(text, /◆  Add Skills/);
       assert.match(text, /✓  Installed/);
-      assert.match(text, /╭────────/);
-      assert.match(text, /├─ Common/);
-      assert.match(text, /└─ Development/);
+      assert.match(text, /◇  3 Skills installed/);
+      assert.match(text, /│  ·  Common \(1 Skill\)/);
+      assert.match(text, /│  ·  Development \(3 Skills\)/); // 含随包一起装的 common
       assert.match(text, /✓  Done! Installed 2 Packs/);
       assert.match(text, /◇  Select Packs \(2 selected\)/);
+      assert.doesNotMatch(text, /╭|╰/, "结果不再是那个只在 Skills 里存在的框");
       // 交互安装的是项目作用域：Skills 落盘于项目 .agents（universal 目标），锁文件在项目根
       assert.ok(existsSync(path.join(projectRoot, ".agents", "skills", "alpha")), "alpha on disk");
       assert.ok(existsSync(path.join(projectRoot, ".agents", "skills", "beta")), "beta on disk");
@@ -570,7 +596,7 @@ test("interactive install: source → packs → Install to → scope → confirm
   });
 });
 
-test("the Skills menu offers every action and Back changes nothing", async () => {
+test("the Skills menu offers every action, and Escape leaves without doing anything", async () => {
   await withTempDirectory("avenic-menu-", async (projectRoot) => {
     await withTempDirectory("avenic-catalog-", async (catalogRoot) => {
       await createCatalogFixture(catalogRoot);
@@ -587,18 +613,50 @@ test("the Skills menu offers every action and Back changes nothing", async () =>
         "Remove skills",
         "Sync SkillsHub",
         "Import from repository",
-        "Back",
       ]) {
         assert.match(menu, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       }
       assert.match(menu, /█▀▀█/); // 菜单开在 AVENIC 的字标下面
-      keys(stdin, "\x1b"); // Esc = Back
+      assert.match(menu, /│  Add, update, or remove Skills in the project scope/);
+      // 这一帧只列可以做的事：离开是 Esc，不是列表里的一行。
+      assert.doesNotMatch(menu, /○\s+(Back|cancel|Cancel)\b/);
+      assert.match(menu, /└  .*esc cancel/);
+      keys(stdin, "\x1b"); // Esc 离开
       await run;
-      assert.match(stdout.text(), /✖  back/);
-      assert.match(stdout.text(), /✓  Nothing changed/);
-      // Back 之后什么都没落盘
+      // 一次中止只有一行 ✖：帧的取消行说了后果，菜单不再补一条 ✓
+      const text = stdout.text();
+      assert.match(text, /◇  Skills/);
+      assert.match(text, /✖  Nothing changed/);
+      assert.equal(text.match(/✖/g).length, 1, "取消只印一行");
+      // 离开之后什么都没落盘
       assert.ok(!existsSync(path.join(projectRoot, ".avenic.lock.json")), "no lock");
       assert.ok(!existsSync(path.join(projectRoot, ".agents", "skills")), "no skills");
+    });
+  });
+});
+
+test("an Add flow that selects nothing does not install, and cancels in one line", async () => {
+  await withTempDirectory("avenic-empty-", async (projectRoot) => {
+    await withTempDirectory("avenic-catalog-", async (catalogRoot) => {
+      await createCatalogFixture(catalogRoot);
+      const environment = { AVENIC_CATALOG_SPEC: catalogRoot, AVENIC_STATE_DIR: path.join(projectRoot, ".avenic-state") };
+      const stdin = new FakeTTY();
+      const stdout = fakeStdout();
+      const run = dispatchSkills(["install"], { cwd: projectRoot, environment, prompts: { stdin, stdout }, io: { log() {} } });
+      await waitFor("◆  Select Packs", stdout);
+      keys(stdin, " ", "\r"); // 取消勾选（可搜索列表里 n 是过滤词）后回车：既不继续，也不取消
+      assert.match(stdout.text(), /Select at least one Pack/);
+      assert.doesNotMatch(stdout.text(), /◆  Install to/); // 还停在 Packs 这一帧
+      keys(stdin, " ", "\r"); // 选回来，继续往下走
+      await waitFor("◆  Install to", stdout);
+      keys(stdin, "\x1b"); // 在下一步取消整条流程
+      await run;
+      const text = stdout.text();
+      assert.match(text, /✖  Nothing installed/);
+      assert.equal(text.match(/✖/g).length, 1, "整条流程只留一行 ✖");
+      assert.match(text, /◇  Install to/);
+      assert.ok(!existsSync(path.join(projectRoot, ".avenic.lock.json")), "取消不落盘");
+      assert.ok(!existsSync(path.join(projectRoot, ".agents", "skills")), "取消不落盘");
     });
   });
 });
@@ -625,10 +683,12 @@ test("Add from a repository discovers, lists, and installs the picked Skills", a
       await waitFor("◆  Scope", stdout);
       keys(stdin, "\r");
       await waitFor("Install 1 Skill?", stdout);
-      assert.match(stdout.text(), /├─ Skills: 1 — beta/); // 摘要说的是这一次要装的东西
+      assert.match(stdout.text(), /│  Skills {4}1 · beta/); // 摘要说的是这一次要装的东西
       keys(stdin, "\r"); // Yes
       await waitFor("Done!", stdout, 12000);
       await run;
+      assert.match(stdout.text(), /◇  1 Skill installed/);
+      assert.match(stdout.text(), /│  ·  beta/);
       assert.match(stdout.text(), /✓  Done! Installed 1 Skill/);
       assert.ok(existsSync(path.join(projectRoot, ".agents", "skills", "beta")), "beta on disk");
       assert.ok(!existsSync(path.join(projectRoot, ".agents", "skills", "alpha")), "alpha not taken");

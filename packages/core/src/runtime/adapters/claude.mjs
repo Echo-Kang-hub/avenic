@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { agentSessionsRoot } from "../config.mjs";
+import { agentSessionsRoot, runtimePaths } from "../config.mjs";
 import { cachedFileHead, knownDirectories, loadCursors, rememberDirectories, saveCursors } from "../cursors.mjs";
 import {
   hashContent,
@@ -15,7 +16,8 @@ import {
   snapshotInto,
   syncDirectory,
 } from "../sessions.mjs";
-import { eventTimestamp, isConversationRole, nativeEventId, parseJsonLines, readonlyProjection, textBlocks } from "./canonical.mjs";
+import { canonicalBlocks, eventTimestamp, isConversationRole, nativeEventId, parseJsonLines } from "./canonical.mjs";
+import { BRIEFING_BUDGET, PROJECTION_KIND, buildProjection, renderBriefing } from "../projection.mjs";
 
 export const agentId = "claude";
 
@@ -28,9 +30,10 @@ export function toCanonical(content, options = {}) {
     if (!isConversationRole(role)) return [];
     return [{
       id: nativeEventId(agentId, nativeSessionId, record.uuid, index, record),
+      agent: agentId,
       role,
       createdAt: eventTimestamp(record.timestamp),
-      content: textBlocks(record.message.content),
+      content: canonicalBlocks(record.message.content),
       model: record.message.model,
       provider: "anthropic",
       extensions: { claude: { record, message: record.message } },
@@ -39,8 +42,82 @@ export function toCanonical(content, options = {}) {
   return { nativeSessionId, events, diagnostics: parsed.diagnostics, revision: options.revision ?? null };
 }
 
-export function fromCanonical(events) {
-  return readonlyProjection(events);
+// Claude Code has no supported way to append to a transcript, and inventing one
+// by writing its private session files is exactly the kind of handoff a switch
+// is supposed to avoid. What it does support is resuming a session with context
+// appended to the system prompt, which is where the shared turns go: they reach
+// the model in order, they are not shown as the user's own words, and the
+// session itself stays a normal Claude session.
+//
+// The session id is derived from the canonical session, so the mapping is
+// stable from the first launch and the same id can be re-created if the user
+// deletes the transcript.
+// The shared turns reach Claude in the launch that carries them, not in the
+// session: `--system-prompt-snapshot off` keeps them out of the transcript, so
+// every switch re-renders the delta instead of assuming the last one is still
+// there. The mapping is still what says which native session to resume.
+export const projectionIsDurable = false;
+
+export function resumeArguments(nativeSessionId) {
+  return ["--resume", nativeSessionId];
+}
+
+// The id this adapter would give a session it has never projected. A fallback
+// launch (no projection available) still has to name a session, and naming the
+// same one keeps the mapping stable whichever path ran.
+export function nativeSessionIdFor(canonicalSessionId) {
+  return claudeSessionId(canonicalSessionId);
+}
+
+export function claudeSessionId(canonicalSessionId) {
+  const hex = createHash("sha256").update(`avenic:${canonicalSessionId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const value = hex.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
+export async function projectCanonical(projectRoot, { session, events, mapping = null }, options = {}) {
+  const nativeSessionId = mapping?.nativeSessionId ?? claudeSessionId(session?.id ?? "session");
+  const projection = buildProjection({ session, events, targetAgent: agentId, nativeSessionId, budget: BRIEFING_BUDGET });
+  const briefing = projection.turns.length > 0 || projection.checkpoint ? renderBriefing(projection) : null;
+  const argumentsList = mapping
+    ? ["--resume", nativeSessionId]
+    : ["--session-id", nativeSessionId];
+  if (briefing) {
+    // The briefing goes in as a file, not as an argument. On Windows the
+    // official CLI is reached through a .cmd shim, and cmd.exe ends the command
+    // at the first newline inside a quoted argument: an inlined briefing
+    // arrives as its first line and nothing else. A path survives that, and it
+    // survives the command-line length limit a long conversation would hit.
+    const file = await writeBriefingFile(projectRoot, session?.id ?? "session", briefing);
+    // Without this the first briefing would be recorded and replayed on every
+    // later resume, so a delta would never replace the one before it.
+    argumentsList.push("--append-system-prompt-file", file, "--system-prompt-snapshot", "off");
+  }
+  return {
+    kind: PROJECTION_KIND.briefing,
+    nativeSessionId,
+    injected: projection.turns.length,
+    materialized: !mapping,
+    projection,
+    briefing,
+    launch: { argumentsList },
+  };
+}
+
+// One deterministic file per canonical session, rewritten only when its content
+// moved: a switch that carries no new turns must not touch the disk, and a
+// briefing left behind stays inspectable next to the session it describes.
+async function writeBriefingFile(projectRoot, canonicalSessionId, briefing) {
+  const directory = path.join(runtimePaths(projectRoot).localRoot, agentId, "briefing");
+  const file = path.join(directory, `${canonicalSessionId}.md`);
+  const existing = existsSync(file) ? await readFile(file, "utf8") : null;
+  if (existing !== `${briefing}\n`) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(file, `${briefing}\n`, "utf8");
+  }
+  return file;
 }
 
 // Reads one known native session only. It never consults configuration or

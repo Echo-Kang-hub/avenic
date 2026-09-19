@@ -9,6 +9,8 @@ export const ALLOWED_COMMANDS = [
   "agents.sessionsImport",
   // 模型配置面板（§9.1 的第三个入口）。不需要项目上下文：库是设备级的。
   "model.open",
+  // 会话页：读共享历史的那份对话（与 `avenic sessions show` 同一个模型）。
+  "sessions.open",
 ] as const;
 
 export type DashboardCommand = (typeof ALLOWED_COMMANDS)[number];

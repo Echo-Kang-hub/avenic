@@ -287,14 +287,15 @@ Pack 定义示例（`packs/development.json`）：
 
 ```
 ◇  Skills
-│  ●  Add skills                 SkillsHub Packs or a Git repository
-│  ○  Installed skills           what this scope holds now
-│  ○  Update skills              re-install from the latest Hub revision
-│  ○  Remove skills              Packs, direct Skills, or everything
-│  ○  Sync SkillsHub             fetch the Hub with your git credentials
-│  ○  Import from repository     clone, then pick Skills
-│  ○  Back
+│  ▸ ◉  Add skills   SkillsHub Packs or a Git repository
+│    ○  Installed skills   what this scope holds now
+│    ○  Update skills   re-install from the latest Hub revision
+│    ○  Remove skills   Packs, direct Skills, or everything
+│    ○  Sync SkillsHub   fetch the Hub with your git credentials
+│    ○  Import from repository   clone, then pick Skills
 ```
+
+`▸` 是光标，`◉`/`○` 是选中状态；箭头或 `j`/`k` 移动，回车确认，`Esc` 退出——菜单里没有 Back 行，退出菜单永远只有 Esc 一个说法。
 
 `Add skills` 与 `Import from repository` 是同一个流程的两个来源，步骤固定为：来源 → 发现（`✓  Found 14 skills`）→ 多选 → `Install to` → `Scope` → 摘要 → 确认。带搜索的多选对长清单按输入即时过滤，`Ctrl+A` 全选。
 
@@ -334,7 +335,7 @@ avenic hub sync                     # 拉取或更新缓存（~/.config/avenic/c
 
 每次安装把 Hub commit 写入项目锁 `.avenic.lock.json`，跨设备可复现。
 
-Hub 内容树是**缓存优先**的：展开、浏览、`avenic skills tree` 都只读本地缓存，不会自动联网。只有显式执行 `avenic hub add` 或 `avenic hub sync` 才会访问网络——缓存未命中时 `git clone`，已缓存时 `git fetch` 后更新，成功后打印 `Synced · <short sha> · <时间>`。认证完全交给本机 git（SSH、credential helper、`gh`、git config 里的 PAT）；Avenic 不建立自己的 GitHub token 体系。
+Hub 内容树是**缓存优先**的：展开、浏览、`avenic skills tree` 都只读本地缓存，不会自动联网；缓存还没同步过时它会直接告诉你先运行 `avenic hub sync`，而不是替你去联网。只有显式执行 `avenic hub add` 或 `avenic hub sync` 才会访问网络——缓存未命中时 `git clone`，已缓存时 `git fetch` 后更新，成功后打印 `Synced · <short sha> · <时间>`。安装同样先看缓存：锁文件钉住的修订如果已经在本机，就不再去拉一次（同一份内容，跨设备可复现）。认证完全交给本机 git（SSH、credential helper、`gh`、git config 里的 PAT）；Avenic 不建立自己的 GitHub token 体系。
 
 > 默认 Hub 为维护者提供的示例；使用前请通过 `avenic hub add <owner/repo>` 指向自己的 Hub。
 

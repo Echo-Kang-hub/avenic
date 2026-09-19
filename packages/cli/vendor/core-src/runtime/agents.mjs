@@ -1,7 +1,7 @@
 import process from "node:process";
 import path from "node:path";
 import { existsSync, realpathSync } from "node:fs";
-import { spawnExecutableSync } from "./process.mjs";
+import { spawnExecutableSync, WINDOWS_SHIM_EXTENSIONS } from "./process.mjs";
 
 export const AGENTS = {
   claude: {
@@ -97,7 +97,9 @@ function pathSeparator(platform) {
 }
 
 function executableExtensions(platform) {
-  return platform === "win32" ? [".exe", ".cmd", ".bat", ".ps1", ""] : [""];
+  // Same list the launcher resolves with, so "found" and "started" can never
+  // disagree about which file an agent is.
+  return platform === "win32" ? WINDOWS_SHIM_EXTENSIONS : [""];
 }
 
 function isPathLike(value, api) {

@@ -3,7 +3,7 @@
   "displayName": "Avenic Agent Manager",
   "description": "管理 Avenic Agent 运行时与 Skills 的图形界面",
   "publisher": "EchoKang",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "license": "MIT",
   "icon": "media/icon.png",
@@ -107,6 +107,12 @@
         "command": "avenic.agents.sessionsWriteback",
         "title": "Avenic: 写回会话",
         "category": "Avenic"
+      },
+      {
+        "command": "avenic.sessions.open",
+        "title": "Avenic: Sessions",
+        "category": "Avenic",
+        "icon": "$(history)"
       },
       {
         "command": "avenic.catalog.add",
@@ -453,6 +459,11 @@
           "command": "avenic.model.open",
           "when": "view == avenic.agents",
           "group": "navigation"
+        },
+        {
+          "command": "avenic.sessions.open",
+          "when": "view == avenic.agents",
+          "group": "navigation"
         }
       ],
       "commandPalette": [
@@ -506,6 +517,9 @@
         },
         {
           "command": "avenic.model.open"
+        },
+        {
+          "command": "avenic.sessions.open"
         }
       ]
     }

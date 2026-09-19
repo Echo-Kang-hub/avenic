@@ -44,11 +44,19 @@ function describe(diagnostic) {
  * Turn capture diagnostics into deduplicated lines for one command.
  * Repeating the same unreadable record on every pass is noise, and the same
  * source at the same revision cannot say anything new.
+ *
+ * `missing-root` is held back unless the caller asks for it: an agent nobody
+ * has run on this machine has no native session root, which is the normal state
+ * of a fresh install and not something to announce every time a person lists
+ * their sessions. The commands that were explicitly asked to import history
+ * pass `missingRoots: true`, because there the answer "nothing was found, and
+ * here is where I looked" is the answer.
  */
-export function formatSessionDiagnostics(diagnostics = []) {
+export function formatSessionDiagnostics(diagnostics = [], { missingRoots = false } = {}) {
   const warnings = new Set();
   const notes = new Set();
   for (const diagnostic of diagnostics ?? []) {
+    if (!missingRoots && diagnostic?.kind === "missing-root") continue;
     const { level, text } = describe(diagnostic);
     if (!text) continue;
     (level === "warning" ? warnings : notes).add(text);

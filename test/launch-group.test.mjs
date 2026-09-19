@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { getSessionAdapter } from "../packages/core/src/runtime/adapters/index.mjs";
 import { finishLaunch, joinLaunchGroup } from "../packages/core/src/runtime/session-interop.mjs";
-import { sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
+import { launchFinished, sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
 import { withClaudeProject } from "./helpers/session-fixture.mjs";
 
 // Three hosts run the same launch: the CLI's foreground `avenic claude`, the
@@ -111,5 +111,54 @@ test("a group that died last run is salvaged into the project before the next sn
 
     assert.equal(existsSync(portableFile(lost)), true, "the dead run's session must reach the project");
     assert.deepEqual(await nativeSnapshot(), before, "the dead run's session must not survive in native storage");
+  });
+});
+
+// A killed launch leaves a watch behind, and that watch decides what to do by
+// reading whether the launch's work is finished. Two processes capturing the
+// same tree at once cost far more than either one alone, so the launch that
+// takes an interrupted group over has to say so in the place the watch reads.
+test("the launch that takes over an interrupted group finishes what the dead one owed", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, createUnmappedSession }) => {
+    const adapter = getSessionAdapter("claude");
+    const stateDir = sessionLeasePath("claude", projectRoot);
+    const dead = `2147483647-${Date.now()}-0`;
+    const aged = `2147483646-${Date.now() - 11 * 60 * 1000}-0`;
+    await mkdir(path.join(stateDir, "launch", dead), { recursive: true });
+    await mkdir(path.join(stateDir, "launch", aged), { recursive: true });
+    await adapter.snapshotNative(projectRoot, path.join(stateDir, "snapshot"), { environment });
+    await mkdir(path.join(stateDir, "pids"), { recursive: true });
+    await writeFile(path.join(stateDir, "pids", dead), "");
+    await writeFile(path.join(stateDir, "snapshot.ok"), "");
+    await createUnmappedSession(3);
+    assert.equal(launchFinished("claude", projectRoot, dead), false, "a killed launch starts out unfinished");
+
+    const group = await joinLaunchGroup(projectRoot, "claude", { environment });
+
+    assert.equal(
+      launchFinished("claude", projectRoot, dead),
+      true,
+      "recovering the group is the finish the dead launch was owed, and its watch must not repeat it",
+    );
+    assert.equal(
+      existsSync(path.join(stateDir, "launch", aged)),
+      false,
+      "a record no watch can still be waiting on is dropped rather than adopted",
+    );
+    await finishLaunch(projectRoot, "claude", { environment, member: group.member });
+  });
+});
+
+test("a launch record whose owner is still running is left alone", async () => {
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    const stateDir = sessionLeasePath("claude", projectRoot);
+    const running = `${process.pid}-${Date.now()}-1`;
+    await mkdir(path.join(stateDir, "launch", running), { recursive: true });
+    await writeFile(path.join(stateDir, "snapshot.ok"), "");
+
+    const group = await joinLaunchGroup(projectRoot, "claude", { environment });
+
+    assert.equal(launchFinished("claude", projectRoot, running), false, "a watch for a live launch still has something to watch");
+    await finishLaunch(projectRoot, "claude", { environment, member: group.member });
   });
 });

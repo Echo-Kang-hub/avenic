@@ -46,6 +46,7 @@ export { locateProjectRoot } from "./runtime/project-root.mjs";
 export {
   agentCursors,
   cachedHead,
+  canonicalCursors,
   cursorFilePath,
   knownDirectories,
   loadCursors,
@@ -75,6 +76,7 @@ export {
   recoverSharedNativeSessions,
   continuationLaunchArguments,
   prepareCanonicalContinuation,
+  prepareSharedLaunch,
   projectCanonicalSession,
 } from "./runtime/session-interop.mjs";
 export { buildHandoff, HANDOFF_SCHEMA_VERSION } from "./runtime/handoff.mjs";
@@ -108,11 +110,33 @@ export {
   canonicalSessionRevision,
   countCanonicalEvents,
   createCanonicalSession,
+  findCanonicalSessionForNative,
   listCanonicalSessionRecords,
   listCanonicalSessions,
   readCanonicalSession,
+  readCanonicalSessionRecord,
   syncNativeMapping,
 } from "./runtime/canonical-sessions.mjs";
+export {
+  PROJECTION_KIND,
+  PROJECTION_SCHEMA_VERSION,
+  agentLabel,
+  buildProjection,
+  eventAgent,
+  eventNativeSession,
+  eventText,
+  projectableEvents,
+  projectionItems,
+  renderBriefing,
+} from "./runtime/projection.mjs";
+export {
+  TRANSCRIPT_SCHEMA_VERSION,
+  readTranscript,
+  transcriptModel,
+  transcriptSummary,
+  transcriptTurns,
+  turnPreview,
+} from "./runtime/transcript.mjs";
 export { STATUS_SCHEMA_VERSION, collectStatus } from "./status.mjs";
 
 export { fail } from "./util/fail.mjs";
@@ -155,6 +179,7 @@ export {
   run,
 } from "./skills/git.mjs";
 export {
+  cachedCatalog,
   catalogCacheDirectory,
   catalogDisplayName,
   ensureCatalog,

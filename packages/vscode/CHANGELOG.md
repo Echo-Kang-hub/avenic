@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0
+
+- Added a Sessions page: the shared conversation, read in the editor. It is the
+  same transcript `avenic sessions show <id> --json` prints — one model out of
+  core, so the panel and the terminal cannot show different histories — drawn
+  as a timeline where every turn carries its own speaker (`You`, `Claude`,
+  `Codex`), the model that answered, and the tool calls that turn ran.
+- The Sessions page lists the project's shared sessions beside the
+  conversation, marking which one you are reading (`▸`) and which one new
+  launches would join (`◉`), and shows each agent's native session and whether
+  its cursor has caught up with the shared history (`current`, `stale`,
+  `none`). A long conversation opens on its newest turns and says how many
+  earlier turns are not shown, with one action to load them all.
+- The page speaks the CLI's language: the same `AVENIC` wordmark, the same
+  `◆`/`│` rails, the same `▸`/`◉`/`○` marks, cyan for agents and green for you,
+  drawn from the editor's own theme colours so light, dark and high-contrast
+  themes all stay readable.
+- Nothing on the page is built from HTML strings: session titles, turn text,
+  tool details and error messages are set as text, and the page loads no remote
+  content.
+
 ## 0.4.0
 
 - The dashboard is now the same status model `avenic status` prints. Agent

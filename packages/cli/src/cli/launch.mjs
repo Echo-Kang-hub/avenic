@@ -16,7 +16,7 @@ import {
 import { formatSessionDiagnostics } from "#core/runtime/diagnostics.mjs";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
 import { spawnExecutableSync } from "#core/runtime/process.mjs";
-import { finishLaunch, joinLaunchGroup } from "#core/runtime/session-interop.mjs";
+import { finishLaunch, joinLaunchGroup, prepareSharedLaunch } from "#core/runtime/session-interop.mjs";
 import { markLaunchClosing } from "#core/runtime/sessions.mjs";
 import { createInstallContext, managedSkillNames } from "#core/skills/install.mjs";
 import { ensureSkillLinks, formatLinkSummary, linkSummaryChanged, logConflicts } from "#core/skills/links.mjs";
@@ -64,8 +64,8 @@ function closeLaunchWatch(agentId, projectRoot, member) {
 
 // Session problems found while capturing history: one line per problem, once
 // per command. `avenic <agent> sessions import` reports the same ones.
-export function reportSessionDiagnostics(diagnostics) {
-  const { warnings, notes } = formatSessionDiagnostics(diagnostics);
+export function reportSessionDiagnostics(diagnostics, options = {}) {
+  const { warnings, notes } = formatSessionDiagnostics(diagnostics, options);
   for (const note of notes) console.log(note);
   for (const warning of warnings) console.warn(`⚠ ${warning}`);
 }
@@ -90,17 +90,16 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
   const portableSessions = config.sessions !== "global";
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
   // Recovery for sessions another agent left behind belongs to the explicit
-  // `sessions` and `change` commands. A plain launch must reach the official
-  // TUI first: it captures its own agent's history on exit, and the runtime
+  // `sessions` and `change` commands. A plain launch reaches the official TUI
+  // first and captures its own agent's history on exit, while the runtime
   // watcher keeps that history durable while it runs.
-  // A plain agent launch is intentionally transparent: storage scope does not
-  // imply a launch target. Shared-session continuation is opt-in via
-  // `sessions continue`, while this path preserves the agent's native new/
-  // default-session UX (including its own /resume command).
-  // Plain launch is deliberately a zero-session-control-plane path. Do not
-  // parse another agent's history, create projections, or call a model before
-  // the official TUI appears. Explicit `sessions continue` performs recovery
-  // and reconciliation; ordinary exits capture the selected native history.
+  //
+  // In Shared mode that history is one conversation, so a plain launch with no
+  // arguments continues it: the agent's own session receives the turns it is
+  // missing and the user is handed nothing. Arguments mean the user is driving
+  // the official CLI (`avenic codex resume`, `avenic claude -p …`), and that
+  // path is left exactly as it was; `avenic sessions continue` is the explicit
+  // way to choose a session, and the place recovery and reconciliation happen.
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
@@ -151,10 +150,34 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
   } catch (error) {
     console.warn(`⚠ Skills repair skipped: ${error.code ?? error.message}`);
   }
+  // Shared mode, no arguments: continue the one conversation. The projection
+  // is a delta — an up-to-date mapping costs two small reads and no server — and
+  // a launch that cannot attach shared history is still a launch, so a failure
+  // here warns once and never blocks the agent.
+  let launchArguments = argumentsList;
+  if (sharedSessions && argumentsList.length === 0 && !options.skipJoin) {
+    let shared = null;
+    try {
+      shared = await timed("shared", () => prepareSharedLaunch({
+        projectRoot,
+        agentId,
+        environment,
+        activeCanonicalId: state.runtime.activeCanonicalSessionId ?? null,
+      }));
+    } catch (error) {
+      console.warn(`⚠ Shared history was not attached: ${error.message}`);
+    }
+    if (shared) {
+      launchArguments = [...shared.launch.argumentsList, ...argumentsList];
+      if (shared.projection?.turns?.length) {
+        console.log(`Continuing shared session ${shared.canonicalId}: ${shared.projection.turns.length} turn(s) from the other agent(s).`);
+      }
+    }
+  }
   const runtime = await timed("agent-runtime", () => resolveEffectiveAgentRuntime(projectRoot, agentId, {
     state,
     environment,
-    argumentsList,
+    argumentsList: launchArguments,
     io: console,
   }));
   if (runtime.note) console.log(runtime.note);

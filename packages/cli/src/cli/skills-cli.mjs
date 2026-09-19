@@ -9,13 +9,15 @@ import {
   cancel,
   confirm,
   error,
+  field,
   intro,
   isInteractive,
   multiSelect,
+  note,
   outro,
   progress,
+  section,
   singleSelect,
-  summary,
   text,
 } from "./prompts.mjs";
 import {
@@ -26,6 +28,7 @@ import {
   assertSafeId,
   assertSafeSkillName,
   buildCatalog,
+  cachedCatalog,
   canonicalTargets,
   catalogDisplayName,
   catalogLayout,
@@ -80,6 +83,11 @@ import { updateAvenic } from "./self-update.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+// 落定输出（banner / ◇ 分节 / ✓ 收尾 / ✖ 取消）落在哪条流上。交互帧和打印函数
+// 都自带 process.stdout 默认值，所以这里只负责把注入的那条传下去 —— 测试注入假流，
+// 生产入口不注入，两端都不需要调用点自己兜底。
+const stdoutOf = (prompts) => prompts.stdout;
+
 function parseScopeArguments(argumentsList) {
   const globalFlags = new Set(["-g", "--global"]);
   const global = argumentsList.some((argument) => globalFlags.has(argument));
@@ -125,8 +133,16 @@ async function interactiveInstall(options = {}) {
 // `avenic skills` 菜单的 "Add skills" 与 "Import from repository"，以及裸的
 // `avenic skills install`，都是这一个流程：区别只在第一个来源步骤。安装、落链、
 // 摘要因此只有一份实现。
+//
+// 中止只有一条路：每一步的帧用同一个 cancelLabel 收尾（那句话说明这次中止的
+// 后果），流程拿到 null 就返回、不再补印 —— 一次中止只留一行 ✖。回答「No」
+// 是明确的选择而不是中止，帧只落了 └ No，所以这一条由流程补印同一句话。
 
 const SUMMARY_NAME_LIMIT = 6;
+
+const NOTHING_INSTALLED = "Nothing installed";
+const NOTHING_REMOVED = "Nothing removed";
+const UNINSTALL_CANCELLED = "Uninstall cancelled";
 
 /** 摘要行里的名字列表：多了就截断，摘要不该长成一份清单。 */
 function summarizeNames(names, limit = SUMMARY_NAME_LIMIT) {
@@ -215,6 +231,8 @@ async function pickHubPacks(prompts, context) {
     options: entries,
     initial: packs.has("common") ? ["common"] : [],
     searchable: true,
+    minSelected: 1, // 一个 Pack 都没选时回车留在原地，不把「空」当成取消
+    emptyMessage: "Select at least one Pack",
   });
   if (ids === null || ids.length === 0) {
     return null;
@@ -249,6 +267,7 @@ async function pickRepositorySkills(prompts, context, repository) {
     options: entries,
     searchable: true,
     minSelected: 1,
+    emptyMessage: "Select at least one Skill",
   });
   if (names === null || names.length === 0) {
     return null;
@@ -261,50 +280,36 @@ async function pickRepositorySkills(prompts, context, repository) {
  * 和菜单里的 Import 都是这样）。
  */
 async function addSkillsFlow(prompts, options, context, preset = {}) {
-  const { stdout } = prompts;
+  const stdout = stdoutOf(prompts);
+  const step = { ...prompts, cancelLabel: NOTHING_INSTALLED };
   intro(stdout, "Add Skills");
   let source = preset.source;
   let repository = preset.repository;
   if (!source) {
     source = await singleSelect({
-      ...prompts,
+      ...step,
       title: "Where do the Skills come from?",
       options: [
         { value: "hub", label: "SkillsHub Packs", hint: "curated and versioned" },
         { value: "repository", label: "Git repository", hint: "install straight from a repo you name" },
       ],
     });
-    if (source === null) {
-      cancel(stdout, "Nothing installed");
-      return;
-    }
+    if (source === null) return;
   }
   if (source === "repository" && !repository) {
-    repository = await text({ ...prompts, title: "Repository (owner/repo or URL)" });
-    if (repository === null) {
-      cancel(stdout, "Nothing installed");
-      return;
-    }
+    repository = await text({ ...step, title: "Repository (owner/repo or URL)" });
+    if (repository === null) return;
   }
 
   const discovered = source === "hub"
-    ? await pickHubPacks(prompts, context)
-    : await pickRepositorySkills(prompts, context, repository);
-  if (!discovered) {
-    cancel(stdout, "Nothing installed");
-    return;
-  }
+    ? await pickHubPacks(step, context)
+    : await pickRepositorySkills(step, context, repository);
+  if (!discovered) return; // 取消已在帧里落定；没有可选项时上一步已经报了 ✖
 
-  const targets = await chooseInstallTargets(prompts, context);
-  if (targets === null) {
-    cancel(stdout, "Nothing installed");
-    return;
-  }
-  const global = await chooseScope(prompts, options, context);
-  if (global === null) {
-    cancel(stdout, "Nothing installed");
-    return;
-  }
+  const targets = await chooseInstallTargets(step, context);
+  if (targets === null) return;
+  const global = await chooseScope(step, options, context);
+  if (global === null) return;
   const installContext = createInstallContext(global, options);
   const targetLabels = installContext.targets
     .filter((target) => targets.includes(target.id))
@@ -312,28 +317,27 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
   const names = discovered.kind === "packs"
     ? resolvePacks(discovered.catalog, discovered.sourceConfig, discovered.packs, discovered.ids).names
     : discovered.names;
-  summary(stdout, [
-    "✓  Ready to install",
-    `├─ Source: ${source === "hub"
-      ? `SkillsHub @ ${discovered.revision?.slice(0, 8) ?? "unpinned"}`
-      : `${discovered.repository} @ ${discovered.discovery.revision.slice(0, 8)}`}`,
-    `├─ Skills: ${names.length} — ${summarizeNames(names)}`,
-    `├─ Install to: ${targetLabels.join(", ")}`,
-    `└─ Scope: ${installContext.label}`,
-  ]);
+  section(stdout, "Ready to install");
+  field(stdout, "Source", source === "hub"
+    ? `SkillsHub @ ${discovered.revision?.slice(0, 8) ?? "unpinned"}`
+    : `${discovered.repository} @ ${discovered.discovery.revision.slice(0, 8)}`);
+  field(stdout, "Skills", `${names.length} · ${summarizeNames(names)}`);
+  field(stdout, "Targets", targetLabels.join(", "));
+  field(stdout, "Scope", installContext.label);
   const yes = await confirm({
-    ...prompts,
+    ...step,
     title: discovered.kind === "packs"
       ? `Install ${discovered.ids.length} Pack${discovered.ids.length === 1 ? "" : "s"}?`
       : `Install ${names.length} Skill${names.length === 1 ? "" : "s"}?`,
     initial: true,
   });
+  if (yes === null) return;
   if (yes !== true) {
-    cancel(stdout, "Nothing installed");
+    cancel(stdout, NOTHING_INSTALLED);
     return;
   }
 
-  const spin = progress({ ...prompts, text: "Installing…" });
+  const spin = progress({ ...step, text: "Installing…" });
   let result;
   try {
     result = discovered.kind === "packs"
@@ -345,19 +349,16 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
   }
   spin.stop("Installed");
   const detailLines = discovered.kind === "packs"
-    ? discovered.ids.map((id, index) => {
+    ? discovered.ids.map((id) => {
       const effective = resolvePacks(discovered.catalog, discovered.sourceConfig, discovered.packs, [id]);
-      const suffix = index === discovered.ids.length - 1 ? "└─" : "├─";
-      return `${suffix} ${discovered.packs.get(id).name} (${effective.names.length} Skills)`;
+      const count = effective.names.length;
+      return `${discovered.packs.get(id).name} (${count} Skill${count === 1 ? "" : "s"})`;
     })
-    : discovered.names.map((name, index) => `${index === discovered.names.length - 1 ? "└─" : "├─"} ${name}`);
-  summary(stdout, [
-    `✓  ${names.length} Skill${names.length === 1 ? "" : "s"} installed`,
-    ...detailLines,
-    "",
-    `scope: ${installContext.label}`,
-    `config: ${installContext.configFile}`,
-  ]);
+    : discovered.names;
+  section(stdout, `${names.length} Skill${names.length === 1 ? "" : "s"} installed`);
+  for (const detail of detailLines) note(stdout, detail);
+  field(stdout, "Scope", installContext.label);
+  field(stdout, "Config", installContext.configFile);
   outro(stdout, discovered.kind === "packs"
     ? `Done! Installed ${discovered.ids.length} Pack${discovered.ids.length === 1 ? "" : "s"}`
     : `Done! Installed ${names.length} Skill${names.length === 1 ? "" : "s"}`);
@@ -446,19 +447,21 @@ async function removeAllManaged(context, io) {
 
 // 交互式卸载：Yes/No 确认 → 清空 → 摘要框 + Done。
 async function interactiveRemoveAll(context, prompts, current) {
-  const { stdout } = prompts;
+  const stdout = stdoutOf(prompts);
   const label = context.label.toLowerCase();
   const directNames = await directSkillNames(context);
   intro(stdout, "Uninstall Skills");
   const yes = await confirm({
     ...prompts,
+    cancelLabel: UNINSTALL_CANCELLED,
     title: `Remove ALL managed ${label} Skills? (${current.length} Pack${current.length === 1 ? "" : "s"}${
       directNames.length > 0 ? ` + ${directNames.length} direct` : ""
     })`,
     initial: false,
   });
+  if (yes === null) return;
   if (yes !== true) {
-    cancel(stdout, "Uninstall cancelled");
+    cancel(stdout, UNINSTALL_CANCELLED);
     return;
   }
   const spin = progress({ ...prompts, text: "Removing…" });
@@ -471,12 +474,10 @@ async function interactiveRemoveAll(context, prompts, current) {
     throw error;
   }
   spin.stop("Removed");
-  summary(stdout, [
-    `✓  ${[removed.direct > 0 && `${removed.direct} direct`, `${removed.managed} managed`].filter(Boolean).join(" + ")} Skills removed`,
-    "",
-    `scope: ${context.label}`,
-    `config: ${context.configFile}`,
-  ]);
+  section(stdout, "Removed");
+  note(stdout, `${[removed.direct > 0 && `${removed.direct} direct`, `${removed.managed} managed`].filter(Boolean).join(" + ")} Skills`);
+  field(stdout, "Scope", context.label);
+  field(stdout, "Config", context.configFile);
   outro(stdout, "Done! All managed Skills removed");
 }
 
@@ -514,9 +515,21 @@ async function commandUninstallSkill(skillArguments, options = {}) {
   );
 }
 
+/**
+ * 浏览用的 Catalog：只读本地缓存，绝不联网。内容树是看，不是同步——要新的内容
+ * 就 `avenic hub sync`。缓存答不上来时把该敲的那条命令直接给出来，而不是让用户
+ * 对着一句 git 报错自己猜。
+ */
+async function browsingSource(options = {}) {
+  const spec = await loadDefaultCatalogSpec(options.environment);
+  const cached = await cachedCatalog(spec, options.environment);
+  if (cached) return cached;
+  fail(`Hub is not cached yet: ${spec}\nRun \`avenic hub sync\` to fetch it, then try again.`);
+}
+
 async function commandTree(packArguments, options = {}) {
   const io = options.io ?? console;
-  const catalogInfo = await resolveInstallSource(options);
+  const catalogInfo = await browsingSource(options);
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
   const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   if (packArguments.length === 0) {
@@ -538,7 +551,7 @@ async function commandTree(packArguments, options = {}) {
 
 async function commandPacks(options = {}) {
   const io = options.io ?? console;
-  const catalogInfo = await resolveInstallSource(options);
+  const catalogInfo = await browsingSource(options);
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
   const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   const packs = await loadPacks(catalogInfo.catalogRoot);
@@ -1138,11 +1151,13 @@ async function commandHubList(options = {}) {
   io.log("\n> = current. Switch: avenic hub select");
 }
 
-// clack 风格单选（prompts.select 内部实现帧重绘，含键盘处理与取消打印）。
+// Hub 选择器：与 Skills 菜单同一个 shared 单选（帧重绘、键盘、取消行都在那一层）。
 // 非 TTY 时 commandHubSelect 在进入本函数前已回退为纯文本清单。
-function promptHubChoice(entries, currentIndex) {
+function promptHubChoice(prompts, entries, currentIndex) {
   return singleSelect({
+    ...prompts,
     title: "Choose a Hub",
+    cancelLabel: "No change",
     options: entries.map((entry) => ({ value: entry.spec, label: entry.name })),
     initial: currentIndex >= 0 ? currentIndex : 0,
   });
@@ -1150,6 +1165,7 @@ function promptHubChoice(entries, currentIndex) {
 
 async function commandHubSelect(argumentsList, options = {}) {
   const io = options.io ?? console;
+  const prompts = options.prompts ?? {};
   const [target] = argumentsList;
   if (argumentsList.length > 1) {
     fail("Usage: avenic hub select [name|spec]");
@@ -1166,18 +1182,15 @@ async function commandHubSelect(argumentsList, options = {}) {
     io.log(`Current Hub: ${entry.spec}`);
     return;
   }
-  if (!isInteractive()) {
+  if (!isInteractive(prompts)) {
     // No terminal (pipes, scripts): print the plain list instead.
     await commandHubList(options);
     return;
   }
   const currentIndex = known.findIndex((entry) => entry.spec === current);
   // The picker paints its own title as the first frame line.
-  const chosen = await promptHubChoice(known, currentIndex);
-  if (chosen === null) {
-    io.log("No change.");
-    return;
-  }
+  const chosen = await promptHubChoice(prompts, known, currentIndex);
+  if (chosen === null) return; // 取消行由帧落定（Choose a Hub / ✖ No change）
   await setDefaultCatalogSpec(options.environment, chosen);
   io.log(`Current Hub: ${chosen}`);
 }
@@ -1191,6 +1204,7 @@ async function commandHubDefault(options = {}) {
 // 菜单只决定「做哪件事」，每件事都落到同一个实现上：Add 与 Import 共用上面那套
 // 编排，其余五项调用对应命令。所以这里没有第二份安装或卸载逻辑。
 
+// 菜单只列可以做的事：离开是 Esc / Ctrl+C（列表里没有「取消」这一行）。
 const MENU_ENTRIES = [
   { value: "add", label: "Add skills", hint: "SkillsHub Packs or a Git repository" },
   { value: "installed", label: "Installed skills", hint: "what this scope holds now" },
@@ -1198,12 +1212,11 @@ const MENU_ENTRIES = [
   { value: "remove", label: "Remove skills", hint: "Packs, direct Skills, or everything" },
   { value: "sync", label: "Sync SkillsHub", hint: "fetch the Hub with your git credentials" },
   { value: "import", label: "Import from repository", hint: "clone, then pick Skills" },
-  { value: "back", label: "Back" },
 ];
 
 /** 更新 = 用最新 Hub 修订重装已配置的 Pack；落链目标沿用上次的选择。 */
 async function updateSkills(prompts, options, context) {
-  const { stdout } = prompts;
+  const stdout = stdoutOf(prompts);
   const current = await installedPackIds(context);
   if (!current) {
     error(stdout, `Nothing installed in the ${context.label.toLowerCase()} scope yet — use Add skills`);
@@ -1218,18 +1231,15 @@ async function updateSkills(prompts, options, context) {
     throw cause;
   }
   spin.stop("Updated");
-  summary(stdout, [
-    `✓  ${result.resolvedPacks.names.length} Skills up to date`,
-    "",
-    `scope: ${context.label}`,
-    `catalog: ${result.catalogInfo.revision?.slice(0, 8) ?? "unpinned"}`,
-  ]);
+  section(stdout, `${result.resolvedPacks.names.length} Skill${result.resolvedPacks.names.length === 1 ? "" : "s"} up to date`);
+  field(stdout, "Scope", context.label);
+  field(stdout, "Catalog", result.catalogInfo.revision?.slice(0, 8) ?? "unpinned");
   outro(stdout, `Done! Updated ${current.length} Pack${current.length === 1 ? "" : "s"}`);
 }
 
 /** 卸载：一份清单里既有 Pack 也有直装 Skill —— 一次勾选，按类型各走各的删除。 */
 async function removeSkills(prompts, options, context) {
-  const { stdout } = prompts;
+  const stdout = stdoutOf(prompts);
   const status = await skillsInstallationStatus(context);
   const direct = await directSkillNames(context);
   if (!status && direct.length === 0) {
@@ -1261,14 +1271,14 @@ async function removeSkills(prompts, options, context) {
   ];
   const picked = await multiSelect({
     ...prompts,
+    cancelLabel: NOTHING_REMOVED,
     title: "Remove which Skills?",
     options: rows,
     searchable: true,
+    minSelected: 1, // 什么都没选时回车留在原地：空选择不是「就这样吧」，也不是取消
+    emptyMessage: "Select at least one thing to remove",
   });
-  if (picked === null || picked.length === 0) {
-    cancel(stdout, "Nothing removed");
-    return;
-  }
+  if (picked === null || picked.length === 0) return;
   if (picked.includes("all")) {
     await interactiveRemoveAll(context, prompts, await installedPackIds(context) ?? []);
     return;
@@ -1277,11 +1287,13 @@ async function removeSkills(prompts, options, context) {
   const names = picked.filter((value) => value.startsWith("direct:")).map((value) => value.slice("direct:".length));
   const yes = await confirm({
     ...prompts,
+    cancelLabel: NOTHING_REMOVED,
     title: `Remove ${picked.length} selection${picked.length === 1 ? "" : "s"}?`,
     initial: false,
   });
+  if (yes === null) return;
   if (yes !== true) {
-    cancel(stdout, "Nothing removed");
+    cancel(stdout, NOTHING_REMOVED);
     return;
   }
   const spin = progress({ ...prompts, text: "Removing…" });
@@ -1299,32 +1311,28 @@ async function removeSkills(prompts, options, context) {
     throw cause;
   }
   spin.stop("Removed");
-  summary(stdout, [
-    `✓  Removed ${removedPacks.length + names.length} of ${picked.length}`,
-    ...[...removedPacks.map((id) => `├─ Pack ${id}`), ...names.map((name) => `├─ ${name}`)],
-    "",
-    `scope: ${context.label}`,
-  ]);
+  section(stdout, `Removed ${removedPacks.length + names.length} of ${picked.length}`);
+  for (const id of removedPacks) note(stdout, `Pack ${id}`);
+  for (const name of names) note(stdout, name);
+  field(stdout, "Scope", context.label);
   outro(stdout, "Done!");
 }
 
 async function skillsMenu(options = {}) {
   const io = options.io ?? console;
   const prompts = options.prompts ?? {};
-  const { stdout } = prompts;
+  const stdout = stdoutOf(prompts);
   const context = createInstallContext(options.global ?? false, options);
   banner(stdout);
-  intro(stdout, "Skills");
+  // 帧头自己就是 ◆ Skills：同一帧里不再多印一条 intro。
   const choice = await singleSelect({
     ...prompts,
     title: "Skills",
+    description: `Add, update, or remove Skills in the ${context.label.toLowerCase()} scope`,
     options: MENU_ENTRIES,
-    cancelLabel: "back",
+    cancelLabel: "Nothing changed",
   });
-  if (choice === null || choice === "back") {
-    outro(stdout, "Nothing changed");
-    return;
-  }
+  if (choice === null) return; // 取消行已经落定，菜单不再补一条 ✓
   if (choice === "add") {
     await addSkillsFlow(prompts, options, context, {});
     return;

@@ -1,10 +1,10 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
+  agentLabel,
   applyProjectConfiguration,
   agentEnvironment,
   agentExecutableAvailable,
@@ -33,6 +33,7 @@ import {
   setLocalAuth,
   setSessionsGitIgnored,
   setActiveCanonicalSession,
+  transcriptModel,
   validateAuthMode,
   validateSessionInteropMode,
   validateSessionsMode,
@@ -41,8 +42,9 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { banner, confirm, isInteractive, multiSelect, singleSelect } from "./prompts.mjs";
+import { banner, collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect } from "./prompts.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
+import { loadTranscript, printTranscript, transcriptPreview } from "./transcript-cli.mjs";
 import { dispatchStatusCommand } from "./status-cli.mjs";
 import { mark, reportLaunchTiming, timed } from "#core/runtime/timing.mjs";
 
@@ -66,13 +68,33 @@ function parseAgentList(value) {
   return [...new Set(agents)];
 }
 
-function configurationSummary(config) {
-  const lines = [];
-  for (const [agentId, entry] of Object.entries(config.agents)) {
-    lines.push(`${getAgent(agentId).displayName}: ${entry.auth} auth · ${entry.sessions} sessions`);
+// The configuration as rows: one per enabled agent, then the history mode.
+function configurationRows(config) {
+  const agentRows = Object.entries(config.agents)
+    .map(([agentId, entry]) => [getAgent(agentId).displayName, `${entry.auth} auth · ${entry.sessions} sessions`]);
+  return [["Agents", agentRows], ["History", [["Mode", config.sessionInterop]]]];
+}
+
+/**
+ * A result block, drawn by the one terminal layer: the ◆ heading over the
+ * project it is about, then a ◇ section per question with a │ line per answer.
+ * Every command that reports what it did ends in this shape, so a result has
+ * the same rails and colours as the wizard that produced it and as
+ * `avenic status`. `labelWidth` is fixed per command rather than measured, so
+ * a value column never re-flows between two runs of the same command.
+ */
+function printResult(title, projectRoot, groups, options = {}) {
+  const { sink, flush } = collectLines(options.io ?? console);
+  const labelWidth = options.labelWidth ?? 14;
+  // A flat [[label, value], …] is one unnamed group; [[title, rows], …] is several.
+  const sections = Array.isArray(groups[0]?.[1]) ? groups : [[null, groups]];
+  intro(sink, title, { description: projectRoot });
+  for (const [sectionTitle, rows] of sections) {
+    sink.write("\n");
+    if (sectionTitle) section(sink, sectionTitle);
+    for (const [label, value] of rows) field(sink, label, value, { labelWidth });
   }
-  lines.push(`History: ${config.sessionInterop}`);
-  return lines;
+  flush();
 }
 
 // The registry is keyed by agent id; a picker needs the id next to the name.
@@ -138,7 +160,9 @@ async function dispatchProjectSetup(argumentsList, editing = false, options = {}
     banner(prompts.stdout);
     draft = await interactiveProjectDraft(projectRoot, editing, prompts);
     if (!draft) return 0;
-    console.log(`\nAvenic project configuration\n${configurationSummary(draft).map((line) => `  ${line}`).join("\n")}\n`);
+    console.log();
+    printResult("Avenic project configuration", projectRoot, configurationRows(draft), { labelWidth: 13 });
+    console.log();
     if (await confirm({ ...prompts, title: "Apply configuration?" }) !== true) return 0;
   } else {
     const values = [...argumentsList];
@@ -169,9 +193,7 @@ async function dispatchProjectSetup(argumentsList, editing = false, options = {}
     draft = { agents, sessionInterop };
   }
   const result = await applyProjectConfiguration(projectRoot, draft);
-  console.log(`Avenic project ${editing ? "updated" : "initialized"}\n`);
-  console.log(`Project  ${projectRoot}`);
-  for (const line of configurationSummary(result.config)) console.log(`  ${line}`);
+  printResult(`Avenic project ${editing ? "updated" : "initialized"}`, projectRoot, configurationRows(result.config), { labelWidth: 13 });
   if (result.imported.length) console.log(`Imported native histories from ${result.imported.length} agent(s) into the shared workspace.`);
   // Reconfiguring is also a moment to look for history that was left behind,
   // since the next launch deliberately does not.
@@ -207,6 +229,7 @@ have; isolated histories are imported on request with \`avenic sessions sync\`.
 
 Sessions:
   avenic sessions list|status          Show shared history and per-agent cursors
+  avenic sessions show <id> [--json]   Read one shared conversation as a transcript
   avenic sessions continue <id> --agent <claude|codex|opencode>
   avenic sessions sync                 Import native history into the shared workspace
   avenic sessions git [on|off|status]  Whether project session records are committed
@@ -270,16 +293,17 @@ Update Avenic:
 
 function printAgentStatus(agent, projectRoot, state) {
   const config = effectiveAgentConfig(state, agent.id);
-  console.log(`${agent.displayName}\n`);
-  console.log(`Project             ${projectRoot}`);
-  console.log(`Initialized         ${config ? "Yes" : "No"}`);
-  if (config) {
-    console.log(`Configured auth     ${config.configuredAuth}`);
-    console.log(`Local override      ${config.localAuth ?? "None"}`);
-    console.log(`Effective auth      ${config.auth}`);
-    console.log(`Sessions            ${config.sessions === "global" ? "Global (native)" : "Project (portable)"}`);
-  }
-  console.log(`Official CLI        ${agentExecutableAvailable(agent.id) ? "Available" : "Not found"}`);
+  const rows = [
+    ["Initialized", config ? "Yes" : "No"],
+    ...(config ? [
+      ["Configured auth", config.configuredAuth],
+      ["Local override", config.localAuth ?? "None"],
+      ["Effective auth", config.auth],
+      ["Sessions", config.sessions === "global" ? "Global (native)" : "Project (portable)"],
+    ] : []),
+    ["Official CLI", agentExecutableAvailable(agent.id) ? "Available" : "Not found"],
+  ];
+  printResult(`${agent.displayName} status`, projectRoot, rows, { labelWidth: 20 });
 }
 
 async function dispatchAgent(agentId, argumentsList, options = {}) {
@@ -302,15 +326,15 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       throw new Error(`Unknown option: ${initArguments[0]}`);
     }
     const result = await initializeAgent(projectRoot, agentId, authMode, sessionsMode);
-    console.log("Avenic Runtime\n");
-    console.log(`Agent           ${agent.displayName}`);
-    console.log(`Project         ${projectRoot}`);
-    console.log(`Authentication  ${result.authMode}`);
-    console.log(`Sessions        ${result.sessionsMode === "global" ? "Global" : "Project"}`);
-    console.log(`Session Git     ${(await sessionsGitIgnored(projectRoot)) ? "Off" : "On"}`);
-    console.log(`Configuration   ${result.configChanged ? "Updated" : "Unchanged"}`);
-    console.log(`Git ignore      ${result.gitignoreChanged ? "Updated" : "Unchanged"}`);
-    console.log(`Structure       ${result.structureRepaired ? "Repaired" : "Intact"}`);
+    printResult("Avenic Runtime", projectRoot, [
+      ["Agent", agent.displayName],
+      ["Authentication", result.authMode],
+      ["Sessions", result.sessionsMode === "global" ? "Global" : "Project"],
+      ["Session Git", (await sessionsGitIgnored(projectRoot)) ? "Off" : "On"],
+      ["Configuration", result.configChanged ? "Updated" : "Unchanged"],
+      ["Git ignore", result.gitignoreChanged ? "Updated" : "Unchanged"],
+      ["Structure", result.structureRepaired ? "Repaired" : "Intact"],
+    ], { labelWidth: 16 });
     const changedSomething = result.configChanged || result.gitignoreChanged || result.structureRepaired;
     console.log(changedSomething ? "\nChanged:" : "\nAlready up to date — nothing changed.");
     if (result.configChanged) {
@@ -343,11 +367,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       throw new Error(`Unknown option: ${unknown}`);
     }
     const result = await deinitializeAgent(projectRoot, agentId, { purge });
-    console.log(`${agent.displayName} deinitialization\n`);
-    console.log(`Project   ${projectRoot}`);
-    console.log(`Runtime   ${result.changed ? "Removed" : "Already absent"}`);
-    console.log(`Data      ${result.purged ? "Purged" : "Preserved"}`);
-    console.log(`Agents    ${result.remaining} remaining`);
+    printResult(`${agent.displayName} deinitialization`, projectRoot, [
+      ["Runtime", result.changed ? "Removed" : "Already absent"],
+      ["Data", result.purged ? "Purged" : "Preserved"],
+      ["Agents", `${result.remaining} remaining`],
+    ], { labelWidth: 10 });
     if (!purge) {
       console.log(`\nReinitialize later without losing portable sessions:\n  avenic ${agentId} init`);
     }
@@ -366,10 +390,11 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     const config = mode === "reset"
       ? await clearLocalAuth(projectRoot, agentId)
       : await setLocalAuth(projectRoot, agentId, mode);
-    console.log(`${agent.displayName} authentication\n`);
-    console.log(`Configured default  ${config.configuredAuth}`);
-    console.log(`Local override      ${config.localAuth ?? "None"}`);
-    console.log(`Effective           ${config.auth}`);
+    printResult(`${agent.displayName} authentication`, projectRoot, [
+      ["Configured default", config.configuredAuth],
+      ["Local override", config.localAuth ?? "None"],
+      ["Effective", config.auth],
+    ], { labelWidth: 20 });
     return 0;
   }
 
@@ -390,15 +415,15 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     const adapter = getSessionAdapter(agentId);
     if (action === "status") {
       const result = await adapter.status(projectRoot);
-      console.log(`${agent.displayName} portable sessions\n\nProject  ${projectRoot}\nSessions ${result.count}`);
+      printResult(`${agent.displayName} portable sessions`, projectRoot, [["Sessions", String(result.count)]], { labelWidth: 10 });
       return 0;
     }
     const result = action === "import" ? await importProjectSessions(projectRoot, agentId) : await adapter.restore(projectRoot);
-    console.log(`${agent.displayName} session ${action}\n`);
-    console.log(`Project   ${projectRoot}`);
-    console.log(`Sessions  ${action === "import" ? `${result.discovered} discovered; ${result.imported} imported; ${result.unchanged} unchanged; ${result.failed} failed` : result.count}`);
-    console.log(action === "import" ? `Portable  ${result.changed ? "Updated" : "Unchanged"}` : `Written back  ${result.added + result.updated}`);
-    if (action === "import") reportSessionDiagnostics(result.diagnostics);
+    printResult(`${agent.displayName} session ${action}`, projectRoot, [
+      ["Sessions", action === "import" ? `${result.discovered} discovered; ${result.imported} imported; ${result.unchanged} unchanged; ${result.failed} failed` : String(result.count)],
+      [action === "import" ? "Portable" : "Written back", action === "import" ? (result.changed ? "Updated" : "Unchanged") : String(result.added + result.updated)],
+    ], { labelWidth: 14 });
+    if (action === "import") reportSessionDiagnostics(result.diagnostics, { missingRoots: true });
     if (result.conflicts > 0) {
       console.log(`Conflicts ${result.conflicts} (project sessions overwrote native storage)`);
     }
@@ -463,6 +488,17 @@ async function reportReconciliation(projectRoot) {
 
 // The outermost layer is the only place that reports what could not be read
 
+// What a continuation is about to hand the target, in one phrase: how many
+// turns a projection carried, or how many events a fallback prompt summarised.
+function continuationDelta(continuation) {
+  const turns = continuation?.projection?.turns?.length;
+  if (typeof turns === "number") {
+    const checkpoint = continuation.projection.checkpoint ? ", plus a condensed checkpoint" : "";
+    return `projection of ${turns} turn(s)${checkpoint}`;
+  }
+  return `delta of ${continuation?.handoff?.delta?.length ?? 0} event(s)`;
+}
+
 // One continuation sequence for every agent: capture what the target already
 // has, prepare the delta, let the official CLI run in the foreground, capture
 // what it produced, and only then commit the mapping. Claude and Codex reach it
@@ -501,11 +537,13 @@ async function runCanonicalContinuation({ projectRoot, state, environment, mode,
     },
     launch: async (continuation) => {
       let launchedContinuation = continuation;
-      let nativeSessionId = continuation.nativeSessionId
-        ?? (agentId === "claude" ? randomUUID() : null);
-      const launch = continuationLaunchArguments({ ...continuation, nativeSessionId });
+      // A projection names the native session it prepared; only the handoff
+      // fallback has no native side yet, and only it needs discovery after the
+      // run.
+      let nativeSessionId = continuation.nativeSessionId ?? null;
+      let launch = continuationLaunchArguments(continuation);
       const launchStartedAt = Date.now() - 1000;
-      console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}; delta ${continuation.handoff.delta.length} event(s).`);
+      console.log(`Continuing ${mode} with ${getAgent(agentId).displayName}: ${continuation.mode}, ${continuationDelta(continuation)}.`);
       const launchOptions = {
         projectRoot,
         environment,
@@ -517,43 +555,121 @@ async function runCanonicalContinuation({ projectRoot, state, environment, mode,
           capturedDuringLaunch = await targetAdapter.readCanonical(projectRoot, nativeId, { environment, canonicalSessionId: mode });
         },
       };
-      let status;
-      if (continuation.mode === "resume") {
-        const statusFromInteractiveResume = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
-        if (statusFromInteractiveResume !== 0 && agentId === "codex") {
-          // A Codex v2 sub-agent may be known to canonical history but be
-          // unresumable by the current app-server. Rebuild from canonical,
-          // rather than reusing an incremental (possibly empty) handoff.
-          const fallbackContinuation = await prepareCanonicalContinuation(projectRoot, mode, agentId, {
-            environment,
-            forceBootstrap: true,
-          });
-          launchedContinuation = fallbackContinuation;
-          const bootstrap = continuationLaunchArguments({
-            ...fallbackContinuation,
-            nativeSessionId: null,
-          });
-          nativeSessionId = null;
-          console.log(`${getAgent(agentId).displayName} session could not be resumed; starting a new native thread from shared canonical history.`);
-          status = await dispatchAgent(agentId, bootstrap.argumentsList, {
-            ...launchOptions,
-            input: bootstrap.input,
-          });
-        } else {
-          status = statusFromInteractiveResume;
-        }
-      } else {
-        status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+      let status = await dispatchAgent(agentId, launch.argumentsList, launchOptions);
+      // A session the target will not open is not the end of the shared
+      // conversation. Rebuild it natively first — that is still the target's
+      // own session, just a fresh one — and only when the target cannot take a
+      // projection at all hand it the bounded transcript. Escalate in that
+      // order, and never repeat a command that already failed.
+      const display = getAgent(agentId).displayName;
+      const tried = new Set([JSON.stringify(launch.argumentsList)]);
+      const rebuilds = [
+        {
+          message: `${display} session could not be opened; rebuilding it from shared canonical history.`,
+          prepare: () => prepareCanonicalContinuation(projectRoot, mode, agentId, { environment, forceBootstrap: true }),
+        },
+        {
+          message: `${display} could not be started with the projected session; continuing in a fresh official session from shared canonical history.`,
+          prepare: () => prepareCanonicalContinuation(projectRoot, mode, agentId, { environment, handoff: true }),
+        },
+      ];
+      for (const rebuild of status === 0 ? [] : rebuilds) {
+        console.log(rebuild.message);
+        const next = await rebuild.prepare();
+        const nextLaunch = continuationLaunchArguments(next);
+        const key = JSON.stringify(nextLaunch.argumentsList);
+        if (tried.has(key)) continue;
+        tried.add(key);
+        launchedContinuation = next;
+        launch = nextLaunch;
+        nativeSessionId = next.nativeSessionId ?? null;
+        status = await dispatchAgent(agentId, launch.argumentsList, { ...launchOptions, input: launch.input });
+        if (status === 0) break;
       }
-      if (status !== 0) throw new Error(`${getAgent(agentId).displayName} exited with status ${status}`);
+      if (status !== 0) throw new Error(`${display} exited with status ${status}`);
       const discoveredId = nativeSessionId
         ?? await targetAdapter.discoverNativeSession(projectRoot, { environment, notBefore: launchStartedAt });
-      return { nativeSessionId: discoveredId, projectionHash: launchedContinuation.handoff.hash, capturedDuringLaunch };
+      return {
+        nativeSessionId: discoveredId,
+        projectionHash: launchedContinuation.projection?.hash ?? launchedContinuation.handoff?.hash ?? null,
+        capturedDuringLaunch,
+      };
     },
   });
   reportSessionDiagnostics(result.diagnostics);
   await setActiveCanonicalSession(projectRoot, mode);
   return result;
+}
+
+// One conversation, read from the shared store. `stamp` here is the same slice
+// the rest of the CLI prints, so a transcript and a status page never disagree
+// about when something happened.
+async function canonicalSessionsWithPreview(projectRoot) {
+  const sessions = await listCanonicalSessions(projectRoot);
+  const rows = [];
+  for (const session of sessions) {
+    const record = await readCanonicalSession(projectRoot, session.id);
+    const transcript = await loadTranscript(projectRoot, session.id, { record });
+    rows.push({ session, record, transcript });
+  }
+  return rows;
+}
+
+/**
+ * The Sessions browser: List → pick a conversation → read it, continue it, or
+ * make it the active one. Reading is the first thing offered because looking at
+ * what the agents already said is what a user opens this menu to do.
+ */
+async function browseSessions(projectRoot, options = {}) {
+  const prompts = options.prompts ?? {};
+  const sessions = await listCanonicalSessions(projectRoot);
+  if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
+  const choices = [];
+  for (const row of await canonicalSessionsWithPreview(projectRoot)) {
+    choices.push({
+      value: row.session.id,
+      label: row.session.title ?? row.session.id,
+      hint: `${row.transcript.summary.turns} turns · ${transcriptPreview(row.transcript, 40)}`,
+    });
+  }
+  const selected = await searchableSelect({ ...prompts, title: "Sessions", options: choices });
+  if (!selected) return 0;
+  return sessionActions(projectRoot, selected, options);
+}
+
+async function sessionActions(projectRoot, sessionId, options = {}) {
+  const prompts = options.prompts ?? {};
+  const stdout = prompts.stdout ?? process.stdout;
+  const transcript = await loadTranscript(projectRoot, sessionId);
+  const interop = options.interop ?? projectConfig(await loadRuntime(projectRoot)).sessionInterop;
+  const participants = transcript.summary.agents.map(agentLabel).join(", ") || "no agent turns yet";
+  const action = await singleSelect({
+    ...prompts,
+    title: `Session ${transcript.summary.title}`,
+    description: `${transcript.summary.turns} turns · ${participants}`,
+    options: [
+      { value: "view", label: "View history", hint: `${transcript.summary.events} events` },
+      ...(interop === "shared" ? [
+        { value: "continue", label: "Continue with an agent", hint: "the shared conversation, handed over natively" },
+        { value: "active", label: "Set as active session", hint: "new launches join this one" },
+      ] : []),
+    ],
+  });
+  if (!action) return 0;
+  if (action === "view") {
+    printTranscript(stdout, transcript, { environment: options.environment });
+    // Back to the same choices, so reading a long conversation and then
+    // continuing it does not mean walking the whole menu again.
+    return sessionActions(projectRoot, sessionId, options);
+  }
+  if (action === "active") {
+    await setActiveCanonicalSession(projectRoot, sessionId);
+    console.log(`Active shared session: ${sessionId}`);
+    return 0;
+  }
+  const agentId = await singleSelect({ ...prompts, title: "Continue with", options: agentChoices() });
+  if (!agentId) return 0;
+  return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
 }
 
 async function dispatchSessions(argumentsList, options = {}) {
@@ -573,11 +689,9 @@ async function dispatchSessions(argumentsList, options = {}) {
         ...(interop === "shared" ? [{ value: ["active"], label: "Set active session" }] : []),
         ...(interop === "isolated" ? [{ value: ["migrate"], label: "Switch to Shared" }] : []),
         { value: ["status"], label: "Status" },
-        { value: ["back"], label: "Back" },
       ],
     });
     if (!action) return 0;
-    if (action[0] === "back") return 0;
     if (action[0] === "migrate") return dispatchProjectSetup([], true, options);
     // Continue and Set active list shared history directly, so reconcile
     // before the choices are drawn.
@@ -590,6 +704,12 @@ async function dispatchSessions(argumentsList, options = {}) {
       await setActiveCanonicalSession(projectRoot, sessionId);
       console.log(`Active shared session: ${sessionId}`);
       return 0;
+    }
+    if (action[0] === "list") {
+      // Reading a conversation must show what the agents have already said, not
+      // what the last import happened to catch.
+      await reportReconciliation(projectRoot);
+      return browseSessions(projectRoot, options);
     }
     if (action[0] !== "continue") return dispatchSessions(action, options);
     const sessions = await listCanonicalSessions(projectRoot);
@@ -605,37 +725,59 @@ async function dispatchSessions(argumentsList, options = {}) {
   if (command === "list" || command === "status" || command === "continue") {
     await reportReconciliation(projectRoot);
   }
-  if ((command === "list" || command === "status") && argumentsList.length === 1) {
-    const sessions = await listCanonicalSessions(projectRoot);
-    const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
-    console.log(command === "status" ? "Canonical session status\n" : "Canonical sessions\n");
-    console.log(`Project  ${projectRoot}`);
-    console.log(`Active   ${activeCanonicalId ?? "none"}`);
-    if (sessions.length === 0) {
-      console.log("No canonical sessions");
+  if (command === "show") {
+    const id = mode === "status" ? null : mode;
+    let json = false;
+    let limit = 0;
+    for (let index = 0; index < extra.length; index += 1) {
+      const value = extra[index];
+      if (value === "--json") { json = true; continue; }
+      if (value === "--limit") { limit = Number.parseInt(extra[index + 1] ?? "", 10) || 0; index += 1; continue; }
+      throw new Error(`Unknown option for avenic sessions show: ${value}`);
+    }
+    if (!id) throw new Error("Usage: avenic sessions show <id> [--json] [--limit <turns>]");
+    // Reading is a pure read of the shared store: no capture, no projection, no
+    // network. `sessions list` is what brings native history up to date.
+    const transcript = await loadTranscript(projectRoot, id);
+    if (json) {
+      // Machine output is the model, never the drawing.
+      process.stdout.write(`${JSON.stringify(transcriptModel(transcript), null, 2)}\n`);
       return 0;
     }
-    for (const session of sessions) {
-      const stored = await readCanonicalSession(projectRoot, session.id);
-      const latestEventId = stored.events.at(-1)?.id ?? null;
-      if (command === "status") {
-        console.log(`  events ${stored.events.length}  revision ${stored.session.revision ?? "derived"}`);
+    printTranscript(prompts.stdout ?? process.stdout, transcript, { limit, environment: options.environment });
+    return 0;
+  }
+  if ((command === "list" || command === "status") && argumentsList.length === 1) {
+    const out = prompts.stdout ?? process.stdout;
+    const colors = palette(out, options.environment ?? process.env);
+    const activeCanonicalId = await getActiveCanonicalSessionId(projectRoot);
+    const rows = await canonicalSessionsWithPreview(projectRoot);
+    intro(out, command === "status" ? "Canonical session status" : "Canonical sessions", { colors, description: projectRoot });
+    field(out, "Active", activeCanonicalId ?? "none", { colors });
+    if (rows.length === 0) {
+      note(out, "No canonical sessions are available yet. Import histories or switch to Shared mode.", { colors });
+      return 0;
+    }
+    for (const { session, record, transcript } of rows) {
+      const latestEventId = record.events.at(-1)?.id ?? null;
+      section(out, `${session.title ?? "Untitled"}`, { colors, description: session.id });
+      field(out, "counts", `${record.events.length} events  ·  ${transcript.summary.turns} turns  ·  revision ${record.session.revision ?? "derived"}`, { colors });
+      field(out, "updated", String(session.updatedAt ?? "unknown"), { colors });
+      field(out, "last", transcriptPreview(transcript, 72), { colors });
+      const projections = Object.entries(record.mappings.projections ?? {}).filter(([, mapping]) => mapping?.nativeSessionId);
+      if (projections.length === 0) {
+        field(out, "native", "no agent session yet", { colors });
+        continue;
       }
-      const projections = Object.entries(stored.mappings.projections)
-        .filter(([, mapping]) => mapping?.nativeSessionId)
-        .map(([agentId, mapping]) => `${agentId}:${mapping.nativeSessionId}`)
-        .join(", ") || "none";
-      const latest = Object.entries(stored.mappings.projections)
-        .filter(([, mapping]) => mapping?.lastSyncedAt)
-        .sort(([, left], [, right]) => right.lastSyncedAt.localeCompare(left.lastSyncedAt))[0]?.[0] ?? "none";
-      console.log(`${session.id}  ${session.title ?? "Untitled"}  updated ${session.updatedAt}`);
-      console.log(`  native ${projections}  last agent ${latest}`);
-      if (command === "status") {
-        for (const [agentId, mapping] of Object.entries(stored.mappings.projections ?? {})) {
-          if (!mapping?.nativeSessionId) continue;
-          const cursor = mapping.lastCanonicalEventId === latestEventId ? "current" : "stale";
-          console.log(`  ${agentId} cursor ${cursor} @${mapping.lastCanonicalEventId ?? "none"}`);
-        }
+      for (const [agentId, mapping] of projections) {
+        const current = mapping.lastCanonicalEventId === latestEventId;
+        // The cursor is the whole story of a switch: it says how far the
+        // agent's own session has been brought, and whether the next launch
+        // needs a delta or nothing at all.
+        const state = command === "status"
+          ? `${current ? colors.ok("current") : colors.warn("stale")}  @${mapping.lastCanonicalEventId ?? "none"}`
+          : `${current ? colors.ok("current") : colors.warn("stale")}`;
+        field(out, agentLabel(agentId), `${mapping.nativeSessionId}  ${state}`, { colors });
       }
     }
     return 0;
@@ -680,7 +822,7 @@ async function dispatchSessions(argumentsList, options = {}) {
       results.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
     }
     console.log(`Synced ${results.reduce((total, item) => total + (item.imported ?? 0), 0)} native session(s).`);
-    reportSessionDiagnostics(results.flatMap((result) => result.diagnostics ?? []));
+    reportSessionDiagnostics(results.flatMap((result) => result.diagnostics ?? []), { missingRoots: true });
     return 0;
   }
   if (command !== "git") {

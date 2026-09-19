@@ -58,6 +58,18 @@ Avenic 会把共享历史保存为 canonical session。Claude、Codex、OpenCode
 - synced、stale、missing 或 conflict 状态；
 - 当前项目 active session。
 
+### 阅读共享对话
+
+打开 **Avenic: Sessions**（Agents 视图标题栏的 Sessions 按钮，或命令面板），或从 Overview 里点 **Sessions**。这一页读的就是 `avenic sessions show <id>` 读的那份共享对话，字段和措辞都来自同一处：
+
+- 每一轮一行，说话人是 **You** / **Claude** / **Codex** / **OpenCode**，带时间和模型；
+- 工具调用与结果挂在跑它的那一轮下面，显示为暗色的一行；
+- 顶部是会话摘要：ID、事件数、轮数，以及每个 Agent 从哪条原生会话回答、游标是 **current** 还是 **stale**；
+- 左侧列表切换会话，`▸` 是正在读的，`◉` 是新启动会加入的 active session；
+- 长对话默认只显示最新的一段，说明省略了多少轮，并可以一键展开全部。
+
+这一页只读：它不会写 canonical history，也不会触发写回。
+
 ### 在 Agent 之间继续
 
 从共享会话操作中选择：

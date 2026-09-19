@@ -9,12 +9,20 @@ import { pathToFileURL } from "node:url";
 const CLAUDE = `${JSON.stringify({ type: "user", uuid: "u1", sessionId: "claude-1", timestamp: "2026-09-14T00:00:00.000Z", message: { role: "user", content: "A" } })}\n${JSON.stringify({ type: "assistant", uuid: "a1", sessionId: "claude-1", timestamp: "2026-09-14T00:00:01.000Z", message: { role: "assistant", model: "claude-test", content: [{ type: "text", text: "B" }], future: "retained" } })}\n`;
 const CODEX = `${JSON.stringify({ type: "session_meta", payload: { id: "codex-1", cwd: "/project", model_provider: "openai" } })}\n${JSON.stringify({ timestamp: "2026-09-14T00:00:00.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "A" }] } })}\n${JSON.stringify({ timestamp: "2026-09-14T00:00:01.000Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "B" }], model: "gpt-test", future: true } })}\n`;
 
-test("every registered adapter exposes the canonical reader contract", () => {
+// An adapter answers two questions: how to read its native session into
+// canonical events, and how to give a canonical conversation back to its own
+// agent. The second one is a projection — native history where the official
+// surface supports it, a structured briefing where it does not — so that is
+// what the contract asserts.
+test("every registered adapter exposes the canonical reader and projection contract", () => {
   for (const agentId of ["claude", "codex", "opencode"]) {
     const adapter = getSessionAdapter(agentId);
     assert.equal(adapter.agentId, agentId);
-    assert.equal(typeof adapter.toCanonical, "function");
-    assert.equal(typeof adapter.fromCanonical, "function");
+    assert.equal(typeof adapter.toCanonical, "function", `${agentId}.toCanonical`);
+    assert.equal(typeof adapter.readCanonical, "function", `${agentId}.readCanonical`);
+    assert.equal(typeof adapter.projectCanonical, "function", `${agentId}.projectCanonical`);
+    assert.equal(typeof adapter.resumeArguments, "function", `${agentId}.resumeArguments`);
+    assert.ok(adapter.resumeArguments("native-id").length > 0, `${agentId} opens a named session`);
   }
 });
 

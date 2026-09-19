@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.7.0 / 1.6.0 - 2026-09-19
+
+- **Shared history is one conversation.** In Shared mode, Claude Code, Codex
+  and OpenCode work on the same conversation rather than three private ones:
+  every turn is recorded once, with who actually said it, and switching agent
+  hands the target only the turns it has not seen. Ask Claude something, switch
+  to Codex, and Codex answers with the whole exchange in hand — no briefing
+  pasted in front of it, no history the other agent cannot see, and no
+  re-sending of what it already knows.
+- Read that conversation back with `avenic sessions list` and
+  `avenic sessions show <id>`, or from the Sessions menu on a terminal. Each
+  turn is shown under its real speaker — `You`, `Claude`, `Codex` — with the
+  tool calls that turn ran underneath it and the model that answered. A shared
+  history that hides which agent said what is not worth reading.
+- Codex continuations go through Codex's own app-server: a thread is started,
+  resumed or forked through the interface Codex publishes, and the delta is
+  injected as items. Avenic reads and writes no private Codex storage of its
+  own, so a Codex session Avenic handed over is a normal Codex session.
+- The same is true of Claude Code: continuations use its own resume, and the
+  conversation arrives as context rather than as words put in your mouth —
+  another agent's answers are never presented as something you said.
+- A switch costs its delta, not its history. Handing over a conversation of
+  10 000 events prepares the target from the newest turns it has not seen —
+  measured, that preparation costs tens of milliseconds whether the
+  conversation holds a hundred events or ten thousand, because it projects the
+  newest turns up to one bound rather than replaying the conversation in full.
+- A launch that was interrupted is picked up again instead of restarted: a
+  session Avenic wrote but never finished is recovered on the next run, and the
+  conversation it was holding is still there. That recovery reads the native
+  history this project already matched rather than searching the machine again,
+  and the durability watch the killed run left behind is told the work is done
+  instead of capturing the same tree a second time while the user waits.
+- `avenic status` is one page of blocks — Project, History, Agents, Skills —
+  under a single set of rails, with each agent's CLI, auth, session scope and
+  cursor state on one row. `avenic status --json` is the same object unchanged.
+  The Sessions and Skills menus are drawn from the same layer.
+- Every command that reports what it did ends in that same page: `init` and
+  `change` answer with a ◇ Agents and ◇ History block, `avenic claude init`
+  and `deinit` and `auth` and `sessions` with their answers behind the same
+  rail, and the wizard shows the configuration it is about to apply in that
+  shape before it asks. A result used to be a hand-written column of text
+  printed after a wizard drawn by the new layer — the seam was visible, and
+  it is gone.
+- The terminal UI is one layer: a readable `AVENIC` wordmark, `◆` sections over
+  `│ ◇ ◆ └` rails, a `▸` cursor and `◉`/`○` selections that mean the same thing
+  everywhere, arrows and `j`/`k` to move, space to toggle, typing to filter,
+  `^a` to select all, Enter to confirm, Esc to cancel. Enter with nothing
+  selected is refused in place rather than treated as "no", there is no
+  "cancel" row to scroll past, and narrow windows, `NO_COLOR`, pipes and
+  PowerShell all degrade to plain text rather than to broken boxes. There is no
+  "Back" row either: Esc is the one way out of a menu, and the terminal layer's
+  printed emitters all fall back to the real stdout on their own, so a command
+  that reports a result cannot crash on a terminal that is not a test.
+- An agent you have never run on this machine is no longer announced as a
+  missing session root on every list; `avenic sessions import` still says where
+  it looked when it finds nothing.
+- The Hub is cache-first as documented. `avenic skills tree` and
+  `avenic skills packs` — and the editor's Hub tree — read the local cache and
+  run no git and no network at all; an unsynced cache says to run
+  `avenic hub sync` instead of fetching behind your back or reporting git's
+  error. An install the project lock has pinned to a revision that is already
+  cached installs from the cache without fetching: the same bytes, no round
+  trip, and reproducible offline as well as across machines. Deciding what the
+  cache can answer now lives in core (`cachedCatalog`) rather than in each
+  front end's own idea of a usable cache directory.
+- Nothing that was said is lost when the native root is gone. A project-scoped
+  launch reverts native storage when it exits, so the portable copies under
+  `.agents/sessions` are the only record of that conversation; a capture that
+  finds no native root at all now reads as "nothing new to copy" instead of
+  deleting every one of them. Removing a portable file whose native source was
+  actually deleted still works exactly as before.
+- The launch path stays quiet: no network, no Hub, no registry, no full history
+  scan before the agent starts, and `avenic perf` measures the wrapper's own
+  cost per agent and separately for a Shared switch.
+
 ## 1.6.0 / 1.5.0 - 2026-09-19
 
 - Ask one command what state this project is in. `avenic status` prints the

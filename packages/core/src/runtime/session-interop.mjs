@@ -1,8 +1,16 @@
-import { appendCanonicalEvents, canonicalSessionRevision, readCanonicalSession, syncNativeMapping } from "./canonical-sessions.mjs";
-import { createCanonicalSession } from "./canonical-sessions.mjs";
+import {
+  appendCanonicalEvents,
+  canonicalSessionRevision,
+  createCanonicalSession,
+  findCanonicalSessionForNative,
+  readCanonicalSession,
+  readCanonicalSessionRecord,
+  syncNativeMapping,
+} from "./canonical-sessions.mjs";
 import { getSessionAdapter } from "./adapters/index.mjs";
-import { agentCursors, loadCursors, sameStamp, saveCursors, stampOf } from "./cursors.mjs";
+import { agentCursors, canonicalCursors, loadCursors, sameStamp, saveCursors, stampOf } from "./cursors.mjs";
 import { buildHandoff } from "./handoff.mjs";
+import { timed } from "./timing.mjs";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +18,7 @@ import {
   agentSessionsRoot,
   configureProject,
   effectiveAgentConfig,
+  getActiveCanonicalSessionId,
   loadRuntime,
   projectAuthEnvironment,
   projectConfig,
@@ -36,10 +45,10 @@ function canonicalRevision(stored) {
 // second inventory/cache layer or background polling is required.
 export async function observeSharedNativeSessions(projectRoot, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);
-  const captured = await adapter.capture(projectRoot, options);
+  const captured = await timed("observe.capture", () => adapter.capture(projectRoot, options));
   const mode = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
   const imported = mode === "shared"
-    ? await importProjectSessions(projectRoot, agentId, { ...options, skipCapture: true, setActive: options.setActive })
+    ? await timed("observe.import", () => importProjectSessions(projectRoot, agentId, { ...options, skipCapture: true, setActive: options.setActive }))
     : { imported: 0, diagnostics: [] };
   return { changed: Boolean(captured.changed || imported.imported), imported: imported.imported ?? 0, diagnostics: [...(captured.diagnostics ?? []), ...(imported.diagnostics ?? [])] };
 }
@@ -81,10 +90,16 @@ function launchGroup(projectRoot, agentId, environment) {
     hooks: {
       onFirst: async (recovering) => {
         if (recovering) {
-          await observeSharedNativeSessions(projectRoot, agentId, { environment, setActive: false });
-          await revertNative(snapshotRoot, projectRoot, { environment });
+          // The run that died wrote its session where this project's sessions
+          // already live, and the cursors know those directories. Asking the
+          // adapter to rediscover them would read the head of every session on
+          // the machine before the user's next launch could start — the
+          // capture falls back to a full discovery on its own when nothing is
+          // known yet, which is the only case that needs one.
+          await timed("recovery.observe", () => observeSharedNativeSessions(projectRoot, agentId, { environment, knownOnly: true, setActive: false }));
+          await timed("recovery.revert", () => revertNative(snapshotRoot, projectRoot, { environment }));
         }
-        await snapshotNative(projectRoot, snapshotRoot, { environment });
+        await timed("recovery.snapshot", () => snapshotNative(projectRoot, snapshotRoot, { environment }));
       },
       // `acquireSessionLease` writes the marker once onFirst returns, so its
       // absence means the copy never finished.
@@ -143,6 +158,23 @@ export async function finishLaunch(projectRoot, agentId, options = {}) {
   }
 }
 
+/**
+ * Where a native session's events belong.
+ *
+ * The mapping is the authority and the cursor is its constant-time copy: a
+ * conversation that joined a shared session keeps appending to it. Only a
+ * native session that has never been part of one becomes a canonical session of
+ * its own, named after the native conversation it came from.
+ */
+async function canonicalSessionFor(projectRoot, agentId, nativeSessionId, cursors) {
+  const index = canonicalCursors(cursors, agentId);
+  if (index[nativeSessionId]) return index[nativeSessionId];
+  const existing = await findCanonicalSessionForNative(projectRoot, agentId, nativeSessionId);
+  const canonicalId = existing ?? `${agentId}-${nativeSessionId}`;
+  index[nativeSessionId] = canonicalId;
+  return canonicalId;
+}
+
 async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
   if (!captured?.events) return { added: 0, duplicate: 0 };
   return appendCanonicalEvents(projectRoot, canonicalSessionId, captured.events);
@@ -188,14 +220,22 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       continue;
     }
     discovered += 1;
-    const canonicalId = `${agentId}-${native.nativeSessionId}`;
+    // Where this conversation already lives, if it lives anywhere: a capture
+    // must append to the canonical session a shared launch projected it into,
+    // never fork a second conversation holding the same turns.
+    const canonicalId = await canonicalSessionFor(projectRoot, agentId, native.nativeSessionId, cursors);
     const created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title: `${agentId} ${native.nativeSessionId}` });
     const appended = await appendCanonicalEvents(projectRoot, canonicalId, native.events);
     await syncNativeMapping(projectRoot, canonicalId, {
       agentId,
       nativeSessionId: native.nativeSessionId,
       nativeRevision: native.revision ?? null,
-      lastCanonicalEventId: native.events.at(-1)?.id ?? null,
+      // The cursor moves only as far as this capture actually contributed. A
+      // re-read of a rollout adds nothing, and writing the rollout's own last
+      // event id would walk a target that had already seen the whole history
+      // backwards — which is what made a reconciled switch re-project
+      // everything the target already had.
+      ...(appended.added > 0 ? { lastCanonicalEventId: native.events.at(-1)?.id ?? null } : {}),
     });
     if (options.setActive !== false) await setActiveCanonicalSession(projectRoot, canonicalId);
     if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
@@ -289,33 +329,53 @@ export async function projectCanonicalSession(projectRoot, canonicalSessionId, a
   return { ...result, canonicalRevision: revision };
 }
 
-// Prepare one native projection for a resume catalog without selecting it in
-// the foreground UI. The caller supplies the agent's official bootstrap hook;
-// this function owns identity, cursor, and idempotency.
-export async function ensureNativeProjection({ projectRoot, canonicalId, targetAgent, environment, intent = "resume-catalog", materialize }) {
+/**
+ * Make one agent able to answer next.
+ *
+ * This is the single place that decides what "shared" costs. If the target's
+ * mapping already reaches the end of canonical history *and* the agent's
+ * projection lives inside its own session (Codex appends to the thread's
+ * history; OpenCode imports a session), there is nothing to do and nothing to
+ * read beyond the session record. Otherwise the adapter is asked for a
+ * projection — a delta, never a replay — and the mapping records how far it got.
+ *
+ * `materialize` lets a caller supply its own projection (tests, or a host that
+ * knows better); otherwise the adapter's own `projectCanonical` is used.
+ */
+export async function ensureNativeProjection({ projectRoot, canonicalId, targetAgent, environment, intent = "resume-catalog", materialize, force = false }) {
+  const adapter = getSessionAdapter(targetAgent);
+  const project = materialize ?? (typeof adapter.projectCanonical === "function"
+    ? (context, options) => adapter.projectCanonical(projectRoot, context, { ...options, environment })
+    : null);
+  if (typeof project !== "function") throw new Error(`No ${targetAgent} projection materializer is available`);
+  const record = await readCanonicalSessionRecord(projectRoot, canonicalId);
+  const existing = record.mappings.projections?.[targetAgent] ?? null;
+  const tail = record.session.lastEventId ?? null;
+  const durable = adapter.projectionIsDurable !== false;
+  // The session a mapping names may not be the one that can be resumed: a Codex
+  // sub-agent thread is continued through its parent. An adapter that knows the
+  // difference answers here, before anything is read or started, and the
+  // mapping keeps naming the session Avenic actually saw.
+  const mapped = existing?.nativeSessionId && typeof adapter.resolveResumableSession === "function"
+    ? await adapter.resolveResumableSession(projectRoot, existing.nativeSessionId, { environment })
+    : existing?.nativeSessionId ?? null;
+  if (!force && mapped && durable && existing.lastCanonicalEventId === tail) {
+    return { nativeSessionId: mapped, status: "current", mapping: existing, launch: null };
+  }
   const stored = await readCanonicalSession(projectRoot, canonicalId);
-  const existing = stored.mappings.projections[targetAgent];
-  const tail = stored.events.at(-1)?.id ?? null;
-  if (existing?.nativeSessionId && existing.lastCanonicalEventId === tail) {
-    return { nativeSessionId: existing.nativeSessionId, status: "current", mapping: existing };
-  }
-  if (existing?.nativeSessionId && intent === "resume-catalog" && !materialize) {
-    return { nativeSessionId: existing.nativeSessionId, status: "stale", mapping: existing };
-  }
-  if (typeof materialize !== "function") throw new Error(`No ${targetAgent} projection materializer is available`);
-  const result = await materialize({ session: stored.session, events: stored.events, mapping: existing ?? null, intent });
+  const result = await project({ session: stored.session, events: stored.events, mapping: force ? null : existing, intent, projectRoot }, { environment });
   if (!result?.nativeSessionId) throw new Error(`${targetAgent} projection did not return a native session id`);
   const mapping = await syncNativeMapping(projectRoot, canonicalId, {
     agentId: targetAgent,
     nativeSessionId: result.nativeSessionId,
     nativeRevision: result.nativeRevision ?? null,
     canonicalRevision: canonicalRevision(stored),
-    projectionHash: result.projectionHash ?? null,
-    lastCanonicalEventId: tail,
-    provenance: { kind: "avenic-projection", intent },
+    projectionHash: result.projection?.hash ?? result.projectionHash ?? null,
+    lastCanonicalEventId: result.projection?.lastEventId ?? tail,
+    provenance: { kind: result.kind ?? "avenic-projection", intent },
     diagnostics: result.diagnostics ?? [],
   });
-  return { nativeSessionId: result.nativeSessionId, status: existing ? "refreshed" : "created", mapping };
+  return { ...result, status: result.materialized ? "materialized" : "projected", mapping };
 }
 
 export async function captureCanonicalSession(projectRoot, canonicalSessionId, agentId, options = {}) {
@@ -365,23 +425,126 @@ export async function reconcileCanonicalSession(projectRoot, canonicalSessionId,
   return results;
 }
 
-// Prepare is intentionally auth-agnostic. The CLI/runtime resolves the exact
-// environment it normally uses for an agent, then supplies it only to native
-// capture/launch hooks. This prevents session sharing from altering providers
-// or credential scopes.
-export async function prepareCanonicalContinuation(projectRoot, canonicalSessionId, agentId, options = {}) {
-  const stored = await readCanonicalSession(projectRoot, canonicalSessionId);
-  const mapping = stored.mappings.projections[agentId] ?? null;
+/**
+ * Prepare one agent to continue the shared conversation.
+ *
+ * The preferred answer is a projection: the agent's own session receives the
+ * turns it is missing, and the user is handed nothing. Only when an agent
+ * cannot take a projection at all does this fall back to a handoff prompt —
+ * and that fallback is written to disk as well, so what the user saw is
+ * inspectable after the fact.
+ *
+ * Prepare is intentionally auth-agnostic. The CLI/runtime resolves the exact
+ * environment it normally uses for an agent, then supplies it only to native
+ * capture/launch hooks. This prevents session sharing from altering providers
+ * or credential scopes.
+ */
+/**
+ * How a projection is opened.
+ *
+ * A projection that prepared a native session names its own launch. One that
+ * found the target already current has no launch of its own — the adapter's
+ * resume command is the launch, which is the whole point of asking first, and
+ * costs nothing but two small reads.
+ */
+function projectionLaunch(adapter, projected) {
+  if (Array.isArray(projected?.launch?.argumentsList) && projected.launch.argumentsList.length > 0) {
+    return projected.launch;
+  }
+  if (projected?.status === "current" && typeof adapter.resumeArguments === "function") {
+    return { argumentsList: adapter.resumeArguments(projected.nativeSessionId) };
+  }
+  return null;
+}
+
+/**
+ * What a plain launch needs in order to continue the shared conversation
+ * instead of starting a native session of its own.
+ *
+ * Returns null whenever that is not possible — no shared conversation yet, a
+ * projection the target cannot take, a canonical session that was deleted — and
+ * the caller launches exactly as it would have. A plain launch never degrades
+ * into a prompt: the shared history reaches the agent through the agent's own
+ * session, or it is not attached at all.
+ */
+export async function prepareSharedLaunch({ projectRoot, agentId, environment, activeCanonicalId = null }) {
+  const canonicalId = activeCanonicalId ?? await getActiveCanonicalSessionId(projectRoot);
+  if (!canonicalId) return null;
   const adapter = getSessionAdapter(agentId);
-  const mappedNativeSessionId = options.forceBootstrap ? null : mapping?.nativeSessionId ?? null;
-  const nativeSessionId = mappedNativeSessionId && typeof adapter.resolveResumableSession === "function"
-    ? await adapter.resolveResumableSession(projectRoot, mappedNativeSessionId, options)
-    : mappedNativeSessionId;
+  if (!adapter) return null;
+  try {
+    await readCanonicalSessionRecord(projectRoot, canonicalId);
+  } catch {
+    return null;
+  }
+  const projected = await ensureNativeProjection({
+    projectRoot,
+    canonicalId,
+    targetAgent: agentId,
+    environment,
+    intent: "launch",
+  });
+  const launch = projectionLaunch(adapter, projected);
+  return launch ? { canonicalId, ...projected, launch } : null;
+}
+
+export async function prepareCanonicalContinuation(projectRoot, canonicalSessionId, agentId, options = {}) {
+  const adapter = getSessionAdapter(agentId);
+  const record = await readCanonicalSessionRecord(projectRoot, canonicalSessionId);
+  const mapping = record.mappings.projections?.[agentId] ?? null;
+  // `handoff` is the last resort: this target has already refused a projected
+  // native session, so the handoff opens a fresh one and carries the history
+  // itself. Dropping the mapping is part of that — resuming the session that
+  // just failed would fail again.
+  const force = Boolean(options.forceBootstrap || options.handoff);
+  let projected = null;
+  let failure = null;
+  if (!options.handoff) {
+    try {
+      projected = await ensureNativeProjection({
+        projectRoot,
+        canonicalId: canonicalSessionId,
+        targetAgent: agentId,
+        environment: options.environment,
+        intent: options.intent ?? "sessions-continue",
+        materialize: options.materialize,
+        force: Boolean(options.forceBootstrap),
+      });
+    } catch (error) {
+      failure = error;
+    }
+  }
+  const launch = projectionLaunch(adapter, projected);
+  if (launch) {
+    // A projection that built the native session just now is a bootstrap; one
+    // that continued an existing session is a resume. Either way the projection
+    // decided how it opens, and the user is handed nothing.
+    return {
+      canonicalSessionId,
+      agentId,
+      kind: projected.kind,
+      mode: projected.status === "current" ? "resume" : projected.materialized ? "bootstrap" : "resume",
+      nativeSessionId: projected.nativeSessionId,
+      launch,
+      projection: projected.projection ?? null,
+      mapping: projected.mapping,
+      status: projected.status,
+      canonicalRevision: record.session.revision ?? null,
+    };
+  }
+  // No projection was possible: fall back to a bounded, structured handoff.
+  const stored = await readCanonicalSession(projectRoot, canonicalSessionId);
+  const mapped = force ? null : mapping?.nativeSessionId ?? null;
+  // A fallback with no mapping still has to name a session for an agent whose
+  // launch requires one; the id it will create is the same one a projection
+  // would have used.
+  const nativeSessionId = mapped
+    ?? (typeof adapter.nativeSessionIdFor === "function" ? adapter.nativeSessionIdFor(canonicalSessionId) : null);
   const handoff = buildHandoff({
     session: stored.session,
     events: stored.events,
     targetAgent: agentId,
-    lastCanonicalEventId: options.forceBootstrap ? null : mapping?.lastCanonicalEventId ?? null,
+    lastCanonicalEventId: force ? null : mapping?.lastCanonicalEventId ?? null,
   });
   const handoffRoot = path.join(runtimePaths(projectRoot).sessionsRoot, "canonical", canonicalSessionId);
   await mkdir(handoffRoot, { recursive: true });
@@ -390,10 +553,12 @@ export async function prepareCanonicalContinuation(projectRoot, canonicalSession
   return {
     canonicalSessionId,
     agentId,
-    mode: nativeSessionId ? "resume" : "bootstrap",
+    kind: "handoff-prompt",
+    mode: mapped ? "resume" : "bootstrap",
     nativeSessionId,
-    mapping,
     handoff,
+    failure: failure?.message ?? null,
+    mapping,
     canonicalRevision: canonicalRevision(stored),
   };
 }
@@ -421,7 +586,7 @@ export async function completeCanonicalContinuation(projectRoot, canonicalSessio
 // The only continuation orchestration path. Callers provide the native hooks;
 // adapters remain responsible only for their native format and launch command.
 // `capture` may return null when no mapped native session exists yet.
-export async function continueCanonicalSession({ projectRoot, canonicalId, targetAgent, captureKnown, capture, launch, environment, forceBootstrap: requestedBootstrap = false }) {
+export async function continueCanonicalSession({ projectRoot, canonicalId, targetAgent, captureKnown, capture, launch, environment, materialize, forceBootstrap: requestedBootstrap = false }) {
   if (typeof capture !== "function" || typeof launch !== "function") {
     throw new Error("Canonical continuation requires capture and launch hooks");
   }
@@ -435,7 +600,11 @@ export async function continueCanonicalSession({ projectRoot, canonicalId, targe
     forceBootstrap = true;
     recoveredProjection = true;
   }
-  const continuation = await prepareCanonicalContinuation(projectRoot, canonicalId, targetAgent, { environment, forceBootstrap });
+  const continuation = await prepareCanonicalContinuation(projectRoot, canonicalId, targetAgent, {
+    environment,
+    materialize,
+    forceBootstrap,
+  });
   const launched = await launch(continuation);
   const captured = await capture("after", { continuation, launched });
   await mergeCapturedEvents(projectRoot, canonicalId, captured);
@@ -455,10 +624,21 @@ export async function continueCanonicalSession({ projectRoot, canonicalId, targe
   };
 }
 
-// These are documented public CLI paths, not native storage projections.
-// Handoff remains visible to the user/model as an explicit continuation prompt.
-export function continuationLaunchArguments({ agentId, mode, nativeSessionId, handoff }) {
-  if (!handoff?.markdown) throw new Error("Continuation launch requires a handoff");
+/**
+ * How one continuation is launched.
+ *
+ * A projection knows how it must be opened — resume the agent's own session,
+ * resume the native session the projection just built, or open a fresh one —
+ * and its argument list is used verbatim. The prompt path below survives only
+ * for an agent with no projection at all, where a single bounded handoff
+ * message is the honest remaining option.
+ */
+export function continuationLaunchArguments(continuation = {}) {
+  const { agentId, mode, nativeSessionId, handoff, launch } = continuation;
+  if (Array.isArray(launch?.argumentsList) && launch.argumentsList.length > 0) {
+    return { argumentsList: [...launch.argumentsList], input: launch.input };
+  }
+  if (!handoff?.markdown) throw new Error("Continuation launch requires a projection or a handoff");
   // npm-style Windows .cmd shims pass command lines through cmd.exe. A newline
   // terminates that command even inside a quoted argument, so keep the
   // model-visible handoff a single argument on every platform. Canonical

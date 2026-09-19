@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { buildCatalog, catalogCacheDirectory, currentRepositoryState, defaultCatalogFile, ensureCatalog, hubSyncSummary, loadDefaultCatalogSpec, loadKnownCatalogs, loadPacks, loadSources, registerCatalog, resolvePack, setDefaultCatalogSpec } from "@avenic/core";
+import { buildCatalog, cachedCatalog, defaultCatalogFile, ensureCatalog, hubSyncSummary, loadDefaultCatalogSpec, loadKnownCatalogs, loadPacks, loadSources, registerCatalog, resolvePack, setDefaultCatalogSpec } from "@avenic/core";
 import type { CatalogInfo, KnownCatalogEntry, Pack, ProcessEnvLike, Source } from "@avenic/core";
 
 export async function defaultSpec(environment = process.env): Promise<string | null> {
@@ -33,29 +33,25 @@ export function syncSummary(info: CatalogInfo): string {
   return hubSyncSummary(info);
 }
 
-// 读取「本地缓存 Catalog」的修订（Overview「修订」行）：零网络——只读缓存目录的 git
-// HEAD（git rev-parse/status），绝不做 fetch/clone。缓存缺失（未同步过）返回 null，
-// 调用方降级为「—」占位符。旧实现走 resolveInstallSource → ensureCatalog，每次加载
-// 都 git fetch --depth 1，是 Overview「每次打开加载很久」的根因。
+// 读取「本地缓存 Catalog」的修订（Overview「修订」行）：零网络。规则在 core 里
+// （cachedCatalog），面板和 CLI 用同一份判断——「什么算缓存里有」不该有第二种说法。
+// 缓存缺失（未同步过）返回 null，调用方降级为「—」占位符。
 export async function cachedRevision(_cwd: string, environment: ProcessEnvLike = process.env): Promise<string | null> {
   try {
     const spec = await loadDefaultCatalogSpec(environment);
-    const root = catalogCacheDirectory(spec, environment);
-    if (!existsSync(root)) return null;
-    const state = await currentRepositoryState(root);
-    return state.revision ?? null;
+    return (await cachedCatalog(spec, environment))?.revision ?? null;
   } catch {
     return null;
   }
 }
 
-// Catalog 树只读预览的缓存根优先路径：已缓存（packs 目录存在）直接返回缓存目录；
+// Catalog 树只读预览的缓存根优先路径：缓存里有能读的内容树就直接用它；
 // 否则经 ensureCatalog（git fetch）取最新——语义等同「展开即同步一次」。任何错误返回 null。
 // cachedOnly：Installed Packs 层次展示必须零网络（视图每次加载都走），未缓存 → null，
 // 调用方回退为扁平来源行，绝不在加载时触发 fetch。
 async function catalogRootFor(spec: string, environment: ProcessEnvLike, options: { cachedOnly?: boolean } = {}): Promise<string | null> {
-  const cached = catalogCacheDirectory(spec, environment);
-  if (existsSync(path.join(cached, "packs"))) return cached;
+  const cached = await cachedCatalog(spec, environment);
+  if (cached) return cached.catalogRoot;
   if (options.cachedOnly === true) return null;
   try {
     const info = await ensureCatalog(spec, { environment });

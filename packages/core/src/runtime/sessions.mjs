@@ -157,6 +157,15 @@ export async function snapshotFiles(sourceRoot, relativeFiles, destination, tran
 // revision", and such an entry is always produced.
 export async function syncDirectory(entries, destinationRoot, transform, cursors, agentId) {
   const files = agentCursors(cursors, agentId);
+  // No entries means the source had nothing to offer this run — a native root
+  // that is missing, or a scan that matched no session — and that is not the
+  // same as "every native session was deleted". The removal pass below cannot
+  // tell those apart, and choosing wrong deletes the project's only copy: after
+  // `avenic claude` reverts native storage, the portable files under
+  // `.agents/sessions/claude` are all the project has left, so the next capture
+  // finding no native root must leave them alone. Agents whose native history
+  // can be genuinely empty return before this point and report why.
+  if (entries.length === 0) return { added: 0, updated: 0, unchanged: 0, removed: 0 };
   const seen = new Set();
   let added = 0;
   let updated = 0;
@@ -677,9 +686,10 @@ export function markLaunchClosing(agentId, projectRoot, member) {
 }
 
 /**
- * Whether a launch's exit sequence ran to the end, as opposed to dying inside
- * it. A watchdog reads this to tell "the launcher finished" from "the launcher
- * was killed", which decides whether the group still needs recovering.
+ * Whether there is anything left to finish for a launch, as opposed to it
+ * dying with work unfinished. A watchdog reads this to tell "the launcher is
+ * done, or a later launch did it" from "the launcher was killed with nobody to
+ * take over", which decides whether it still has a reason to run.
  */
 export function launchFinished(agentId, projectRoot, member) {
   return existsSync(launchMarkerPath(agentId, projectRoot, member, "done"));
@@ -689,6 +699,46 @@ export function markLaunchFinished(agentId, projectRoot, member) {
   const marker = launchMarkerPath(agentId, projectRoot, member, "done");
   mkdirSync(path.dirname(marker), { recursive: true });
   writeFileSync(marker, "");
+}
+
+// How long a launch's records outlive it. The watch that reads them is started
+// by the launch itself and may wake up seconds later, so they have to stand for
+// longer than any watch can live; past that they are clutter in a directory
+// that lives as long as the project's launch state does.
+const LAUNCH_MARKER_RETENTION_MS = 10 * 60 * 1000;
+
+/**
+ * Take over the records of the launches that are gone, for a group whose first
+ * live launch just arrived. A launch that recovers an interrupted group has
+ * already done what those launches never got to — captured their sessions and
+ * put native storage back — so their watches would only repeat it. Marking
+ * them finished is how that is said with the marker a watch already reads: two
+ * processes capturing the same tree at once cost far more than either alone,
+ * and the second one's work is wasted anyway. Records too old for any watch to
+ * still be owed an answer are the ones that get deleted.
+ */
+async function adoptLaunchMarkers(stateDir) {
+  const launchRoot = path.join(stateDir, "launch");
+  let members = [];
+  try {
+    members = await readdir(launchRoot);
+  } catch {
+    return; // no launch has run for this group yet
+  }
+  const cutoff = Date.now() - LAUNCH_MARKER_RETENTION_MS;
+  for (const member of members) {
+    const [pid, startedAt] = member.split("-");
+    const record = path.join(launchRoot, member);
+    const owner = Number.parseInt(pid, 10);
+    const recorded = Number.parseInt(startedAt, 10);
+    if (!Number.isInteger(owner) || !Number.isInteger(recorded) || recorded < cutoff) {
+      await rm(record, { recursive: true, force: true });
+      continue;
+    }
+    if (processAlive(owner)) continue; // a launch of this group is still running
+    await mkdir(record, { recursive: true });
+    await writeFile(path.join(record, "done"), "", { encoding: "utf8" });
+  }
 }
 
 // Join a launch group for one project+agent. Any number of launches can be
@@ -743,9 +793,11 @@ export async function acquireSessionLease(agentId, projectRoot, callbacks = {}) 
       await timed("lease.first", () => callbacks.onFirst?.(recovered));
       await writeFile(snapshotMarker, "", { encoding: "utf8" });
       await rm(cleanMarker, { force: true });
-      // This launch owns the group now: the previous launch's markers say
-      // nothing about it, and a stale one would end this run's watch early.
-      await rm(path.join(stateDir, "launch"), { recursive: true, force: true });
+      // This launch owns the group now: the previous launches' records say
+      // nothing about it, and a stale closing marker would end this run's
+      // watch early. What they do still say is which of those launches are
+      // owed a finish — and this launch just did it.
+      await adoptLaunchMarkers(stateDir);
       // No member is alive, so every pid file belongs to a launch that was
       // killed before it could leave. They are already ignored when the group
       // is read, but leaving them is what lets a recycled process id make a

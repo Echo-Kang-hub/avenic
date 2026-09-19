@@ -267,6 +267,64 @@ export function importProjectSessions(projectRoot: string, agentId: string, opti
 export function setSessionInteropMode(projectRoot: string, mode: "shared" | "isolated", options?: { agents?: ProjectConfig["agents"]; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
 export function applyProjectConfiguration(projectRoot: string, draft: Pick<ProjectConfig, "agents" | "sessionInterop">, options?: { environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
 export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
+// One canonical conversation, read as a timeline. Both hosts render this and
+// neither computes a second answer: a turn belongs to the agent that produced
+// it, and "You" is only ever the person at the keyboard.
+export const TRANSCRIPT_SCHEMA_VERSION: number;
+export interface TranscriptTool {
+  kind: "call" | "result";
+  name: string;
+  detail?: string | null;
+}
+export interface TranscriptTurn {
+  id: string;
+  kind: "user" | "agent" | "tool";
+  agent: string | null;
+  speaker: string;
+  role: string;
+  at: string | null;
+  text: string;
+  tools: TranscriptTool[];
+  model: string | null;
+  provider: string | null;
+}
+export interface TranscriptProjection {
+  agentId: string;
+  label: string;
+  nativeSessionId: string;
+  state: "current" | "stale" | "none";
+  lastSyncedAt: string | null;
+  provenance: string | null;
+}
+export interface TranscriptSummary {
+  schemaVersion: number;
+  id: string | null;
+  title: string;
+  revision: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  events: number;
+  turns: number;
+  userTurns: number;
+  agents: string[];
+  startedAt: string | null;
+  endedAt: string | null;
+  lastEventId: string | null;
+  projections: TranscriptProjection[];
+}
+export function transcriptTurns(events: CanonicalEvent[], options?: { limit?: number }): TranscriptTurn[];
+export function transcriptSummary(session: Record<string, unknown>, events: CanonicalEvent[], record?: Record<string, unknown>): TranscriptSummary;
+export function readTranscript(projectRoot: string, id: string, options?: { record?: unknown; limit?: number }): Promise<{ summary: TranscriptSummary; turns: TranscriptTurn[]; session: Record<string, unknown>; events: CanonicalEvent[] }>;
+/** The one data shape behind `avenic sessions show <id> --json` and the VS Code Sessions page. */
+export interface TranscriptModel {
+  schemaVersion: number;
+  session: Omit<TranscriptSummary, "schemaVersion">;
+  turns: TranscriptTurn[];
+}
+export function transcriptModel(reading: { summary: TranscriptSummary; turns: TranscriptTurn[] }): TranscriptModel;
+export function turnPreview(turn: TranscriptTurn, limit?: number): string;
+/** Agent display name ("Claude", "Codex", "OpenCode"). */
+export function agentLabel(agentId: string): string;
 export function appendCanonicalEvents(projectRoot: string, id: string, events: CanonicalEvent[]): Promise<{ added: number; duplicate: number }>;
 export function canonicalSessionRevision(events: CanonicalEvent[]): string;
 export function syncNativeMapping(projectRoot: string, id: string, mapping: NativeSessionMapping): Promise<NativeSessionMapping>;
@@ -377,13 +435,17 @@ export interface CatalogInfo {
   ref: string;
   revision: string;
   shortSha: string;
-  syncedAt: string;
+  // 从缓存读出来的 Catalog 没有「刚刚同步」这个时间，所以是 null。
+  syncedAt: string | null;
   spec: string;
 }
 export function catalogCacheDirectory(spec: string, environment?: ProcessEnvLike): string;
 export function shortRevision(revision: string): string;
 export function hubSyncSummary(info: { revision: string }, date?: Date): string;
 export function ensureCatalog(spec: string, options?: { environment?: ProcessEnvLike; io?: Io }): Promise<CatalogInfo>;
+// 只读缓存地取 Catalog：缓存答不上来返回 null，绝不 clone/fetch。浏览路径（内容树）
+// 走这个，联网路径（hub add / hub sync / 安装）走 ensureCatalog。
+export function cachedCatalog(spec: string, environment?: ProcessEnvLike): Promise<CatalogInfo | null>;
 export function registerCatalog(spec: string, options?: { environment?: ProcessEnvLike; io?: Io }): Promise<{
   spec: string;
   catalogInfo?: CatalogInfo;

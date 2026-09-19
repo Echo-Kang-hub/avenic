@@ -35,14 +35,15 @@
 //   node scripts/perf/launch-overhead.mjs --agents claude --phases
 //   node scripts/perf/launch-overhead.mjs --runs 5 --real-agent
 //   node scripts/perf/launch-overhead.mjs --cold-fixtures 5
-import { spawn, spawnSync } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { createPerfFixture, percentile } from "./fixture.mjs";
+import { createPerfFixture } from "./fixture.mjs";
+import {
+  budget, cliEntry, measures, record, resolveReal, summarize, timeToShim, verdict, writeShim,
+} from "./harness.mjs";
 
-const repoRoot = path.resolve(import.meta.dirname, "..", "..");
-const cliEntry = path.join(repoRoot, "packages", "cli", "scripts", "skills.mjs");
 const argument = (name, fallback) => {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1];
@@ -53,126 +54,6 @@ const json = process.argv.includes("--json");
 const withPhases = process.argv.includes("--phases");
 const realAgent = process.argv.includes("--real-agent");
 const agents = (argument("--agents", "claude,codex,opencode")).split(",");
-const budget = { median: 300, p95: 500 };
-
-/**
- * The real binary a shim hands off to. `where` lists the shell wrapper first,
- * which the command interpreter refuses to run, so an executable wins.
- */
-function resolveReal(agent) {
-  const found = spawnSync(process.platform === "win32" ? "where.exe" : "which", [agent], { encoding: "utf8" });
-  const candidates = (found.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (process.platform !== "win32") return candidates[0] ?? null;
-  return candidates.find((file) => file.toLowerCase().endsWith(".exe"))
-    ?? candidates.find((file) => file.toLowerCase().endsWith(".cmd"))
-    ?? candidates[0] ?? null;
-}
-
-/**
- * A PATH entry that stands in for the agent: it reports that it has started,
- * and then either exits (the default) or runs the real binary.
- */
-async function writeShim(directory, agent) {
-  const recorder = path.join(directory, `${agent}-shim.mjs`);
-  await writeFile(recorder, `import { writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-writeFileSync(process.env.AVENIC_LAUNCH_PROBE, String(Date.now()));
-if (process.env.AVENIC_LAUNCH_SHIM === "exec") {
-  spawnSync(process.env.AVENIC_LAUNCH_REAL, process.argv.slice(2), { stdio: "inherit" });
-}
-`);
-  if (process.platform === "win32") {
-    const target = path.join(directory, `${agent}.cmd`);
-    await writeFile(target, `@echo off\r\n"${process.execPath}" "${recorder}" %*\r\n`);
-    return target;
-  }
-  const target = path.join(directory, agent);
-  await writeFile(target, `#!/bin/sh\n"${process.execPath}" "${recorder}" "$@"\n`, { mode: 0o755 });
-  return target;
-}
-
-function terminate(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") {
-    spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore" });
-  } else {
-    child.kill("SIGKILL");
-  }
-}
-
-async function readProbe(probe) {
-  try {
-    const raw = await readFile(probe, "utf8");
-    return raw.length > 0 ? Number(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function exited(child, timeoutMs) {
-  return new Promise((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
-    const timer = setTimeout(() => {
-      terminate(child);
-      resolve(false);
-    }, timeoutMs);
-    child.on("exit", () => {
-      clearTimeout(timer);
-      resolve(true);
-    });
-  });
-}
-
-/**
- * Start `command` and stop the clock when the shim reports. Everything the
- * agent does after that is the agent's own time, so the run is either left to
- * finish (and clean up after itself) or killed where it stands, which is what
- * a closed terminal does.
- */
-async function timeToShim(executable, argumentsList, { cwd, env, probe, shell = false, kill = false, timeoutMs = 60_000 }) {
-  const startedAt = Date.now();
-  const child = spawn(executable, argumentsList, { cwd, env, stdio: "ignore", windowsHide: true, shell });
-  let seenAt = null;
-  const deadline = startedAt + timeoutMs;
-  while (seenAt === null && Date.now() < deadline) {
-    seenAt = await readProbe(probe);
-    if (seenAt === null) {
-      if (child.exitCode !== null || child.signalCode !== null) break;
-      await new Promise((resolve) => setTimeout(resolve, 2));
-    }
-  }
-  if (kill || realAgent) terminate(child);
-  else await exited(child, 20_000);
-  if (seenAt !== null) return { ms: seenAt - startedAt, status: "ok" };
-  return { ms: Date.now() - startedAt, status: child.exitCode === null ? "timeout" : `exit-${child.exitCode}` };
-}
-
-function record(failures, label, result) {
-  if (result.status !== "ok") failures.push(`${label}: ${result.status}`);
-  return result;
-}
-
-function summarize(samples) {
-  return {
-    runs: samples.length,
-    median: Math.round(percentile(samples, 0.5)),
-    p95: Math.round(percentile(samples, 0.95)),
-    min: Math.round(percentile(samples, 0)),
-    max: Math.round(percentile(samples, 1)),
-  };
-}
-
-// A 95th percentile of a handful of samples is the largest sample wearing a
-// statistic's name, and on a busy machine that is a report of the bus, not of
-// the wrapper. Below this many samples the median decides on its own and the
-// row says so.
-const P95_SAMPLE_FLOOR = 20;
-
-function verdict(measures) {
-  if (measures.median > budget.median) return "FAIL";
-  if (measures.runs < P95_SAMPLE_FLOOR) return "PASS (median)";
-  return measures.p95 <= budget.p95 ? "PASS" : "FAIL";
-}
 
 /**
  * One paired sample: how long the agent takes to start, and how long it takes
@@ -183,9 +64,13 @@ async function sample(agent, shimPath, environment, { crashed = false } = {}) {
   const runEnvironment = { ...environment, AVENIC_LAUNCH_PROBE: probe, AVENIC_LAUNCH_REAL: environment.AVENIC_LAUNCH_REAL };
   if (crashed) {
     // A launch that was killed where it stood: its sessions are unreconciled
-    // and whatever native storage it isolated is still isolated.
+    // and whatever native storage it isolated is still isolated. The agent has
+    // to still be running when the kill lands, or the launch finishes its own
+    // exit sequence and the next one has nothing to recover — which is the
+    // difference between measuring recovery and measuring a plain launch.
     await rm(probe, { force: true });
-    await timeToShim(process.execPath, [cliEntry, agent], { cwd: environment.AVENIC_LAUNCH_CWD, env: runEnvironment, probe, kill: true });
+    const crashedEnvironment = { ...runEnvironment, AVENIC_LAUNCH_SHIM: "hold" };
+    await timeToShim(process.execPath, [cliEntry, agent], { cwd: environment.AVENIC_LAUNCH_CWD, env: crashedEnvironment, probe, kill: true });
   }
   await rm(probe, { force: true });
   const direct = await timeToShim(shimPath, [], { cwd: environment.AVENIC_LAUNCH_CWD, env: runEnvironment, probe, shell: process.platform === "win32" });
@@ -279,12 +164,6 @@ async function main() {
     for (let run = 0; run < runs; run += 1) {
       recovery.push(record(failures, `recovery ${run + 1}`, await sample(agent, context.shims[agent].shim, { ...context.environment, AVENIC_LAUNCH_REAL: context.shims[agent].real }, { crashed: true })));
     }
-    const measures = (samples) => ({
-      direct: summarize(samples.map((entry) => entry.direct)),
-      wrapped: summarize(samples.map((entry) => entry.wrapped)),
-      // Paired: the machine's noise lands on both sides of the same sample.
-      overhead: summarize(samples.map((entry) => entry.wrapped - entry.direct)),
-    });
     const coldSamples = (cold[agent] ?? []).map((pair, index) => record(failures, `cold ${index + 1}`, pair));
     const situations = { cold: measures(coldSamples), steady: measures(steady), recovery: measures(recovery) };
     report.agents[agent] = {

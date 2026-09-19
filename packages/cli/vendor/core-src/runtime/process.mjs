@@ -3,11 +3,17 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+// Windows resolves a bare command in PATHEXT order, and npm's `.cmd` shim comes
+// before its `.ps1` twin. Following the same order matters twice: the agent
+// gets the launcher the user's own shell would pick, and `.ps1` costs a
+// PowerShell startup that no interactive launch should pay.
+export const WINDOWS_SHIM_EXTENSIONS = [".exe", ".com", ".bat", ".cmd", ".ps1", ""];
+
 export function resolveOnPath(executable, environment) {
   if (path.isAbsolute(executable) || executable.includes(path.sep)) {
     return existsSync(executable) ? executable : null;
   }
-  const extensions = process.platform === "win32" ? [".exe", ".com", ".ps1", ".cmd", ".bat", ""] : [""];
+  const extensions = process.platform === "win32" ? WINDOWS_SHIM_EXTENSIONS : [""];
   // Windows preserves the inherited spelling of environment variables. Node
   // processes commonly receive `Path` (not `PATH`), while callers that build a
   // minimal POSIX-style environment use `PATH`.
@@ -44,6 +50,37 @@ function invocation(executable, argumentsList, environment) {
     return { command: line, argumentsList: [], shell: true };
   }
   return { command: resolved, argumentsList };
+}
+
+// A long-lived child that speaks a protocol over pipes (the Codex app server).
+// The caller owns its lifetime; this only solves "how do I start this binary on
+// this platform", the same way the two spawmers below do.
+export function spawnExecutableChild(executable, argumentsList, options = {}) {
+  const environment = options.env ?? process.env;
+  const { spawn, ...spawnOptions } = options;
+  if (spawn) {
+    return spawn(executable, argumentsList, { ...spawnOptions, env: environment });
+  }
+  const resolved = invocation(executable, argumentsList, environment);
+  const child = spawnAsync(resolved.command, resolved.argumentsList, {
+    ...spawnOptions,
+    shell: resolved.shell ?? false,
+    env: environment,
+    windowsHide: true,
+  });
+  // On Windows a `.cmd` shim means the real process is a grandchild: killing the
+  // shell leaves it behind, and a stray app server keeps its write lock on the
+  // threads it had open.
+  if (process.platform === "win32" && resolved.shell) {
+    child.terminateTree = () => {
+      try {
+        spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+      } catch {
+        child.kill();
+      }
+    };
+  }
+  return child;
 }
 
 export function spawnExecutableSync(executable, argumentsList, options = {}) {

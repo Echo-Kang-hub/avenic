@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fail } from "../util/fail.mjs";
@@ -106,11 +106,85 @@ export function hubSyncSummary(info, date = new Date()) {
 // be reported with the Hub's vocabulary.
 const CACHE_FAILURE_CODES = new Set(["EACCES", "EPERM", "EEXIST", "ENOTDIR", "ENOSPC", "EROFS", "EBUSY"]);
 
+// A ref that is a commit names one revision exactly; anything else — a branch, a
+// tag — is a name whose current meaning only the remote knows.
+function looksLikeRevision(ref) {
+  return /^[0-9a-f]{7,40}$/i.test(ref);
+}
+
+const sameRevision = (left, right) => left.toLowerCase().startsWith(right.toLowerCase());
+
+// The cache's HEAD is a file. Every sync ends in `checkout --detach`, so it holds
+// the revision itself and reading it needs no git at all — which is what lets
+// browsing work on a machine with git uninstalled. A symbolic HEAD (someone
+// checked out a branch by hand) is not answerable this way.
+async function headRevision(directory) {
+  try {
+    const head = (await readFile(path.join(directory, ".git", "HEAD"), "utf8")).trim();
+    return /^[0-9a-f]{40}$/i.test(head) ? head : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 缓存里能回答 `ref` 的修订；答不上来（还没克隆过、要的修订不在 checkout 上）返回 null。 */
+async function cachedRevision(directory, ref) {
+  const head = await headRevision(directory);
+  if (head === null || !looksLikeRevision(ref)) return head;
+  return sameRevision(head, ref) ? head : null;
+}
+
+/**
+ * 只读缓存地取一个 Catalog：缓存答不上来就返回 null —— 绝不 clone、绝不 fetch，
+ * 也绝不启动 git。展开 Hub、浏览内容树（`avenic skills tree` / `packs`、编辑器里
+ * 展开的那棵树）都是读操作，不是联网指令：联网只发生在 `hub add`、`hub sync`
+ * 和安装里。缓存按仓库分（同一个 Hub 换个 ref 也共用一份），所以分支名拿到的是
+ * 「缓存里当前这一份」；要看最新那一份，先 `avenic hub sync`。
+ */
+export async function cachedCatalog(spec, environment = process.env) {
+  const { repository, ref } = parseCatalogSpec(spec);
+  const directory = catalogCacheDirectory(spec, environment);
+  const revision = await cachedRevision(directory, ref);
+  if (revision === null) return null;
+  return {
+    catalogRoot: directory,
+    repository,
+    ref,
+    revision,
+    shortSha: shortRevision(revision),
+    syncedAt: null,
+    spec,
+  };
+}
+
+// 点名的修订在不在本地仓库里。允许跑 git（本地只读），但绝不联网：这正是
+// 「锁文件钉住的安装不必再去拉一次」的那一步。
+async function pinnedRevision(directory, ref) {
+  const head = await headRevision(directory);
+  if (head !== null && sameRevision(head, ref)) return head;
+  try {
+    return await git(["-C", directory, "rev-parse", "--verify", `${ref}^{commit}`]);
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureCatalog(spec, options = {}) {
   const environment = options.environment ?? process.env;
   const { repository, ref } = parseCatalogSpec(spec);
   const directory = catalogCacheDirectory(spec, environment);
   try {
+    // 缓存优先的另一半：点名的修订已经在本地时，同一个 commit 不必再去拉一次——
+    // 锁文件钉住的安装因此不碰网络，拿到的内容也与上次逐字节相同（跨设备可复现）。
+    // 分支不同：它今天指向哪个 commit 只有远端知道，所以照旧去问。
+    const pinned = looksLikeRevision(ref) ? await pinnedRevision(directory, ref) : null;
+    if (pinned !== null) {
+      if ((await headRevision(directory)) !== pinned) {
+        await git(["-C", directory, "checkout", "--quiet", "--detach", pinned]);
+      }
+      // syncedAt 是「刚刚同步过」的时间，这里没有同步发生，所以是 null。
+      return { catalogRoot: directory, repository, ref, revision: pinned, shortSha: shortRevision(pinned), syncedAt: null, spec };
+    }
     if (existsSync(path.join(directory, ".git"))) {
       await git(["-C", directory, "fetch", "--depth", "1", "origin", ref]);
     } else {

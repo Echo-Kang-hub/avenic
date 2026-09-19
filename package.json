@@ -16,7 +16,9 @@
     "test:vscode": "npm --prefix packages/vscode test",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "test:release": "npm run sync-core && node integration/release-smoke.mjs",
-    "pack:cli": "cd packages/cli && npm pack --dry-run --json"
+    "pack:cli": "cd packages/cli && npm pack --dry-run --json",
+    "release:pack": "node scripts/pack-release.mjs",
+    "release:verify": "node scripts/verify-artifacts.mjs"
   },
   "files": [
     "packages/core/",

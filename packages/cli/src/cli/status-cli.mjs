@@ -4,7 +4,7 @@
 // question with the same answer.
 import { collectStatus, shortTimestamp } from "#core";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
-import { field, intro, note, palette, section, table } from "./prompts.mjs";
+import { collectLines, field, intro, note, palette, section, table } from "./prompts.mjs";
 
 const SYNC_LABELS = {
   current: "current",
@@ -59,17 +59,8 @@ function agentRow(agent) {
 export function renderStatus(status, io = console, options = {}) {
   const { project, history, agents, skills } = status;
   const colors = options.colors ?? palette(options.stdout ?? process.stdout);
-  const lines = [];
   // 这一页由多个「写一行」的助手拼成；收集它们，最后一次性交给 io.log。
-  const sink = {
-    columns: (options.stdout ?? process.stdout).columns,
-    write(text) {
-      const parts = String(text).split("\n");
-      if (parts.at(-1) === "") parts.pop();
-      lines.push(...parts);
-    },
-  };
-  const blank = () => lines.push("");
+  const { sink, line: blank, flush } = collectLines({ ...io, columns: (options.stdout ?? process.stdout).columns });
   const at = { colors };
 
   intro(sink, "Avenic Status", { ...at, description: project.root });
@@ -102,7 +93,7 @@ export function renderStatus(status, io = console, options = {}) {
   field(sink, "Project", scopeSummary(skills.project), at);
   field(sink, "Global", scopeSummary(skills.global), at);
   field(sink, "Hub", hubSummary(skills.hub), at);
-  io.log(lines.join("\n"));
+  flush();
   return 0;
 }
 

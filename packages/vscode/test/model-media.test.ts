@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createContext, runInContext } from "node:vm";
 import { maskSecret, normalizeProfile } from "@avenic/core";
 import { buildDraftPreview, panelOptions, profileToDraft } from "../src/model/state.ts";
 import type { DraftPreview, ProfileDraft } from "../src/model/protocol.ts";
+// DOM 桩与渲染往返（renderDataMessage/fire/buttons/allText）是媒体页共用的：
+// 会话页的测试跑的是同一份，页面的渲染路径只有一套执行环境。
+import { allText, buttons, fire, lastPosted, plain, renderDataMessage, type Rendered, type StubNode } from "./fixtures/dom-stub.ts";
 
 const mediaRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "model");
 
@@ -32,159 +34,6 @@ test("style.css uses VS Code theme variables", async () => {
   assert.match(style, /--vscode-/);
   assert.equal(/https?:\/\//.test(style), false);
 });
-
-// 第 4 条：真正执行 main.js 的渲染路径。前三条只做字符串匹配，一行代码都不跑——
-// 渲染函数里的运行时错误（例如引用了块作用域外的变量 → ReferenceError）在它们的盲区里。
-// 桩最小化：只实现渲染路径真正调用到的 DOM 表面（createElement/getElementById/append/
-// textContent/addEventListener/setAttribute/replaceChildren + window 监听 + acquireVsCodeApi）。
-class StubNode {
-  readonly children: StubNode[] = [];
-  readonly attributes = new Map<string, string>();
-  readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
-  className = "";
-  title = "";
-  hidden = false;
-  disabled = false;
-  // 表单控件属性：渲染路径会读/写这几种（密码框、勾选框、下拉项）。
-  type = "";
-  placeholder = "";
-  checked = false;
-  selected = false;
-  private explicitValue = "";
-  private text = "";
-
-  // <select> 的 value 在真实 DOM 里是「选中项的值」，读和写都双向联动：
-  // 读 → 命中 selected 的 option；写 → 把 selected 挪到匹配的 option 上。
-  // 不模拟这一层的话，面板读 fields.api.value 会拿到空串（真实浏览器里不会）。
-  get value(): string {
-    if (this.tagName === "SELECT") {
-      const chosen = this.children.find((child) => child.tagName === "OPTION" && child.selected);
-      if (chosen !== undefined) return chosen.value;
-    }
-    return this.explicitValue;
-  }
-
-  set value(next: string) {
-    this.explicitValue = String(next);
-    if (this.tagName === "SELECT") {
-      for (const child of this.children) {
-        if (child.tagName === "OPTION") child.selected = child.value === this.explicitValue;
-      }
-    }
-  }
-
-  // 不用 TS 的「构造器参数属性」（constructor(readonly x: T)）：根目录的 `npm test`
-  // 会用 Node 的 strip-only 类型擦除直接执行本文件，而 strip-only 明确不支持该语法
-  // （ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX）。vscode 本地套件走 esbuild，能吞下它，
-  // 所以这条约束只有根套件看得见——保留显式字段声明与赋值。
-  readonly tagName: string;
-  private readonly texts: string[];
-
-  constructor(tagName: string, texts: string[]) {
-    this.tagName = tagName;
-    this.texts = texts;
-  }
-
-  get textContent(): string {
-    return this.text;
-  }
-
-  set textContent(value: string) {
-    this.text = String(value);
-    this.texts.push(this.text);
-  }
-
-  append(...nodes: StubNode[]): void {
-    this.children.push(...nodes);
-  }
-
-  replaceChildren(...nodes: StubNode[]): void {
-    this.children.splice(0, this.children.length, ...nodes);
-  }
-
-  addEventListener(type: string, listener: (...args: unknown[]) => void): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(listener);
-    this.listeners.set(type, list);
-  }
-
-  setAttribute(name: string, value: string): void {
-    this.attributes.set(name, String(value));
-  }
-
-  getAttribute(name: string): string | null {
-    return this.attributes.get(name) ?? null;
-  }
-}
-
-interface Rendered {
-  created: StubNode[];
-  texts: string[];
-  posted: unknown[];
-  byId: Map<string, StubNode>;
-  // 追加派发一条消息（点击等交互之后 host 的回应走这里）。
-  send: (message: unknown) => void;
-}
-
-// 每条 data 消息都在全新的 vm 上下文里跑一遍脚本（避免两次渲染的记录互相污染）。
-// extra: 数据消息之后依次派发的消息（模拟「点击 → host 回包」的往返）。
-function renderDataMessage(payload: unknown, source: string, extra: unknown[] = []): Rendered {
-  const created: StubNode[] = [];
-  const texts: string[] = [];
-  const posted: unknown[] = [];
-  const byId = new Map<string, StubNode>();
-  const make = (tag: string): StubNode => {
-    // 真实 DOM 的 HTML 元素 tagName 是大写（document.createElement("button").tagName === "BUTTON"）
-    const node = new StubNode(tag.toUpperCase(), texts);
-    created.push(node);
-    return node;
-  };
-  const document = {
-    createElement: (tag: string) => make(tag),
-    getElementById: (id: string) => {
-      let node = byId.get(id);
-      if (node === undefined) {
-        node = make("div");
-        byId.set(id, node);
-      }
-      return node;
-    },
-  };
-  const messageListeners: Array<(event: { data: unknown }) => void> = [];
-  const context = createContext({
-    document,
-    window: {
-      addEventListener: (type: string, listener: (event: { data: unknown }) => void) => {
-        if (type === "message") messageListeners.push(listener);
-      },
-    },
-    acquireVsCodeApi: () => ({ postMessage: (message: unknown) => posted.push(message) }),
-    console,
-  });
-  runInContext(source, context, { filename: "media/model/main.js" });
-  assert.ok(messageListeners.length > 0, "main.js 必须注册 window message 监听");
-  const send = (message: unknown): void => {
-    for (const listener of messageListeners) listener({ data: message });
-  };
-  send({ type: "data", payload });
-  for (const message of extra) send(message);
-  return { created, texts, posted, byId, send };
-}
-
-/** 触发节点上已注册的事件（点击等）。 */
-function fire(node: StubNode, type = "click"): void {
-  for (const listener of node.listeners.get(type) ?? []) listener({ type });
-}
-
-/** 按可见文本找按钮（面板的按钮都没有 id，靠文案定位）。 */
-function buttons(rendered: Rendered, text: string): StubNode[] {
-  return rendered.created.filter((node) => node.tagName === "BUTTON" && node.textContent === text);
-}
-
-/** 面板自己贴出的所有文本（断言「界面上出现过什么」用这个，而不是只找某个节点）。 */
-function allText(rendered: Rendered): string {
-  return rendered.texts.join("\n");
-}
 
 /**
  * **当前**编辑器子树里符合条件的节点（按 className 精确匹配）。
@@ -237,20 +86,6 @@ function draftFixture(): ProfileDraft {
  */
 function projectionFor(draft: ProfileDraft): DraftPreview {
   return buildDraftPreview(structuredClone(draft), STORED);
-}
-
-/**
- * 跨 realm 比较：草稿对象是在 vm 上下文里造的，原型链属于另一个 realm，
- * 而 node:assert/strict 的 deepEqual 会连原型一起比。比较前先归一到本 realm 的普通对象。
- */
-function plain<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-/** 最近一条某类型的出站消息（已跨 realm 归一）。 */
-function lastPosted(rendered: Rendered, type: string): Record<string, unknown> | undefined {
-  const found = rendered.posted.filter((message) => (message as { type?: string })?.type === type).at(-1);
-  return found === undefined ? undefined : plain(found as Record<string, unknown>);
 }
 
 function lastDraft(rendered: Rendered, type: string): ProfileDraft {

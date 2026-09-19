@@ -32,6 +32,54 @@ The CLI reaches core through the `#core` / `#core/*` import maps, which resolve
 to `packages/cli/vendor/core-src` — a generated copy. Never edit that copy by
 hand; edit `packages/core/src` and run the sync.
 
+## Two non-negotiable product requirements
+
+These are product requirements, not preferences. A change that breaks either one
+is a bug even when every test passes.
+
+### 1. The terminal UI is part of the product
+
+Every surface a user reads — `init`, `change`, `sessions`, `skills`, `status`,
+self-update, progress and results — is rendered by the one terminal layer in
+`packages/cli/src/cli/prompts.mjs`, and it has to look like a modern
+skills-CLI: a readable ASCII `AVENIC` wordmark, a hierarchy of `◆`/`◇`
+sections over `│ ◇ ◆ └` rails, and one colour system in which cyan/teal is the
+brand, green means success or the selected row, yellow warns, red errors, and
+dim grey is secondary.
+
+Rules that follow from that:
+
+- The cursor (`▸`) and the selection (`◉`/`○`) are different marks: a user must
+  always be able to tell where they are from what they have chosen.
+- Every list shares one keyboard: `↑↓` or `j`/`k` to move, space to toggle,
+  `^a` for all, typing to filter, enter to confirm, `esc` to cancel. Nothing
+  proceeds with zero items selected, and there is no "cancel" row inside a list.
+- One implementation: never add a second prompt, raw-mode or keypress handler.
+- Degrade, never break: narrow terminals, `NO_COLOR`, a non-TTY stdout, Windows
+  PowerShell, Linux and SSH all render correctly, and non-TTY output carries no
+  control sequences. No emoji in layout.
+
+### 2. Shared means one conversation, not three
+
+In Shared mode the user has **one** conversation. `avenic` keeps it once, in
+canonical form, and switching agents changes only who answers next — never what
+the user has to copy, paste, re-explain or rebuild.
+
+Agent provenance is metadata on an event, not a boundary: every event keeps its
+id, role, content, agent, tool call and result, timestamp, order and branch, and
+a projection must never let provenance break continuity. Concretely:
+
+- The target agent receives the *delta* it has not seen — its own turns are
+  never sent back to it — projected through the agent's official surface
+  (`session-interop.mjs`, `projection.mjs`, `adapters/*`).
+- A summary handoff is the last resort, never the design. Never compress a
+  shared history into one giant user prompt.
+- Avenic owns the transcript a user can always read back: `avenic sessions
+  show` and the extension's Sessions view render `transcript.mjs` — You /
+  Claude / Codex turns in order with provenance labels, never internal JSON.
+- The launch path stays free of this work: a plain `avenic claude` pays no
+  projection cost, and a switch costs its delta, not the whole history.
+
 ## Setup
 
 ```bash
@@ -48,6 +96,8 @@ npm test                         # root suite (pretest runs sync-core for you)
 npm run test:vscode              # extension: tsc --noEmit + node --test
 npm run perf                     # launch/capture profile on a generated fixture
 npm run pack:cli                 # npm pack --dry-run --json for the CLI
+npm run release:pack             # build the publishable artifacts into pack/
+npm run release:verify           # install those artifacts and run them
 node packages/cli/scripts/skills.mjs <args>   # run the CLI from source
 ```
 
@@ -70,6 +120,13 @@ To work on the extension: `cd packages/vscode && node build.mjs` (esbuild →
   global prefix, and runs version/init/launch/sessions/change/Shared/Isolated/
   Hub/status/self-update against it. This is the gate that must pass before a
   release; it is what proves the artifact, not the sources.
+- `npm run release:pack` then `npm run release:verify` — build the files a
+  version is published from into `pack/`, then install those exact files
+  (CLI tarball into a scratch prefix, `@avenic/core` on its own, the VSIX into
+  the editor) and run them. The versions come from the manifests, so this is
+  the same two commands for every release. `pack/` is a build output and is
+  never committed; publishing it still needs npm authentication and the
+  VSIX upload.
 - VS Code tests are TypeScript, compiled by `build-tests.mjs` into `.test-out/`.
 
 Add or update tests with every behaviour change. A fix without a test that

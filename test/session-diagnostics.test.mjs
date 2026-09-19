@@ -30,6 +30,29 @@ test("diagnostics with no recognizable kind are still shown", () => {
   assert.deepEqual(notes, ["Something happened."]);
 });
 
+test("an agent nobody has run yet is not announced on every read", () => {
+  const missing = { kind: "missing-root", message: "Codex session root not found: /home/nobody/.codex/sessions" };
+  // Reading a project must not narrate a fresh install: the root appears the
+  // first time that agent runs, and until then there is nothing to report.
+  const quiet = formatSessionDiagnostics([missing, { agentId: "claude", file: "a.jsonl", kind: "malformed-record" }]);
+  assert.deepEqual(quiet.notes, []);
+  assert.equal(quiet.warnings.length, 1);
+  // A command whose whole job was to import history says where it looked.
+  const asked = formatSessionDiagnostics([missing], { missingRoots: true });
+  assert.deepEqual(asked.notes, [missing.message]);
+});
+
+test("`avenic sessions import` says where it looked when there was nothing", async () => {
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    // The Claude root exists (the fixture made it); Codex has never run here.
+    const result = await importProjectSessions(projectRoot, "codex", { environment });
+    const { warnings, notes } = formatSessionDiagnostics(result.diagnostics, { missingRoots: true });
+    assert.equal(warnings.length, 0);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /Codex session root not found/);
+  }, { sessions: 0 });
+});
+
 test("a malformed record is reported once, naming the session file", async () => {
   await withClaudeProject(async ({ projectRoot, environment, sessionIds, nativeFile }) => {
     const file = nativeFile(sessionIds[0]);

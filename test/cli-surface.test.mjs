@@ -307,7 +307,7 @@ test("unified sessions status explains an empty canonical store", async () => {
   });
 });
 
-test("Codex resume rejection rehydrates a fresh official thread from complete canonical history", async () => {
+test("a refused Codex resume rehydrates a fresh native thread through the official app server", async () => {
   await withTempDirectory("avenic-codex-rehydrate-", async (projectRoot) => {
     const bin = path.join(projectRoot, "bin");
     const codexHome = path.join(projectRoot, "codex-home");
@@ -317,16 +317,44 @@ test("Codex resume rejection rehydrates a fresh official thread from complete ca
     await initializeAgent(projectRoot, "codex", "global", "global");
     await setSessionInteropMode(projectRoot, "shared");
     await createCanonicalSession(projectRoot, { id: "shared" });
+    // Canonical ids carry provenance, which is what lets a projection tell the
+    // target whose turn it is reading: "B" was Claude's answer, so Codex must
+    // not receive it as if Codex had said it.
     await appendCanonicalEvents(projectRoot, "shared", [
-      { id: "a", role: "user", createdAt: "2026-09-18T00:00:00.000Z", content: [{ type: "text", text: "A" }] },
-      { id: "b", role: "assistant", createdAt: "2026-09-18T00:00:01.000Z", content: [{ type: "text", text: "B" }] },
+      { id: "claude:native-claude:a", role: "user", createdAt: "2026-09-18T00:00:00.000Z", content: [{ type: "text", text: "A" }] },
+      { id: "claude:native-claude:b", role: "assistant", createdAt: "2026-09-18T00:00:01.000Z", content: [{ type: "text", text: "B" }] },
     ]);
     await completeCanonicalContinuation(projectRoot, "shared", "codex", { nativeSessionId: "child" });
     const sessions = path.join(codexHome, "sessions", "2026", "09", "18");
     await writeFile(path.join(sessions, "parent.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "parent", cwd: projectRoot } })}\n`);
     await writeFile(path.join(sessions, "child.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "child", parent_thread_id: "parent", multi_agent_version: "v2", cwd: projectRoot } })}\n`);
+    // The fake is the official surface Avenic actually uses: an interactive
+    // `resume` that refuses this thread, and an `app-server` that speaks the
+    // documented JSON-RPC. Nothing private is written by Avenic.
     const probe = path.join(bin, "codex-probe.mjs");
-    await writeFile(probe, `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs"; import path from "node:path"; const args = process.argv.slice(2); appendFileSync(process.env.AVENIC_FAKE_LOG, JSON.stringify(args) + "\\n"); if (args[0] === "resume") process.exit(1); const file = path.join(process.env.CODEX_HOME, "sessions", "2026", "09", "18", "bootstrap.jsonl"); mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: "bootstrap", cwd: process.cwd() } }) + "\\n");`);
+    await writeFile(probe, [
+      'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
+      'import { createInterface } from "node:readline";',
+      'import path from "node:path";',
+      'const log = (entry) => appendFileSync(process.env.AVENIC_FAKE_LOG, JSON.stringify(entry) + "\\n");',
+      'const args = process.argv.slice(2);',
+      'log({ argv: args });',
+      'if (args[0] !== "app-server") {',
+      '  if (args[1] === "parent") process.exit(1);',
+      '  const file = path.join(process.env.CODEX_HOME, "sessions", "2026", "09", "18", `rollout-${args[1]}.jsonl`);',
+      '  mkdirSync(path.dirname(file), { recursive: true });',
+      '  writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id: args[1], cwd: process.cwd() } }) + "\\n");',
+      '  process.exit(0);',
+      '}',
+      'createInterface({ input: process.stdin }).on("line", (line) => {',
+      '  let message;',
+      '  try { message = JSON.parse(line); } catch { return; }',
+      '  const reply = (result) => process.stdout.write(JSON.stringify({ id: message.id, result }) + "\\n");',
+      '  if (message.method === "thread/start") return reply({ thread: { id: "thread-rehydrated" } });',
+      '  if (message.method === "thread/inject_items") { log({ rpc: message.method, threadId: message.params.threadId, items: message.params.items }); return reply({}); }',
+      '  reply({});',
+      '});',
+    ].join("\n") + "\n");
     const shim = process.platform === "win32" ? path.join(bin, "codex.cmd") : path.join(bin, "codex");
     await writeFile(shim, process.platform === "win32" ? `@echo off\r\nnode "${probe}" %*\r\n` : `#!/bin/sh\nexec node "${probe}" "$@"\n`);
     if (process.platform !== "win32") await chmod(shim, 0o755);
@@ -338,11 +366,21 @@ test("Codex resume rejection rehydrates a fresh official thread from complete ca
     };
     const result = runAgent(projectRoot, ["sessions", "continue", "shared", "--agent", "codex"], environment);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /could not be resumed; starting a new native thread/);
+    assert.match(result.stdout, /session could not be opened; rebuilding it from shared canonical history/);
+    // The rebuild is a native one: nothing is handed to the user to paste.
+    assert.doesNotMatch(result.stdout, /fresh official session/);
     const calls = (await readFile(log, "utf8")).trim().split(/\r?\n/).map((line) => JSON.parse(line));
-    assert.deepEqual(calls[0].slice(0, 2), ["resume", "parent"]);
-    assert.match(calls[1][0], /- user: A/);
-    assert.match(calls[1][0], /- assistant: B/);
+    // The mapping resolves the v2 child to its resumable parent, and that
+    // resume is what fails first.
+    assert.deepEqual(calls[0].argv.slice(0, 2), ["resume", "parent"]);
+    assert.ok(calls.some((entry) => entry.argv?.[0] === "app-server"), "the rebuild goes through the official app server");
+    const injected = calls.find((entry) => entry.rpc === "thread/inject_items");
+    assert.ok(injected, "the rebuild injects the canonical turns into the new thread");
+    assert.equal(injected.threadId, "thread-rehydrated");
+    // The user's turn is the user's; Claude's answer arrives labelled as
+    // Claude's, so Codex continues the conversation instead of inheriting it.
+    assert.deepEqual(injected.items.map((item) => item.content[0].text), ["A", "Claude: B"]);
+    assert.deepEqual(calls.at(-1).argv.slice(0, 2), ["resume", "thread-rehydrated"]);
   });
 });
 
@@ -409,11 +447,11 @@ test("top-level init and change keep shared history separate from agent scopes",
   await withTempDirectory("avenic-project-setup-", async (projectRoot) => {
     const initialized = runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "isolated"]);
     assert.equal(initialized.status, 0, initialized.stderr);
-    assert.match(initialized.stdout, /History: isolated/);
+    assert.match(initialized.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+isolated/);
 
     const changed = runAgent(projectRoot, ["change", "--history", "shared"]);
     assert.equal(changed.status, 0, changed.stderr);
-    assert.match(changed.stdout, /History: shared/);
+    assert.match(changed.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+shared/);
     const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
     assert.equal(runtime.sessionInterop, "shared");
     assert.deepEqual(runtime.agents.claude, { enabled: true, auth: "global", sessions: "project" });
@@ -446,7 +484,7 @@ test("agent sessions import and status work through the CLI", async () => {
 
       const status = runAgent(projectRoot, ["claude", "sessions", "status"], environment);
       assert.equal(status.status, 0, status.stderr);
-      assert.match(status.stdout, /Sessions 0/);
+      assert.match(status.stdout, /Sessions\s+0/);
 
       const invalid = runAgent(projectRoot, ["claude", "sessions", "bogus"], environment);
       assert.equal(invalid.status, 1);
@@ -457,6 +495,32 @@ test("agent sessions import and status work through the CLI", async () => {
       assert.equal(legacyRestore.status, 1);
       assert.match(legacyRestore.stderr, /Usage: avenic claude sessions \[import\|writeback\|status\]/);
     });
+  });
+});
+
+// The result of a command is a user-readable page, not a log: it opens with the
+// ◆ heading over the project it is about and puts every answer behind the same
+// │ rail the wizard frames and `avenic status` use. Piped output is the same
+// page without colour — never half a page, never a stray control sequence.
+test("every result block is a page of the terminal layer", async () => {
+  await withTempDirectory("avenic-result-blocks-", async (projectRoot) => {
+    const commands = [
+      ["claude", "init", "--auth", "global"],
+      ["claude", "status"],
+      ["claude", "auth", "project"],
+      ["claude", "sessions", "status"],
+      ["claude", "deinit"],
+      ["init", "--agents", "claude", "--auth", "global", "--sessions", "project", "--history", "shared"],
+    ];
+    for (const argumentsList of commands) {
+      const result = runAgent(projectRoot, argumentsList);
+      const name = argumentsList.join(" ");
+      assert.equal(result.status, 0, `${name}\n${result.stderr}`);
+      assert.match(result.stdout, /^◆ {2}\S/m, `${name} must open with the ◆ heading`);
+      assert.match(result.stdout, /^│ {2}\S/m, `${name} must keep its fields on the rail`);
+      assert.doesNotMatch(result.stdout, /\x1b/, `${name} piped must not carry control sequences`);
+      assert.doesNotMatch(result.stdout, /^ {2}[A-Z][a-z]+: /m, `${name} must not fall back to the old flat summary`);
+    }
   });
 });
 
@@ -508,6 +572,10 @@ test("skills packs and tree read the catalog", async () => {
       await withTempDirectory("avenic-state-", async (stateRoot) => {
         await createCatalogFixture(catalogRoot);
         const environment = catalogEnvironment(catalogRoot, stateRoot);
+        // 浏览是读缓存，不是同步：内容树来自上一次 `hub sync`。所以先同步一次，
+        // 之后 packs / tree 才有一份缓存可读（它们自己不会去联网）。
+        const sync = runAgent(projectRoot, ["hub", "sync"], environment);
+        assert.equal(sync.status, 0, sync.stderr);
 
         const packs = runAgent(projectRoot, ["skills", "packs"], environment);
         assert.equal(packs.status, 0, packs.stderr);

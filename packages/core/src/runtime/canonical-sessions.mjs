@@ -111,15 +111,28 @@ export async function createCanonicalSession(projectRoot, input = {}) {
   return { id, created: true };
 }
 
-export async function readCanonicalSession(projectRoot, id) {
+// Everything about a session except its events: the session record and the
+// native mappings. A switch asks "is the target already current?" far more
+// often than it asks for history, and that question must not open a multi-
+// megabyte event log.
+export async function readCanonicalSessionRecord(projectRoot, id) {
   const directory = sessionDirectory(projectRoot, id);
   const session = await readJson(path.join(directory, "session.json"), null);
   if (!session) throw new Error(`Unknown canonical session: ${id}`);
   if (session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) throw new Error(`Unsupported canonical session schema: ${session.schemaVersion}`);
+  return {
+    session,
+    mappings: await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} }),
+  };
+}
+
+export async function readCanonicalSession(projectRoot, id) {
+  const directory = sessionDirectory(projectRoot, id);
+  const { session, mappings } = await readCanonicalSessionRecord(projectRoot, id);
   const eventsText = existsSync(path.join(directory, "events.jsonl")) ? await readFile(path.join(directory, "events.jsonl"), "utf8") : "";
   const events = eventsText.split(/\r?\n/).filter(Boolean).map((line) => normalizeEvent(JSON.parse(line)));
   const state = await readJson(path.join(directory, "state.json"), session.state ?? deriveState(events));
-  return { session: { ...session, state }, events, state, mappings: await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} }) };
+  return { session: { ...session, state }, events, state, mappings };
 }
 
 export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
@@ -164,7 +177,7 @@ export async function syncNativeMapping(projectRoot, id, mapping) {
   if (!mapping || typeof mapping !== "object" || !SAFE_ID.test(mapping.agentId ?? "") || typeof mapping.nativeSessionId !== "string") {
     throw new Error("Native mapping requires an agent id and native session id");
   }
-  const stored = await readCanonicalSession(projectRoot, id);
+  const stored = await readCanonicalSessionRecord(projectRoot, id);
   const projections = { ...stored.mappings.projections };
   projections[mapping.agentId] = {
     ...projections[mapping.agentId],
@@ -188,6 +201,28 @@ export async function listCanonicalSessions(projectRoot) {
     try { sessions.push((await readCanonicalSession(projectRoot, entry.name)).session); } catch { /* ignore incomplete untrusted entries */ }
   }
   return sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+/**
+ * The canonical session a native conversation already belongs to, or null.
+ *
+ * The mapping is the authority: a native session that was projected into a
+ * shared conversation has to keep appending to that conversation when it is
+ * captured, not fork a second canonical session that happens to hold the same
+ * turns. The scan is one small read per canonical session and is asked once per
+ * native session per process.
+ */
+export async function findCanonicalSessionForNative(projectRoot, agentId, nativeSessionId) {
+  if (typeof nativeSessionId !== "string" || !nativeSessionId) return null;
+  const root = canonicalRoot(projectRoot);
+  if (!existsSync(root)) return null;
+  const { readdir } = await import("node:fs/promises");
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
+    const mappings = await readJson(path.join(root, entry.name, "mappings.json"), null);
+    if (mappings?.projections?.[agentId]?.nativeSessionId === nativeSessionId) return entry.name;
+  }
+  return null;
 }
 
 /**
