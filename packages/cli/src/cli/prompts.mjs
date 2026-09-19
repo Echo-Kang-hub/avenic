@@ -293,7 +293,8 @@ const moreDown = (count, colors) => colors.muted(`│  ↓ ${count} more`);
  * "accept"（立即确认）或什么都不返回，`model.accept()` 返回 `{ result, lines,
  * summary }`、`{ cancel: true }`、`{ repaint: true }`（状态变了，重画同一帧 ——
  * 向导就是这样推进到下一步的），一个 Promise（异步确认，落定由它决定），或什么
- * 都不返回（保持这一帧 —— 空选择是提示，不是取消）。
+ * 都不返回（保持这一帧 —— 空选择是提示，不是取消）。返回 Promise 之后键盘就交给
+ * 它：写盘撤不回来，所以在那期间再按确认不是第二次写盘，按取消也不会变成取消。
  */
 function prompt(options, model) {
   const { stdin = process.stdin, stdout = process.stdout } = options;
@@ -301,6 +302,10 @@ function prompt(options, model) {
   const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
   return new Promise((resolve, reject) => {
     let stop = () => {};
+    // 异步确认一旦开始（向导的 Apply 要写盘），键盘就不再改变结果：写盘撤不回来，
+    // 所以既不能按第二次（那就是第二次写盘），也不能按键取消（那会把已经落盘的
+    // 配置报成取消）。落定由那次写盘自己决定。
+    let busy = false;
     const session = startFrame(stdin, stdout, () => model.paint());
     const settle = (result, lines, summary) => {
       session.close();
@@ -326,9 +331,11 @@ function prompt(options, model) {
       settle(outcome.result, outcome.lines, outcome.summary);
     };
     const accept = () => {
+      if (busy) return;
       const outcome = model.accept();
       if (outcome && typeof outcome.then === "function") {
-        // 异步确认（向导的 Apply 要写盘）：先重画，落定或失败由它决定。
+        // 异步确认（向导的 Apply 要写盘）：落定或失败由它决定。
+        busy = true;
         outcome.then(settleOutcome, (failure) => {
           session.close();
           stop();
@@ -339,6 +346,7 @@ function prompt(options, model) {
       settleOutcome(outcome);
     };
     stop = listenKeys(stdin, (intent) => {
+      if (busy) return;
       if (intent === "cancel") {
         settle(null);
         return;

@@ -37,10 +37,11 @@ const {
   text,
   truncate,
   warning,
+  wizard,
 } = await import("../packages/cli/src/cli/prompts.mjs");
 const { compactBrand, fullLogo } = await import("../packages/cli/src/cli/brand.mjs");
 const { dispatchSkills } = await import("../packages/cli/src/cli/skills-cli.mjs");
-const { FakeTTY, fakeStdout, keys, runPrompt } = await import("./helpers/fake-tty.mjs");
+const { FakeTTY, fakeStdout, keys, runPrompt, visible } = await import("./helpers/fake-tty.mjs");
 
 // ---- prompts 单元 ----
 
@@ -91,6 +92,68 @@ test("escape is answered at once, not after the decoder's sequence timeout", asy
   const elapsed = performance.now() - started;
   assert.ok(elapsed < 250, `escape was answered after ${elapsed.toFixed(0)}ms — the decoder is still waiting out its sequence timeout`);
   assert.match(stdout.text(), /✖  cancel/);
+});
+
+// Apply 是唯一会写盘的一步，而且它是异步的（要建目录、写 runtime.json，切到
+// Shared 时还要迁移 native 历史）。写盘一旦开始就撤不回来，所以这一段里终端
+// 必须做到两件事：不接受第二次确认，也不把已经开始的写盘报成取消 —— 否则用户
+// 看到的和磁盘上的会相反。
+async function slowApplyWizard(applyMs, onApply) {
+  const stdin = new FakeTTY();
+  const stdout = fakeStdout();
+  const promise = wizard({
+    stdin,
+    stdout,
+    draft: {},
+    stepsFor: () => [
+      { id: "pick", kind: "single", title: "Pick", options: [{ value: "a", label: "Alpha" }], value: () => "a", write: () => {}, summary: () => "Alpha" },
+      { id: "apply", kind: "single", title: "Apply configuration?", options: [{ value: true, label: "Yes" }, { value: false, label: "No" }], value: () => true, apply: true },
+    ],
+    apply: () => new Promise((resolve) => {
+      onApply();
+      setTimeout(() => resolve({ result: "written", summary: "done" }), applyMs);
+    }),
+  });
+  return { stdin, stdout, promise };
+}
+
+/** 用户正看着的那一帧：最后一次重画之后的全部内容。 */
+function wizardFrame(stdout) {
+  const parts = stdout.text().split("\x1b[u\x1b[J");
+  return visible(parts[parts.length - 1]);
+}
+
+async function waitForWizardFrame(stdout, pattern, description) {
+  const started = Date.now();
+  while (!pattern.test(wizardFrame(stdout))) {
+    if (Date.now() - started > 4000) throw new Error(`timeout waiting for ${description}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+test("a second confirm while Apply is writing does not write twice", async () => {
+  let writes = 0;
+  const { stdin, stdout, promise } = await slowApplyWizard(250, () => { writes += 1; });
+  await waitForWizardFrame(stdout, /◆ {2}Pick/, "the first step");
+  keys(stdin, "\r");
+  await waitForWizardFrame(stdout, /◆ {2}Apply configuration\?/, "the confirmation");
+  keys(stdin, "\r", "\r"); // 确认，然后在写盘还没完成时再按一次
+  assert.equal(await promise, "written");
+  assert.equal(writes, 1, "Apply must run once, however many times the key is pressed");
+});
+
+test("escape while Apply is writing is not reported as a cancellation", async () => {
+  let writes = 0;
+  const { stdin, stdout, promise } = await slowApplyWizard(300, () => { writes += 1; });
+  await waitForWizardFrame(stdout, /◆ {2}Pick/, "the first step");
+  keys(stdin, "\r");
+  await waitForWizardFrame(stdout, /◆ {2}Apply configuration\?/, "the confirmation");
+  keys(stdin, "\r");
+  await new Promise((resolve) => setTimeout(resolve, 80)); // 写盘正在进行
+  keys(stdin, "\x1b");
+  assert.equal(await promise, "written", "the answer is the write that happened, not the key that arrived too late");
+  assert.equal(writes, 1);
+  assert.doesNotMatch(stdout.text(), /✖  cancel/, "a write that lands must never be reported as a cancel");
 });
 
 test("cancelling is Escape, not a row in the list", async () => {
