@@ -321,6 +321,9 @@ function prompt(options, model) {
     };
     const settleOutcome = (outcome) => {
       if (!outcome || outcome.repaint) {
+        // 异步确认若只是要求重画（或者什么都没返回），那就没有写盘在飞：键盘
+        // 得还回来，否则这一帧从此不再响应任何键，连 Esc 也按不动。
+        busy = false;
         session.refresh(); // 还没有可确认的东西，或者状态刚变了：重画
         return;
       }
