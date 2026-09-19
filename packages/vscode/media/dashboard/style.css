@@ -58,6 +58,7 @@ p { margin: 0; }
 .icon[data-icon="folder-opened"]::before  { content: "\eaf7"; }
 .icon[data-icon="settings-gear"]::before  { content: "\eb51"; } /* 与 package.json 里 avenic.model.open 的 $(settings-gear) 同形 */
 .icon[data-icon="repo"]::before           { content: "\ea62"; }
+.icon[data-icon="history"]::before        { content: "\ea82"; }
 .icon[data-icon="check"]::before          { content: "\eab2"; }
 .icon[data-icon="error"]::before          { content: "\ea87"; }
 .icon[data-icon="info"]::before           { content: "\ea74"; }
@@ -183,6 +184,20 @@ p { margin: 0; }
 .agent-card .icon { width: 12px; height: 12px; font-size: 12px; line-height: 12px; }
 .agent-head { display: flex; align-items: center; gap: 0.4rem; flex: 0 1 auto; min-width: 0; }
 .agent-name { font-weight: 600; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 同步状态徽标：与 `avenic status` 的 Sync 一列同义（core 的六个词）。只有需要
+   动手的状态才上色——current 应该是安静的。 */
+.sync-chip {
+  font-size: 0.68rem;
+  padding: 0 0.3rem;
+  border: 1px solid var(--vscode-descriptionForeground);
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.sync-chip.warn {
+  border-color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
+  color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
+}
 .agent-status { font-size: 0.8rem; color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); flex: none; }
 .agent-meta { font-size: 0.74rem; color: var(--vscode-descriptionForeground); margin-left: auto; flex: none; }
 /* Agent 品牌标记（inline SVG，currentColor 继承前景色）：全宽态与窄屏态都显示 */
@@ -294,6 +309,7 @@ p { margin: 0; }
 @container (max-width: 430px) {
   .agent-status { display: none; }
   .agent-meta { display: none; }
+  .sync-chip { display: none; }
 }
 @container (max-width: 180px) {
   .agent-name { display: none; }

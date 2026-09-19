@@ -24,7 +24,11 @@ export type SenderMessage =
 
 export interface DashboardData {
   projectRoot: string | null;
-  agents: Array<{ id: string; label: string; statusText: string; executableAvailable: boolean; iconHint: string }>;
+  // 共享历史（core 状态模型的 history 块）：未打开项目时为 null。
+  history: { mode: string; sessions: number; activeTitle: string | null } | null;
+  // sync 用 core 的六个词（none / current / stale / missing / running / dirty），
+  // 与 `avenic status` 的 Sync 一列同义 —— 面板不另造一套措辞。
+  agents: Array<{ id: string; label: string; statusText: string; executableAvailable: boolean; iconHint: string; sync: string }>;
   catalog: { spec: string; revision: string } | null;
   skillsHealth: Array<{ label: string; ok: boolean; details: string }>;
 }

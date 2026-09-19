@@ -157,6 +157,15 @@ function blockTitle(title, count) {
   return box;
 }
 
+// sync 是 core 状态模型的六个词之一（none / current / stale / missing / running / dirty）。
+// 只有 current 是安静态：其余都是「有事情可做」，用终端告警色标出来。
+function syncChip(sync) {
+  const quiet = sync === "current" || sync === "none";
+  const chip = el("span", sync, quiet ? "sync-chip" : "sync-chip warn");
+  chip.setAttribute("data-sync", sync);
+  return chip;
+}
+
 function agentCard(a) {
   const card = el("div", undefined, "card agent-card");
   // 悬停 tooltip：压缩态（图标化）下唯一的信息来源
@@ -165,6 +174,7 @@ function agentCard(a) {
   head.append(agentMark(a.id));
   head.append(icon(hintIconName(a.iconHint)));
   head.append(el("span", a.label, "agent-name"));
+  if (typeof a.sync === "string" && a.sync !== "none") head.append(syncChip(a.sync));
   card.append(head);
   card.append(el("p", a.statusText, "agent-status"));
   card.append(el("p", a.executableAvailable ? "可执行文件就绪" : "可执行文件缺失", "agent-meta"));
@@ -228,14 +238,24 @@ function renderData(data) {
     ? "打开项目后将自动加载 Agents 与 Skills 状态。"
     : undefined;
   grid.append(infoCard("folder-opened", "项目", data.projectRoot ?? "未打开项目", undefined, projectHint));
+  // 未打开项目时不读 Hub（它随项目锁定文件一起报）；打开后自动补上，提示行说明这一点。
   const catalogHint = data.catalog === null
-    ? "在 Hub 视图选择或添加 Hub，或直接点击下方「同步 Hub」。"
+    ? "打开项目后读取 Hub 状态，或直接点击下方「同步 Hub」。"
     : undefined;
   grid.append(infoCard(
     "repo", "Hub",
-    data.catalog?.spec ?? "未选择 Hub",
-    data.catalog === null ? undefined : "修订：" + data.catalog.revision,
+    data.catalog?.spec ?? "未打开项目",
+    // 短修订（与 `avenic status` 的 Hub 行同样的 8 位）：完整 sha 在卡片里只会被省略号截掉
+    data.catalog === null ? undefined : "修订：" + String(data.catalog.revision).slice(0, 8),
     catalogHint,
+  ));
+  // 共享历史（core 状态模型的 history 块）：与 `avenic status` 的 History 段同源。
+  const history = data.history;
+  grid.append(infoCard(
+    "history", "共享历史",
+    history === null ? "未打开项目" : `${history.mode} · ${history.sessions} 条会话`,
+    history === null || history.activeTitle === null ? undefined : "活动：" + history.activeTitle,
+    history !== null && history.sessions === 0 ? "还没有共享会话；启动一次 Agent 即会记录。" : undefined,
   ));
   pages.push(grid);
 
