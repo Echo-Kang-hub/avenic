@@ -17,10 +17,11 @@ export class FakeTTY extends PassThrough {
   }
 }
 
-export function fakeStdout() {
+export function fakeStdout(options = {}) {
   const parts = [];
   return {
-    isTTY: true,
+    isTTY: options.isTTY ?? true,
+    columns: options.columns,
     write(chunk) {
       parts.push(String(chunk));
       return true;

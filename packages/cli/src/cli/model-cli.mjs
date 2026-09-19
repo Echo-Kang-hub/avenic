@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import process from "node:process";
 import { takeOption } from "./options.mjs";
-import { isInteractive, select } from "./prompts.mjs";
+import { isInteractive, singleSelect } from "./prompts.mjs";
 import {
   bindProject,
   clearProjectBinding,
@@ -207,7 +207,7 @@ export async function dispatchModel(argumentsList, options = {}) {
       const profiles = await listProfiles(environment);
       if (profiles.length === 0) fail("The local library is empty: avenic model add --name … --base-url … --api-key …");
       if (!isInteractive()) fail("Usage: avenic model use <id>");
-      targetId = await select({ title: "Choose a profile", options: profiles.map((profile) => ({ value: profile.id, label: profile.name })), initial: 0 });
+      targetId = await singleSelect({ title: "Choose a profile", options: profiles.map((profile) => ({ value: profile.id, label: profile.name })), initial: 0 });
       if (targetId === null) { io.log("No change."); return 0; }
     }
     const result = await bindProject(cwd, environment, targetId, io);

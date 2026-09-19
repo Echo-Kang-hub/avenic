@@ -1,14 +1,22 @@
-// clack 风格交互层（自实现，零运行时依赖）：◆ ◇ ● ○ ▸ │ ─ ✓ ✖ ╭╮╰╯ 的
-// 终端提示词。参考 npx skills 的交互风格：多选 space toggle、Yes/No 确认、
-// 摘要框、Done 关闭行，但保持 Avenic 自己的 catalog/pack 结构（skills 与
-// agent 无关，天然可共用 —— 不做 agent 选择步骤）。
+// Avenic 的终端层：整个产品只有这一份按键实现和这一套配色，交互的（select /
+// multiSelect / searchableSelect / confirm / text / progress）与打印的
+// （banner / section / summary / success / warning / error / table）都从这里出。
 //
-// 渲染：所有帧写入 stdout（终端），原始模式 + 光标保存/恢复逐键重绘 ——
-// Windows 终端对相对 moveCursor 的重绘处理不一致（旧实现帧堆叠），每次重绘
-// 都从「帧首光标保存点」恢复并清屏后重画（与旧 promptCatalogChoice 同策略）。
+// 视觉约定，所有交互面共用同一套：
+//   ◆ 标题       品牌色粗体：一帧的顶行，或一次输出的开头
+//   ◇ 标题       已落定的区块（结果、status 的分节）
+//   │  条目      区块内的行；└ 是区块的收尾行（帮助、摘要）
+//   ▸            光标所在行；◉ 已选中（绿）；○ 未选中（灰）
+//   绿 = 成功/选中   黄 = 警告   红 = 错误   灰 = 次要信息与帮助
+// 取消不是列表里的一行：Esc / Ctrl+C 才是取消，列表只列可以选的东西。
 //
-// 可注入 { stdin, stdout }（单测用假 TTY 流）；非 TTY 时调用方自行回退到
-// 纯文本路径，本模块只在 isInteractive() 成立时渲染。每个提示返回
+// 颜色在 NO_COLOR、非 TTY、TERM=dumb 下自动退化成纯文本；窄终端下每行按终端
+// 宽度截断（不换行、不撑破布局）；整层不含 emoji，全部是单宽度字符。
+//
+// 渲染：所有帧写入 stdout，raw 模式 + 光标保存/恢复逐键重绘 —— Windows 终端对
+// 相对 moveCursor 的重绘处理不一致，每次重绘都从「帧首光标保存点」恢复并清屏
+// 后重画。可注入 { stdin, stdout }（单测用假 TTY 流）；非 TTY 时调用方自行回退
+// 到纯文本路径，本模块只在 isInteractive() 成立时渲染。每个提示返回
 // Promise<value | null>（null = Esc/Ctrl+C 取消）。
 
 import readline from "node:readline";
@@ -17,30 +25,188 @@ export function isInteractive({ stdin = process.stdin, stdout = process.stdout }
   return stdin.isTTY === true && stdout.isTTY === true;
 }
 
-// ---- 基础输出 ----
+// ---- 颜色 ----
 
-export function banner(stdout = process.stdout) {
-  stdout.write("\n  _   ___   _______ _   _______\n / | / / | / / ____/ | / /  _/\n/  |/ /  |/ / /   /  |/ // /  \n/ /|  / /|  / /___/ /|  // /   \n/_/ |_/_/ |_/_____/_/ |_/___/  AVENIC\n\n");
+const ANSI = /\x1b\[[0-9;]*m/g;
+
+/** 是否给这个流上色：NO_COLOR / FORCE_COLOR 优先，其次看它是不是终端。 */
+export function colorEnabled(stream = process.stdout, environment = process.env) {
+  if (environment.FORCE_COLOR === "0") return false;
+  if (typeof environment.NO_COLOR === "string" && environment.NO_COLOR !== "") return false; // NO_COLOR 规范：非空即关闭
+  if (environment.FORCE_COLOR) return true;
+  return stream?.isTTY === true && environment.TERM !== "dumb";
 }
 
-/** ◆ 标题行（帧内首个提示的顶部行；clack intro 同款）。 */
-export function intro(stdout, title) {
-  stdout.write(`◆  ${title}\n`);
+/** 一套颜色函数；enabled 为 false 时每个函数都是恒等 —— 调用点不必分支。 */
+export function paletteFor(enabled) {
+  const wrap = (...codes) => (text) => (enabled ? `\x1b[${codes.join(";")}m${text}\x1b[0m` : String(text));
+  return {
+    enabled,
+    brand: wrap(36),        // 品牌色（青）：标记、光标、标题符号
+    title: wrap(1, 36),     // 标题行：品牌色 + 粗体
+    ok: wrap(32),           // 成功 / 已选中
+    okStrong: wrap(1, 32),
+    warn: wrap(33),         // 警告
+    bad: wrap(31),          // 错误
+    dim: wrap(2),           // 次要信息、帮助
+    strong: wrap(1),
+  };
 }
 
-/** 收尾线。调用点自带语义文本，如 Done! 2 Packs installed。 */
-export function outro(stdout, text) {
-  stdout.write(`✓  ${text}\n`);
+export function palette(stream = process.stdout, environment = process.env) {
+  return paletteFor(colorEnabled(stream, environment));
 }
 
-/** 取消线：Esc 或 Ctrl+C 后由调用方打印（然后通常输出 "No change." 之类）。 */
-export function cancel(stdout, text = "Cancelled") {
-  stdout.write(`✖  ${text}\n`);
+/** 提示自己的调色板：调用方给了 color 就照办，否则看流。 */
+function colorsFor(options, stdout) {
+  if (options.color === true || options.color === false) return paletteFor(options.color);
+  return palette(stdout, options.environment ?? process.env);
 }
 
-/** 错误线：一次失败的原因，格式与取消线一致（✖ 在最左，理由跟其后）。 */
-export function error(stdout, text) {
-  stdout.write(`✖  ${text}\n`);
+// ---- 宽度 ----
+// 终端宽度决定每一行能画多长：窄终端截断，宽终端也不铺满整屏。
+
+export function columns(stream = process.stdout) {
+  const width = Number(stream?.columns);
+  return Math.max(40, Math.min(Number.isFinite(width) && width > 0 ? width : 80, 120));
+}
+
+/** 终端显示宽度（CJK 各记 2 列，代理对记 1 字符，ANSI 序列不计）。 */
+export function displayWidth(text) {
+  let width = 0;
+  for (const character of String(text).replace(ANSI, "")) {
+    const code = character.codePointAt(0);
+    const wide =
+      (code >= 0x1100 && code <= 0x115f) || // Hangul jamo
+      (code >= 0x2e80 && code <= 0x9fff) || // CJK 部首/汉字/假名（含 U+3000 空白）
+      (code >= 0xf900 && code <= 0xfaff) || // CJK 兼容表意
+      (code >= 0xff00 && code <= 0xff60);   // 全角 ASCII
+    width += wide ? 2 : 1;
+  }
+  return width;
+}
+
+/** 按显示宽度截断到 width 列，末尾一个 …。 */
+export function truncate(text, width) {
+  const plain = String(text);
+  if (width <= 0) return "";
+  if (displayWidth(plain) <= width) return plain;
+  let out = "";
+  let used = 0;
+  for (const character of plain) {
+    const size = displayWidth(character);
+    if (used + size > width - 1) break;
+    out += character;
+    used += size;
+  }
+  return `${out}…`;
+}
+
+// ---- 一行条目 ----
+// 每一个列表（单选、多选、可搜索、确认）都画同一行：│  ▸ ◉ 标签   提示
+
+function entryRow({ colors, width, cursor = false, checked = false, label, hint }) {
+  const head = `│  ${cursor ? colors.brand("▸") : " "} ${checked ? colors.ok("◉") : colors.dim("○")}  `;
+  let tail = hint ? `   ${colors.dim(hint)}` : "";
+  let room = width - displayWidth(head) - displayWidth(tail) - 1;
+  if (room < 8 && tail) { // 标签比提示重要：留不下标签就丢掉提示，而不是把标签压成两个字
+    tail = "";
+    room = width - displayWidth(head) - 1;
+  }
+  const text = truncate(label, Math.max(4, room));
+  const painted = checked ? (cursor ? colors.okStrong(text) : colors.ok(text)) : cursor ? colors.strong(text) : text;
+  return `${head}${painted}${tail}`;
+}
+
+// ---- 纯文本输出 ----
+
+/** 品牌 banner：三行块状 AVENIC + 一行副标题（窄终端下自动省略副标题）。 */
+export function banner(stdout = process.stdout, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  const art = [
+    "█▀▀█ █   █ █▀▀▀ █  █ ███ █▀▀▀",
+    "█▄▄█  █ █  █▀▀  █▄ █  █  █   ",
+    "▀  ▀   ▀   ▀▀▀▀ █ ▀█ ▀▀▀ ▀▀▀▀",
+  ].map((line) => `   ${colors.brand(line)}`);
+  const subtitle = options.subtitle ?? "shared history · skills · sessions";
+  const width = columns(stdout);
+  const lines = [...art];
+  if (displayWidth(subtitle) + 4 <= width) lines.push(`   ${colors.dim(subtitle)}`);
+  stdout.write(`${lines.join("\n")}\n\n`);
+}
+
+/** ◆ 标题行：一次输出的开头，或交互帧的顶行。 */
+export function intro(stdout, title, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.title(`◆  ${title}`)}\n`);
+  if (options.description) stdout.write(`│  ${colors.dim(truncate(options.description, columns(stdout) - 4))}\n`);
+}
+
+/** ◇ 分节标题：status 这类只读输出的骨架，与落定帧同一个符号。 */
+export function section(stdout, title, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.brand(`◇  ${title}`)}\n`);
+  if (options.description) stdout.write(`│  ${colors.dim(truncate(options.description, columns(stdout) - 4))}\n`);
+}
+
+/** 一条「标签  值」的信息行，带 │ 竖线（status 的分节内容）。 */
+export function field(stdout, label, value, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  const labelWidth = options.labelWidth ?? 9;
+  const label_ = label.padEnd(labelWidth);
+  const text = truncate(`${label_}${value}`, columns(stdout) - 4);
+  stdout.write(`│  ${colors.dim(text.slice(0, labelWidth))}${text.slice(labelWidth)}\n`);
+}
+
+export function success(stdout, text, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.ok("✓")}  ${text}\n`);
+}
+
+export function warning(stdout, text, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.warn("!")}  ${text}\n`);
+}
+
+export function error(stdout, text, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.bad("✖")}  ${text}\n`);
+}
+
+/** 落定行：一次成功收尾（与 success 同形，语义上是「这一段结束了」）。 */
+export function outro(stdout, text, options = {}) {
+  success(stdout, text, options);
+}
+
+/** 取消行：Esc / Ctrl+C 之后由调用方打印。 */
+export function cancel(stdout, text = "Cancelled", options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.bad("✖")}  ${colors.dim(text)}\n`);
+}
+
+/**
+ * 状态表：◇ 分节 + 竖线 + 列对齐（`avenic status` 的 Agents 一节）。
+ * 列宽按内容算，整行按终端宽度截断，窄终端下不换行。
+ */
+export function table(stdout, headers, rows, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  const widths = headers.map((header, column) =>
+    Math.max(displayWidth(header), ...rows.map((row) => displayWidth(row[column] ?? ""))));
+  const width = columns(stdout);
+  const line = (cells, paint) => cells
+    .map((cell, column) => {
+      const pad = " ".repeat(Math.max(0, widths[column] - displayWidth(cell)));
+      return paint ? paint(`${cell}${pad}`) : `${cell}${pad}`;
+    })
+    .join("  ")
+    .trimEnd();
+  stdout.write(`│  ${colors.dim(truncate(line(headers), width - 4))}\n`);
+  for (const row of rows) {
+    const text = line(row.map((cell) => String(cell ?? "")));
+    const painted = options.mark ? options.mark(row, colors) : text;
+    stdout.write(`│  ${truncate(painted, width - 4)}\n`);
+  }
+  if (options.footnote) stdout.write(`│  ${colors.dim(truncate(options.footnote, width - 4))}\n`);
 }
 
 // ---- 帧重绘机制 ----
@@ -68,13 +234,15 @@ function startFrame(stdin, stdout, paint) {
   return { refresh, close };
 }
 
-function frameSeparator() {
-  return `│  ${"─".repeat(14)}`;
-}
-
-/** 落定帧：◇ 标题行 + 兼容帧结束（取消时直接回取消行）。 */
-function settleFrame(stdout, title, extraLines) {
-  stdout.write(`\x1b[u\x1b[J${extraLines.length === 0 ? `◇  ${title}\n` : [`◇  ${title}`, ...extraLines, ""].join("\n")}`);
+/** 落定帧：◇ 标题行 + 区块内容 + └ 摘要行（取消时直接回取消行）。 */
+function settleFrame(stdout, colors, heading, lines, summary) {
+  const width = columns(stdout);
+  const body = [
+    colors.brand(`◇  ${truncate(heading, width - 4)}`),
+    ...lines,
+    ...(summary === undefined ? [] : [`${colors.brand("└")}  ${colors.ok(truncate(summary, width - 4))}`]),
+  ];
+  stdout.write(`\x1b[u\x1b[J${body.join("\n")}\n`);
 }
 
 // ---- 键盘 ----
@@ -120,12 +288,12 @@ const movesUp = (intent, letters) => intent === "up" || (letters && intent?.text
 const movesDown = (intent, letters) => intent === "down" || (letters && intent?.text === "j");
 const letter = (intent, expected) => intent?.text === expected;
 
-/** 环绕移动光标；多一行「cancel」时把行数传成 count + 1。 */
+/** 环绕移动光标。 */
 function step(cursor, delta, rows) {
   return (cursor + delta + rows) % rows;
 }
 
-/** 长列表只画一屏：光标始终可见，两端各留一行省略标记。返回窗口与它的行号。 */
+/** 长列表只画一屏：光标始终可见，两端各留一行省略标记。 */
 function windowFor(count, cursor, height) {
   if (count <= height) return { from: 0, to: count };
   const from = Math.max(0, Math.min(cursor - Math.floor(height / 2), count - height));
@@ -140,19 +308,22 @@ function filterEntries(entries, query) {
     entry.label.toLowerCase().includes(needle) || String(entry.value).toLowerCase().includes(needle));
 }
 
+const moreUp = (count) => `│  ↑ ${count} more`;
+const moreDown = (count) => `│  ↓ ${count} more`;
+
 // ---- 提示 ----
 // 帧、键盘、落定、取消只在这里实现一次；每个提示只回答「画什么」和「按键之后
-// 状态怎么变」。因此新增一个交互面（如 Skills 菜单）是写一个 reducer，而不是
-// 再写一遍终端循环。
+// 状态怎么变」。因此新增一个交互面是写一个 reducer，而不是再写一遍终端循环。
 
 /**
  * `model.paint()` 返回当前帧的行，`model.reduce(intent)` 返回 true（重画）、
  * "accept"（立即确认）或什么都不返回，`model.accept()` 返回 `{ result, lines,
- * summary }`、`{ cancel: true }` 或什么都不返回（保持这一帧 —— 空选择或回车行
- * 是提示，不是取消）。
+ * summary }`、`{ cancel: true }` 或什么都不返回（保持这一帧 —— 空选择是提示，
+ * 不是取消）。
  */
 function prompt(options, model) {
   const { stdin = process.stdin, stdout = process.stdout } = options;
+  const colors = colorsFor(options, stdout);
   const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
   return new Promise((resolve) => {
     let stop = () => {};
@@ -161,12 +332,12 @@ function prompt(options, model) {
       session.close();
       stop();
       if (result === null) {
-        settleFrame(stdout, model.titleLine(), []);
-        stdout.write(`✖  ${cancelLabel}\n`);
+        settleFrame(stdout, colors, model.heading(), []);
+        cancel(stdout, cancelLabel, { colors });
         resolve(null);
         return;
       }
-      settleFrame(stdout, model.titleLine(), [...lines, `◇  ${summary}`]);
+      settleFrame(stdout, colors, model.heading(), lines, summary);
       resolve(result);
     };
     const accept = () => {
@@ -198,43 +369,60 @@ function prompt(options, model) {
   });
 }
 
+/** 帧头：◆ 标题（+ 灰色说明）→ 空 │ → 条目。所有列表共用。 */
+function frameHead({ colors, title, description, width }) {
+  const rows = [colors.title(`◆  ${truncate(title, width - 4)}`)];
+  if (description) rows.push(`│  ${colors.dim(truncate(description, width - 4))}`);
+  rows.push("│");
+  return rows;
+}
+
+/** 帧尾：校验提示（黄）→ 空 │ → └ 帮助（灰）。 */
+function frameFoot({ colors, footer, message, width }) {
+  const rows = [];
+  if (message) rows.push(`│  ${colors.warn(truncate(message, width - 4))}`);
+  rows.push("│");
+  rows.push(`${colors.brand("└")}  ${colors.dim(truncate(footer, width - 4))}`);
+  return rows;
+}
+
 /** 单选项选择（catalog select / 手动流中的任一单选）。 */
-export function select(options = {}) {
-  const entries = options.options; // [{ value, label }]
-  const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
+export function singleSelect(options = {}) {
+  const entries = options.options; // [{ value, label, hint }]
   const height = Math.max(1, options.height ?? 12);
+  const values = entries.map((entry) => entry.value);
   const count = entries.length;
-  const cancelRow = count; // cancel 行在 entries 之后
+  let cursor = Math.max(0, Math.min(options.initial ?? 0, Math.max(0, count - 1)));
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
   const footer = options.footer ?? "↑↓ move · enter select · esc cancel";
-  let cursor = Math.max(0, Math.min(options.initial ?? 0, cancelRow));
-  const row = (index) =>
-    `│  ${index === cursor ? "●" : "○"}  ${entries[index].label}${entries[index].hint ? `   ${entries[index].hint}` : ""}`;
+  const row = (index, flagged) => entryRow({
+    colors, width, label: entries[index].label, hint: entries[index].hint, checked: flagged, cursor: index === cursor,
+  });
   return prompt({ ...options, footer }, {
-    titleLine: () => options.title,
+    heading: () => options.title,
     paint() {
-      const { from, to } = windowFor(count, Math.min(cursor, Math.max(0, count - 1)), height);
-      const rows = [`◇  ${options.title}`];
-      if (from > 0) rows.push(`│  ↑ ${from} more`);
-      for (let index = from; index < to; index += 1) rows.push(row(index));
-      if (to < count) rows.push(`│  ↓ ${count - to} more`);
-      rows.push(frameSeparator());
-      rows.push(`│  ${cursor === cancelRow ? "●" : "○"}  ${cancelLabel}`);
-      rows.push(frameSeparator());
-      rows.push(footer);
+      const { from, to } = windowFor(count, cursor, height);
+      const rows = frameHead({ colors, title: options.title, description: options.description, width });
+      if (from > 0) rows.push(moreUp(from));
+      for (let index = from; index < to; index += 1) rows.push(row(index, index === cursor));
+      if (to < count) rows.push(moreDown(count - to));
+      rows.push(...frameFoot({ colors, footer, message: count === 0 ? "Nothing to choose from" : "", width }));
       return rows;
     },
     reduce(intent) {
+      if (count === 0) return false;
       if (movesUp(intent, true) || movesDown(intent, true)) {
-        cursor = step(cursor, movesUp(intent, true) ? -1 : 1, count + 1);
+        cursor = step(cursor, movesUp(intent, true) ? -1 : 1, count);
         return true;
       }
       return false;
     },
     accept() {
-      if (cursor >= count) return { cancel: true };
+      if (count === 0) return null; // 没有可选项：回车留在原地，不是取消
       return {
-        result: entries[cursor].value,
-        lines: entries.map((_, index) => row(index)),
+        result: values[cursor],
+        lines: entries.map((_, index) => row(index, index === cursor)),
         summary: entries[cursor].label,
       };
     },
@@ -242,10 +430,12 @@ export function select(options = {}) {
 }
 
 /**
- * 多选项选择（space 逐项切换，a 全选，n 清空）。可搜索时（`searchable: true`）
- * 单字符一律进入过滤词，列表随输入缩小，空格仍然切换当前项。
+ * 多选项选择（space 逐项切换，Ctrl+A 全选，a/n 清空/全选）。可搜索时
+ * （`searchable: true`）单字符一律进入过滤词，列表随输入缩小，空格仍然切换
+ * 当前项。回车只有在选中数达到 minSelected 时才落定 —— 一个都没选时回车是
+ * 提示，不是「就这样吧」，也不是取消。
  */
-export function multiselect(options = {}) {
+export function multiSelect(options = {}) {
   const entries = options.options; // [{ value, label, hint }]
   const title = options.title;
   const searchable = options.searchable === true;
@@ -253,41 +443,42 @@ export function multiselect(options = {}) {
   const checked = new Set(options.initial ?? []);
   const minSelected = Math.max(0, options.minSelected ?? 0);
   const emptyMessage = options.emptyMessage ?? "Select at least one item";
-  const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
   const height = Math.max(1, options.height ?? 12);
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
   const footer = options.footer ?? (searchable
     ? "type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel"
-    : "↑↓ move · space toggle · a all · n none · enter confirm · esc cancel");
+    : "↑↓ move · space toggle · ^a all · enter confirm · esc cancel");
   let query = "";
   let cursor = 0;
   let validationMessage = "";
   let shown = entries;
-  // titleLine 不带 ◇：骨架负责前缀（帧内和落定帧用的是同一行）。
-  const titleLine = () => (checked.size > 0 ? `${title} (${checked.size} checked)` : title);
-  const row = (entry, marked) =>
-    `│  ${marked ? "▸" : " "}  ${checked.has(entry.value) ? "●" : "○"}  ${entry.label}${entry.hint ? `   ${entry.hint}` : ""}`;
+  // heading 帧内和落定帧用的是同一行，所以它不带 ◇：符号由骨架加。
+  const heading = () => (checked.size > 0 ? `${title} (${checked.size} selected)` : title);
+  const row = (entry, marked) => entryRow({
+    colors, width, label: entry.label, hint: entry.hint, checked: checked.has(entry.value), cursor: marked,
+  });
   return prompt({ ...options, footer }, {
-    titleLine,
+    heading,
     paint() {
       shown = filterEntries(entries, query);
-      cursor = Math.min(cursor, shown.length); // 可能停在 cancel 行
+      cursor = Math.min(cursor, shown.length);
       const { from, to } = windowFor(shown.length, Math.min(cursor, Math.max(0, shown.length - 1)), height);
-      const rows = [`◇  ${titleLine()}`];
-      if (from > 0) rows.push(`│  ↑ ${from} more`);
+      const rows = frameHead({ colors, title: heading(), description: options.description, width });
+      if (from > 0) rows.push(moreUp(from));
       for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
-      if (to < shown.length) rows.push(`│  ↓ ${shown.length - to} more`);
-      rows.push(frameSeparator());
-      rows.push(`│  ${cursor >= shown.length ? "▸" : " "}  ○  ${cancelLabel}`);
-      if (searchable) rows.push(`│  ⌕ ${query.length > 0 ? query : "&"}${shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : ""}`);
-      rows.push(frameSeparator());
-      rows.push(footer);
-      if (validationMessage) rows.push(validationMessage);
+      if (to < shown.length) rows.push(moreDown(shown.length - to));
+      if (searchable) {
+        const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
+        rows.push(truncate(`│  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.dim("type to filter")}${colors.dim(counter)}`, width));
+      }
+      rows.push(...frameFoot({ colors, footer, message: validationMessage, width }));
       return rows;
     },
     reduce(intent) {
       if (movesUp(intent, !searchable) || movesDown(intent, !searchable)) {
         if (shown.length === 0) return false;
-        cursor = step(cursor, movesUp(intent, !searchable) ? -1 : 1, shown.length + 1);
+        cursor = step(cursor, movesUp(intent, !searchable) ? -1 : 1, shown.length);
         return true;
       }
       if ((intent === "toggle" || (!searchable && letter(intent, "s"))) && cursor < shown.length) {
@@ -323,8 +514,6 @@ export function multiselect(options = {}) {
       return false;
     },
     accept() {
-      // cancel 行优先于校验：用户在「取消」上回车就是要取消，哪怕一个也没选。
-      if (shown.length > 0 && cursor >= shown.length) return { cancel: true };
       if (checked.size < minSelected) {
         validationMessage = emptyMessage;
         return null; // 留在这一帧，提示已经画在帧里
@@ -345,31 +534,31 @@ export function multiselect(options = {}) {
  * 可搜索单选：输入即过滤，↑↓ 在结果里移动，Enter 选中。列表长度不设限，
  * 一屏放不下时只画光标周围的一段——「找到那一条」不因为多了几十条而变慢。
  */
-export function searchSelect(options = {}) {
+export function searchableSelect(options = {}) {
   const entries = options.options; // [{ value, label, hint }]
   const title = options.title;
   const height = Math.max(1, options.height ?? 12);
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
   const footer = options.footer ?? "type to filter · ↑↓ move · enter select · esc cancel";
   let query = "";
   let cursor = 0;
   let shown = entries;
-  const row = (entry, marked) =>
-    `│  ${marked ? "●" : "○"}  ${entry.hint ? `${entry.label}  ${entry.hint}` : entry.label}`;
+  const row = (entry, marked) => entryRow({ colors, width, label: entry.label, hint: entry.hint, checked: marked, cursor: marked });
   return prompt({ ...options, footer }, {
-    titleLine: () => title,
+    heading: () => title,
     paint() {
       shown = filterEntries(entries, query);
       cursor = Math.min(cursor, Math.max(0, shown.length - 1));
       const { from, to } = windowFor(shown.length, cursor, height);
-      const rows = [`◇  ${title}`];
-      if (shown.length === 0) rows.push("│  (no matches)");
-      if (from > 0) rows.push(`│  ↑ ${from} more`);
+      const rows = frameHead({ colors, title, description: options.description, width });
+      if (shown.length === 0) rows.push(`│  ${colors.dim("no matches")}`);
+      if (from > 0) rows.push(moreUp(from));
       for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
-      if (to < shown.length) rows.push(`│  ↓ ${shown.length - to} more`);
-      rows.push(frameSeparator());
-      rows.push(`│  ⌕ ${query.length > 0 ? query : "&"}${shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : ""}`);
-      rows.push(frameSeparator());
-      rows.push(footer);
+      if (to < shown.length) rows.push(moreDown(shown.length - to));
+      const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
+      rows.push(truncate(`│  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.dim("type to filter")}${colors.dim(counter)}`, width));
+      rows.push(...frameFoot({ colors, footer, message: "", width }));
       return rows;
     },
     reduce(intent) {
@@ -403,11 +592,15 @@ export function searchSelect(options = {}) {
  */
 export function text(options = {}) {
   const title = options.title;
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
   const footer = options.footer ?? "type · enter confirm · esc cancel";
   let value = options.initial ?? "";
+  const cursorLine = () => `│  ${colors.brand("▸")} ${value}${colors.brand("▏")}`;
   return prompt({ ...options, footer }, {
-    titleLine: () => title,
-    paint: () => [`◇  ${title}`, `│  ${value}`, frameSeparator(), footer],
+    heading: () => title,
+    paint: () => [...frameHead({ colors, title, description: options.description, width }), cursorLine(),
+      ...frameFoot({ colors, footer, message: "", width })],
     reduce(intent) {
       if (intent === "erase") {
         value = value.slice(0, -1);
@@ -434,20 +627,26 @@ export function text(options = {}) {
 /** Yes/No 确认。y/n 直接作答并立即落定，↑↓ 移动后 Enter 确认。Esc → null。 */
 export function confirm(options = {}) {
   const title = options.title;
-  const footer = options.footer ?? "↑↓ move · y yes · n no · enter confirm · esc cancel";
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
+  const footer = options.footer ?? "y yes · n no · enter confirm · esc cancel";
   const choices = [
-    { value: true, label: "Yes" },
-    { value: false, label: "No" },
+    { value: true, label: options.yesLabel ?? "Yes" },
+    { value: false, label: options.noLabel ?? "No" },
   ];
   let cursor = (options.initial ?? true) ? 0 : 1;
-  const row = (index) => `│  ${index === cursor ? "●" : "○"}  ${choices[index].label}`;
+  const row = (index) => entryRow({ colors, width, label: choices[index].label, checked: index === cursor, cursor: index === cursor });
   const settleOn = (index) => {
     cursor = index;
     return "accept";
   };
   return prompt({ ...options, footer }, {
-    titleLine: () => title,
-    paint: () => [`◇  ${title}`, ...choices.map((_, index) => row(index)), footer],
+    heading: () => title,
+    paint: () => [
+      ...frameHead({ colors, title, description: options.description, width }),
+      ...choices.map((_, index) => row(index)),
+      ...frameFoot({ colors, footer, message: "", width }),
+    ],
     reduce(intent) {
       if (movesUp(intent, true) || movesDown(intent, true)) {
         cursor = 1 - cursor;
@@ -466,12 +665,13 @@ export function confirm(options = {}) {
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/** 单行旋转指示器（安装/克隆等长操作）。update 换文案，stop/fail 落定换 ✓/✖。 */
-export function spinner(options = {}) {
+/** 单行进度指示器（安装/克隆/同步等长操作）。update 换文案，stop/fail 落定换 ✓/✖。 */
+export function progress(options = {}) {
   const stdout = options.stdout ?? process.stdout;
+  const colors = colorsFor(options, stdout);
   let currentText = options.text ?? "Working…";
   let index = 0;
-  const paint = () => stdout.write(`\r\x1b[K${SPINNER_FRAMES[index % SPINNER_FRAMES.length]} ${currentText}`);
+  const paint = () => stdout.write(`\r\x1b[K${colors.brand(SPINNER_FRAMES[index % SPINNER_FRAMES.length])} ${currentText}`);
   const timer = setInterval(() => {
     index += 1;
     paint();
@@ -484,46 +684,34 @@ export function spinner(options = {}) {
     },
     stop(doneText) {
       clearInterval(timer);
-      stdout.write(`\r\x1b[K✓  ${doneText}\n`);
+      stdout.write(`\r\x1b[K${colors.ok("✓")}  ${doneText}\n`);
     },
     fail(errorText) {
       clearInterval(timer);
-      stdout.write(`\r\x1b[K✖  ${errorText}\n`);
+      stdout.write(`\r\x1b[K${colors.bad("✖")}  ${errorText}\n`);
     },
   };
 }
 
 // ---- 摘要框（╭╮ 框 + ├/└ 内联列表）：结果信息在交互完成后的落定输出 ----
 
-/** 终端显示宽度（CJK 各记 2 列，代理对记 1 字符）。 */
-export function displayWidth(text) {
-  let width = 0;
-  for (const character of text) {
-    const code = character.codePointAt(0);
-    const wide =
-      (code >= 0x1100 && code <= 0x115f) || // Hangul jamo
-      (code >= 0x2e80 && code <= 0x9fff) || // CJK 部首/汉字/假名（含 U+3000 空白）
-      (code >= 0xf900 && code <= 0xfaff) || // CJK 兼容表意
-      (code >= 0xff00 && code <= 0xff60);   // 全角 ASCII
-    width += wide ? 2 : 1;
-  }
-  return width;
-}
-
 /** 把内容行包进 ╭╮╰╯ 边框；返回成帧字符串数组（也方便单测）。 */
 export function boxLines(lines) {
-  const contentWidth = Math.max(0, ...lines.map((line) => displayWidth(line))) + 4;
-  const frame = [
-    `╭${"─".repeat(contentWidth)}╮`,
+  const width = Math.max(0, ...lines.map((line) => displayWidth(line))) + 4;
+  return [
+    `╭${"─".repeat(width)}╮`,
     ...lines.map((line) => {
-      const pad = contentWidth - 2 - displayWidth(line); // │ + 2 左边距
+      const pad = width - 2 - displayWidth(line); // │ + 2 左边距
       return `│  ${line}${" ".repeat(Math.max(0, pad - 2))}  │`;
     }),
-    `╰${"─".repeat(contentWidth)}╯`,
+    `╰${"─".repeat(width)}╯`,
   ];
-  return frame;
 }
 
-export function box(stdout, lines) {
+/**
+ * 结果摘要框。框里的行自带层级（└ 是区块收尾），框本身只是把它们和终端上
+ * 其他输出分开。交互完成后才用，所以它永远是纯文本、不参与帧重绘。
+ */
+export function summary(stdout, lines) {
   stdout.write(`\n${boxLines(lines).join("\n")}\n`);
 }

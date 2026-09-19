@@ -32,8 +32,8 @@ async function waitFor(condition, description, timeout = 8000) {
 
 /** Every row the second prompt has painted: a frame's option lines. */
 function paintedRows(stdout, title) {
-  const text = stdout.text();
-  return [...text.slice(text.lastIndexOf(title)).matchAll(/│ {2}● {2}([^\n]+)/g)].map((row) => row[1]);
+  const text = stdout.text().replace(/\x1b\[[0-9;]*m/g, ""); // 位置由字形决定，颜色与它无关
+  return [...text.slice(text.lastIndexOf(title)).matchAll(/│ {2}▸ ◉ {2}([^\n]+)/g)].map((row) => row[1]);
 }
 
 async function withSessionsProject(run) {
@@ -72,7 +72,7 @@ async function withSessionsProject(run) {
 test("the Sessions menu shows shared history and Esc leaves the project unchanged", async () => {
   await withSessionsProject(async ({ projectRoot, menu }) => {
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◇ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
     for (const label of ["Continue shared session", "List sessions", "Import histories", "Set active session", "Status", "Back"]) {
       assert.ok(stdout.text().includes(label), `shared menu is missing "${label}"`);
     }
@@ -86,10 +86,10 @@ test("the Sessions menu shows shared history and Esc leaves the project unchange
 test("the Sessions menu sets the active shared session to the one the user picked", async () => {
   await withSessionsProject(async ({ projectRoot, logged, menu }) => {
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◇ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
     keys(stdin, "\x1b[B", "\x1b[B", "\x1b[B", "\r"); // continue → list → import → set active
-    await waitFor(() => paintedRows(stdout, "◇  Set active session").length > 0, "the session list");
-    const picked = paintedRows(stdout, "◇  Set active session").at(-1);
+    await waitFor(() => paintedRows(stdout, "◆  Set active session").length > 0, "the session list");
+    const picked = paintedRows(stdout, "◆  Set active session").at(-1);
     assert.notEqual(picked, "alpha", "the newest session is listed first, so the cursor starts on a different session");
     keys(stdin, "\r");
     assert.equal(await promise, 0);
@@ -102,7 +102,7 @@ test("the Sessions menu offers the isolated→shared switch and Back leaves mode
   await withSessionsProject(async ({ projectRoot, menu, interop }) => {
     await setSessionInteropMode(projectRoot, "isolated");
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◇ {2}Sessions \(isolated\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(isolated\)/.test(stdout.text()), "the sessions menu");
     assert.ok(stdout.text().includes("Switch to Shared"));
     assert.ok(!stdout.text().includes("Continue shared session"), "an isolated project has no shared session to continue");
     assert.ok(!stdout.text().includes("Set active session"), "an isolated project has no active shared session");

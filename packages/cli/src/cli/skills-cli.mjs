@@ -6,16 +6,16 @@ import { fileURLToPath } from "node:url";
 import { takeOption } from "./options.mjs";
 import {
   banner,
-  box,
   cancel,
   confirm,
   error,
   intro,
   isInteractive,
-  multiselect,
+  multiSelect,
   outro,
-  select,
-  spinner,
+  progress,
+  singleSelect,
+  summary,
   text,
 } from "./prompts.mjs";
 import {
@@ -154,7 +154,7 @@ async function chooseInstallTargets(prompts, context) {
       hint: `${displayPath(context, target.destination)} · shared link`,
     })),
   ];
-  return multiselect({
+  return multiSelect({
     ...prompts,
     title: "Install to",
     options: entries,
@@ -171,12 +171,12 @@ async function chooseScope(prompts, options, current) {
     const context = createInstallContext(global, { ...options, migrate: false });
     return { value: global, label: context.label, hint: context.root };
   });
-  return select({ ...prompts, title: "Scope", options: entries, initial: current.global ? 1 : 0 });
+  return singleSelect({ ...prompts, title: "Scope", options: entries, initial: current.global ? 1 : 0 });
 }
 
 /** Hub 来源：加载 Catalog，把 Pack 清单交给人选。返回 null = 没选。 */
 async function pickHubPacks(prompts, context) {
-  const spin = spinner({ ...prompts, text: "Loading SkillsHub…" });
+  const spin = progress({ ...prompts, text: "Loading SkillsHub…" });
   let catalogInfo;
   let sourceConfig;
   let catalog;
@@ -209,7 +209,7 @@ async function pickHubPacks(prompts, context) {
       : `${own.names.length} + common = ${effective.names.length}`;
     return { value: pack.id, label: `${pack.name} — ${count} Skills` };
   });
-  const ids = await multiselect({
+  const ids = await multiSelect({
     ...prompts,
     title: "Select Packs",
     options: entries,
@@ -224,7 +224,7 @@ async function pickHubPacks(prompts, context) {
 
 /** 仓库来源：克隆到 scope 的 direct 目录并列出它发布的 Skill（不安装）。 */
 async function pickRepositorySkills(prompts, context, repository) {
-  const spin = spinner({ ...prompts, text: `Cloning ${repository}…` });
+  const spin = progress({ ...prompts, text: `Cloning ${repository}…` });
   let discovery;
   try {
     discovery = await discoverDirectSkills(context, repository);
@@ -243,7 +243,7 @@ async function pickRepositorySkills(prompts, context, repository) {
     label: name,
     ...(managed.has(name) ? { hint: "already managed in this scope" } : {}),
   }));
-  const names = await multiselect({
+  const names = await multiSelect({
     ...prompts,
     title: "Select Skills",
     options: entries,
@@ -266,7 +266,7 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
   let source = preset.source;
   let repository = preset.repository;
   if (!source) {
-    source = await select({
+    source = await singleSelect({
       ...prompts,
       title: "Where do the Skills come from?",
       options: [
@@ -312,7 +312,7 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
   const names = discovered.kind === "packs"
     ? resolvePacks(discovered.catalog, discovered.sourceConfig, discovered.packs, discovered.ids).names
     : discovered.names;
-  box(stdout, [
+  summary(stdout, [
     "✓  Ready to install",
     `├─ Source: ${source === "hub"
       ? `SkillsHub @ ${discovered.revision?.slice(0, 8) ?? "unpinned"}`
@@ -333,7 +333,7 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
     return;
   }
 
-  const spin = spinner({ ...prompts, text: "Installing…" });
+  const spin = progress({ ...prompts, text: "Installing…" });
   let result;
   try {
     result = discovered.kind === "packs"
@@ -351,7 +351,7 @@ async function addSkillsFlow(prompts, options, context, preset = {}) {
       return `${suffix} ${discovered.packs.get(id).name} (${effective.names.length} Skills)`;
     })
     : discovered.names.map((name, index) => `${index === discovered.names.length - 1 ? "└─" : "├─"} ${name}`);
-  box(stdout, [
+  summary(stdout, [
     `✓  ${names.length} Skill${names.length === 1 ? "" : "s"} installed`,
     ...detailLines,
     "",
@@ -461,7 +461,7 @@ async function interactiveRemoveAll(context, prompts, current) {
     cancel(stdout, "Uninstall cancelled");
     return;
   }
-  const spin = spinner({ ...prompts, text: "Removing…" });
+  const spin = progress({ ...prompts, text: "Removing…" });
   let removed;
   try {
     // 安装期输出吞掉：交互帧是唯一状态输出（进度归 spinner）。
@@ -471,7 +471,7 @@ async function interactiveRemoveAll(context, prompts, current) {
     throw error;
   }
   spin.stop("Removed");
-  box(stdout, [
+  summary(stdout, [
     `✓  ${[removed.direct > 0 && `${removed.direct} direct`, `${removed.managed} managed`].filter(Boolean).join(" + ")} Skills removed`,
     "",
     `scope: ${context.label}`,
@@ -1141,7 +1141,7 @@ async function commandHubList(options = {}) {
 // clack 风格单选（prompts.select 内部实现帧重绘，含键盘处理与取消打印）。
 // 非 TTY 时 commandHubSelect 在进入本函数前已回退为纯文本清单。
 function promptHubChoice(entries, currentIndex) {
-  return select({
+  return singleSelect({
     title: "Choose a Hub",
     options: entries.map((entry) => ({ value: entry.spec, label: entry.name })),
     initial: currentIndex >= 0 ? currentIndex : 0,
@@ -1209,7 +1209,7 @@ async function updateSkills(prompts, options, context) {
     error(stdout, `Nothing installed in the ${context.label.toLowerCase()} scope yet — use Add skills`);
     return;
   }
-  const spin = spinner({ ...prompts, text: "Updating…" });
+  const spin = progress({ ...prompts, text: "Updating…" });
   let result;
   try {
     result = await installPacks(context, current, { io: { log() {} }, refresh: true });
@@ -1218,7 +1218,7 @@ async function updateSkills(prompts, options, context) {
     throw cause;
   }
   spin.stop("Updated");
-  box(stdout, [
+  summary(stdout, [
     `✓  ${result.resolvedPacks.names.length} Skills up to date`,
     "",
     `scope: ${context.label}`,
@@ -1259,7 +1259,7 @@ async function removeSkills(prompts, options, context) {
     })),
     { value: "all", label: "Everything", hint: "all managed Skills, including common" },
   ];
-  const picked = await multiselect({
+  const picked = await multiSelect({
     ...prompts,
     title: "Remove which Skills?",
     options: rows,
@@ -1284,7 +1284,7 @@ async function removeSkills(prompts, options, context) {
     cancel(stdout, "Nothing removed");
     return;
   }
-  const spin = spinner({ ...prompts, text: "Removing…" });
+  const spin = progress({ ...prompts, text: "Removing…" });
   const removedPacks = [];
   try {
     if (packs.length > 0) {
@@ -1299,7 +1299,7 @@ async function removeSkills(prompts, options, context) {
     throw cause;
   }
   spin.stop("Removed");
-  box(stdout, [
+  summary(stdout, [
     `✓  Removed ${removedPacks.length + names.length} of ${picked.length}`,
     ...[...removedPacks.map((id) => `├─ Pack ${id}`), ...names.map((name) => `├─ ${name}`)],
     "",
@@ -1315,7 +1315,7 @@ async function skillsMenu(options = {}) {
   const context = createInstallContext(options.global ?? false, options);
   banner(stdout);
   intro(stdout, "Skills");
-  const choice = await select({
+  const choice = await singleSelect({
     ...prompts,
     title: "Skills",
     options: MENU_ENTRIES,

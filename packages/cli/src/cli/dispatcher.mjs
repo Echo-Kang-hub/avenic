@@ -41,7 +41,7 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { banner, confirm, isInteractive, multiselect, select } from "./prompts.mjs";
+import { banner, confirm, isInteractive, multiSelect, singleSelect } from "./prompts.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
 import { dispatchStatusCommand } from "./status-cli.mjs";
 import { mark, reportLaunchTiming, timed } from "#core/runtime/timing.mjs";
@@ -83,7 +83,7 @@ function agentChoices() {
 async function interactiveProjectDraft(projectRoot, editing = false, prompts = {}) {
   const state = await loadRuntime(projectRoot);
   const current = projectConfig(state);
-  const selected = await multiselect({
+  const selected = await multiSelect({
     ...prompts,
     title: editing ? "Select enabled agents" : "Select agents",
     options: agentChoices(),
@@ -95,7 +95,7 @@ async function interactiveProjectDraft(projectRoot, editing = false, prompts = {
   const agents = {};
   for (const agentId of selected) {
     const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
-    const auth = await select({
+    const auth = await singleSelect({
       ...prompts,
       title: `${getAgent(agentId).displayName} authentication`,
       options: [
@@ -105,7 +105,7 @@ async function interactiveProjectDraft(projectRoot, editing = false, prompts = {
       initial: previous.auth === "project" ? 1 : 0,
     });
     if (auth === null) return null;
-    const sessions = await select({
+    const sessions = await singleSelect({
       ...prompts,
       title: `${getAgent(agentId).displayName} session storage`,
       options: [
@@ -117,7 +117,7 @@ async function interactiveProjectDraft(projectRoot, editing = false, prompts = {
     if (sessions === null) return null;
     agents[agentId] = { auth, sessions };
   }
-  const sessionInterop = await select({
+  const sessionInterop = await singleSelect({
     ...prompts,
     title: "Session history",
     options: [
@@ -563,7 +563,7 @@ async function dispatchSessions(argumentsList, options = {}) {
   if (!command && isInteractive(prompts)) {
     banner(prompts.stdout);
     const interop = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
-    const action = await select({
+    const action = await singleSelect({
       ...prompts,
       title: `Sessions (${interop})`,
       options: [
@@ -585,7 +585,7 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (action[0] === "active") {
       const sessions = await listCanonicalSessions(projectRoot);
       if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
-      const sessionId = await select({ ...prompts, title: "Set active session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+      const sessionId = await singleSelect({ ...prompts, title: "Set active session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
       if (!sessionId) return 0;
       await setActiveCanonicalSession(projectRoot, sessionId);
       console.log(`Active shared session: ${sessionId}`);
@@ -594,9 +594,9 @@ async function dispatchSessions(argumentsList, options = {}) {
     if (action[0] !== "continue") return dispatchSessions(action, options);
     const sessions = await listCanonicalSessions(projectRoot);
     if (sessions.length === 0) throw new Error("No shared sessions are available. Import histories or switch to Shared mode first.");
-    const sessionId = await select({ ...prompts, title: "Continue shared session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
+    const sessionId = await singleSelect({ ...prompts, title: "Continue shared session", options: sessions.map((session) => ({ value: session.id, label: session.title ?? session.id })) });
     if (!sessionId) return 0;
-    const agentId = await select({ ...prompts, title: "Continue with", options: agentChoices() });
+    const agentId = await singleSelect({ ...prompts, title: "Continue with", options: agentChoices() });
     if (!agentId) return 0;
     return dispatchSessions(["continue", sessionId, "--agent", agentId], options);
   }

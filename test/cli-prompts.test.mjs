@@ -1,3 +1,7 @@
+// The TUI layer's own tests: every prompt's keyboard, every frame's shape, and
+// the rules the whole product inherits from it — one cancel story (Esc, never a
+// list row), Enter that cannot confirm an empty selection, colours that vanish
+// on request, and frames that fit the terminal they are drawn in.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -5,27 +9,44 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import {
-  boxLines,
+
+// Frames are asserted as text, so colour is off for the whole file. The colour
+// path has its own tests below, which turn it back on explicitly.
+process.env.NO_COLOR = "1";
+
+const {
   banner,
+  boxLines,
   cancel,
+  colorEnabled,
+  columns,
   confirm,
   displayWidth,
+  error,
+  field,
   intro,
   isInteractive,
-  multiselect,
+  multiSelect,
   outro,
-  select,
-  spinner,
+  paletteFor,
+  progress,
+  searchableSelect,
+  section,
+  singleSelect,
+  success,
+  summary,
+  table,
   text,
-} from "../packages/cli/src/cli/prompts.mjs";
-import { dispatchSkills } from "../packages/cli/src/cli/skills-cli.mjs";
-import { FakeTTY, fakeStdout, keys, runPrompt } from "./helpers/fake-tty.mjs";
+  truncate,
+  warning,
+} = await import("../packages/cli/src/cli/prompts.mjs");
+const { dispatchSkills } = await import("../packages/cli/src/cli/skills-cli.mjs");
+const { FakeTTY, fakeStdout, keys, runPrompt } = await import("./helpers/fake-tty.mjs");
 
 // ---- prompts 单元 ----
 
-test("select resolves the chosen value and settles the frame", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => select({
+test("singleSelect resolves the chosen value and settles the frame", async () => {
+  const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({
     stdin: s,
     stdout: o,
     title: "Choose a catalog",
@@ -33,14 +54,16 @@ test("select resolves the chosen value and settles the frame", async () => {
   }));
   keys(stdin, "\x1b[B", "\r"); // down → Beta; enter
   assert.equal(await promise, "b");
-  const text = stdout.text();
-  assert.match(text, /◇  Choose a catalog/);
-  assert.match(text, /◇  Beta/); // 结果行
-  assert.match(text, /●  Beta/); // 选中行
+  const frame = stdout.text();
+  assert.match(frame, /◆  Choose a catalog/); // 帧头
+  assert.match(frame, /│  ▸ ◉  Beta/); // 光标行 = 选中行（品牌 ▸ + 绿色 ◉）
+  assert.match(frame, /│    ○  Alpha/); // 未选中
+  assert.match(frame, /◇  Choose a catalog/); // 落定帧
+  assert.match(frame, /└  Beta/); // 摘要行
 });
 
-test("select escape resolves null and prints the cancel line", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => select({
+test("escape resolves null and prints the cancel line", async () => {
+  const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({
     stdin: s,
     stdout: o,
     title: "Choose a catalog",
@@ -51,8 +74,22 @@ test("select escape resolves null and prints the cancel line", async () => {
   assert.match(stdout.text(), /✖  cancel/);
 });
 
-test("multiselect toggles with space, a selects all, n clears, enter confirms", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => multiselect({
+test("cancelling is Escape, not a row in the list", async () => {
+  // 列表里只列可以选的东西：取消不是其中之一。
+  const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({
+    stdin: s,
+    stdout: o,
+    title: "Choose a catalog",
+    options: [{ value: "a", label: "Alpha" }, { value: "b", label: "Beta" }],
+  }));
+  keys(stdin, "\x1b[A", "\x1b[A"); // 从第一行往上仍是第一行：没有“取消”行可以落在上面
+  keys(stdin, "\r");
+  assert.equal(await promise, "a");
+  assert.doesNotMatch(stdout.text(), /○\s+cancel/);
+});
+
+test("multiSelect toggles with space, ctrl+a selects all, n clears, enter confirms", async () => {
+  const { stdin, stdout, promise } = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Select Packs",
@@ -65,18 +102,19 @@ test("multiselect toggles with space, a selects all, n clears, enter confirms", 
   }));
   const textBefore = () => stdout.text();
   keys(stdin, "\x1b[B"); // → Development
-  assert.match(textBefore(), /\(1 checked\)/); // 初始 common 已预选
+  assert.match(textBefore(), /\(1 selected\)/);
   keys(stdin, " "); // toggle Development on
-  assert.match(textBefore(), /\(2 checked\)/);
-  keys(stdin, "\x1b[AA"); // j/k/↑ 任意：直接 a 全选
-  keys(stdin, "a");
-  keys(stdin, "\r"); // → 全选
+  assert.match(textBefore(), /\(2 selected\)/);
+  keys(stdin, "\x1b[AA"); // j/k/↑ 任意：直接 ctrl+a 全选
+  keys(stdin, "\x01");
+  keys(stdin, "\r");
   assert.deepEqual(await promise, ["common", "development", "research"]);
-  assert.match(stdout.text(), /◇  3 selected/);
+  assert.match(stdout.text(), /└  3 selected/);
+  assert.doesNotMatch(stdout.text(), /○\s+cancel/);
 });
 
 test("a required multiselect keeps an empty selection open; escaping cancels", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => multiselect({
+  const { stdin, stdout, promise } = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Select Packs",
@@ -84,11 +122,11 @@ test("a required multiselect keeps an empty selection open; escaping cancels", a
     initial: ["common"],
     minSelected: 1,
   }));
-  keys(stdin, "n", "\r");
+  keys(stdin, "n", "\r"); // 清空后回车：不继续，也不取消
   assert.match(stdout.text(), /Select at least one item/);
   keys(stdin, " ", "\r");
   assert.deepEqual(await promise, ["common"]);
-  const escaped = await runPrompt((s, o) => multiselect({
+  const escaped = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Select Packs",
@@ -99,59 +137,129 @@ test("a required multiselect keeps an empty selection open; escaping cancels", a
   assert.match(escaped.stdout.text(), /✖  cancel/);
 });
 
+test("a fresh multiselect refuses to confirm nothing when a selection is required", async () => {
+  // init/change 的 agent 选择器就是这样：一个都不选时回车既不继续也不取消。
+  const { stdin, stdout, promise } = await runPrompt((s, o) => multiSelect({
+    stdin: s,
+    stdout: o,
+    title: "Select agents",
+    options: [{ value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }],
+    minSelected: 1,
+    emptyMessage: "Select at least one agent",
+  }));
+  keys(stdin, "\r", "\r");
+  assert.match(stdout.text(), /Select at least one agent/);
+  assert.doesNotMatch(stdout.text(), /◇  Select agents/); // 没有落定：还停在那一帧
+  keys(stdin, " ", "\r");
+  assert.deepEqual(await promise, ["claude"]);
+});
+
 test("confirm answers Yes initially and y/n/esc drive the choices", async () => {
   const yes = await runPrompt((s, o) => confirm({ stdin: s, stdout: o, title: "Install 1 Pack?" }));
   keys(yes.stdin, "\r");
   assert.equal(await yes.promise, true);
-  assert.match(yes.stdout.text(), /◇  Yes/);
+  assert.match(yes.stdout.text(), /└  Yes/);
 
   const no = await runPrompt((s, o) => confirm({ stdin: s, stdout: o, title: "Install 1 Pack?" }));
   keys(no.stdin, "n");
   assert.equal(await no.promise, false);
-  assert.match(no.stdout.text(), /◇  No/);
+  assert.match(no.stdout.text(), /└  No/);
 
   const cancelled = await runPrompt((s, o) => confirm({ stdin: s, stdout: o, title: "Install 1 Pack?" }));
   keys(cancelled.stdin, "\x1b");
   assert.equal(await cancelled.promise, null);
-  assert.match(cancelled.stdout.text(), /✖/);
+  assert.match(cancelled.stdout.text(), /✖  cancel/);
 });
 
-test("spinner paints a frame and settles on stop/fail", () => {
+test("progress paints a frame and settles on stop/fail", () => {
   const stdout = fakeStdout();
-  const spin = spinner({ stdout, text: "Installing…" });
+  const spin = progress({ stdout, text: "Installing…" });
   assert.match(stdout.text(), /⠋ Installing…/);
   spin.stop("Installed");
   assert.match(stdout.text(), /✓  Installed\n$/);
   const failed = fakeStdout();
-  const spin2 = spinner({ stdout: failed });
+  const spin2 = progress({ stdout: failed });
   spin2.fail("boom");
   assert.match(failed.text(), /✖  boom\n$/);
 });
 
-test("intro, outro, cancel, and boxLines render deterministic frames", () => {
+test("the printed line vocabulary is one line per meaning", () => {
   const stdout = fakeStdout();
-  intro(stdout, "Install Skills");
-  outro(stdout, "Done! Installed 1 Pack");
+  intro(stdout, "Install Skills", { description: "from the SkillsHub" });
+  section(stdout, "Agents");
+  field(stdout, "Mode", "shared");
+  success(stdout, "Done! Installed 1 Pack");
+  warning(stdout, "12 records could not be read");
+  error(stdout, "boom");
   cancel(stdout);
-  assert.equal(stdout.text(), "◆  Install Skills\n✓  Done! Installed 1 Pack\n✖  Cancelled\n");
+  outro(stdout, "All good");
+  assert.equal(stdout.text(), [
+    "◆  Install Skills",
+    "│  from the SkillsHub",
+    "◇  Agents",
+    "│  Mode     shared",
+    "✓  Done! Installed 1 Pack",
+    "!  12 records could not be read",
+    "✖  boom",
+    "✖  Cancelled",
+    "✓  All good",
+    "",
+  ].join("\n"));
+});
+
+test("table aligns columns and stays inside the terminal", () => {
+  const stdout = fakeStdout({ columns: 48 });
+  table(stdout, ["Agent", "CLI", "History"], [
+    ["Claude Code", "found", "4"],
+    ["Codex", "not found", "2"],
+  ]);
+  const rows = stdout.text().trimEnd().split("\n");
+  assert.equal(rows.length, 3);
+  for (const row of rows) assert.ok(displayWidth(row) <= 48, row);
+  const columnsAt = (row) => ["Claude Code", "Codex", "Agent"].map((cell) => row.indexOf(cell)).find((at) => at >= 0);
+  assert.equal(columnsAt(rows[0]), columnsAt(rows[1]), "表头与数据行同一起点");
+  assert.equal(rows[1].indexOf("found"), rows[0].indexOf("CLI"), "第二列对齐");
+  assert.equal(rows[1].indexOf("4"), rows[0].indexOf("History"), "第三列对齐");
+});
+
+test("the banner is a readable three-line wordmark, not a control sequence", () => {
+  const stdout = fakeStdout();
+  banner(stdout, { subtitle: "shared history" });
+  const text = stdout.text();
+  assert.doesNotMatch(text, /\x1b/);
+  const rows = text.trimEnd().split("\n");
+  assert.equal(rows.length, 4);
+  const [one, two, three] = rows;
+  // 三行一样宽，都是块字符画的 —— 可读的字，不是抽象符号。
+  assert.equal(displayWidth(one), displayWidth(two));
+  assert.equal(displayWidth(one), displayWidth(three));
+  assert.ok(displayWidth(one) <= columns(), "字标要放得进一屏");
+  for (const row of [one, two, three]) assert.match(row, /[█▀▄]/);
+  assert.match(rows[3], /shared history/);
+  // 窄终端下副标题让位，字标自己不受影响
+  const narrow = fakeStdout({ columns: 30 });
+  banner(narrow, { subtitle: "shared history · skills · sessions · models · the hub" });
+  assert.equal(narrow.text().trimEnd().split("\n").length, 3);
+});
+
+test("boxLines pads CJK by display width, not by character count", () => {
   assert.deepEqual(boxLines(["one", "two-three"]), [
     "╭─────────────╮",
     "│  one        │",
     "│  two-three  │",
     "╰─────────────╯",
   ]);
-  // CJK 宽度：中文占 2 列，各帧行的显示宽度一致（字符数不同）
   const cjk = boxLines(["✓  OK", "  ├─ 中文 Skills"]);
   const widths = cjk.map((line) => displayWidth(line));
   assert.equal(widths[0], widths[1]);
   assert.equal(widths[0], widths[2]);
 });
 
-test("banner is compact, branded, and contains no terminal control sequence", () => {
-  const stdout = fakeStdout();
-  banner(stdout);
-  assert.match(stdout.text(), /AVENIC/);
-  assert.doesNotMatch(stdout.text(), /\x1b/);
+test("truncate cuts by display width and marks what it cut", () => {
+  assert.equal(truncate("abcdef", 10), "abcdef");
+  assert.equal(truncate("abcdef", 4), "abc…");
+  assert.equal(displayWidth(truncate("中文中文中文", 6)), 5);
+  assert.equal(truncate("abc", 0), "");
 });
 
 test("isInteractive requires both ends to be TTY", () => {
@@ -162,8 +270,71 @@ test("isInteractive requires both ends to be TTY", () => {
   assert.equal(isInteractive({ stdin: input, stdout: plain }), false);
 });
 
+test("colour is on for a terminal and off when asked, on every stream", () => {
+  const tty = fakeStdout();
+  assert.equal(colorEnabled(tty, {}), true);
+  assert.equal(colorEnabled(tty, { NO_COLOR: "1" }), false);
+  assert.equal(colorEnabled(tty, { NO_COLOR: "" }), true); // NO_COLOR 规范：空值不算
+  assert.equal(colorEnabled(tty, { FORCE_COLOR: "0" }), false);
+  assert.equal(colorEnabled(tty, { TERM: "dumb" }), false);
+  assert.equal(colorEnabled(fakeStdout({ isTTY: false }), {}), false);
+  assert.equal(colorEnabled(fakeStdout({ isTTY: false }), { FORCE_COLOR: "1" }), true);
+});
+
+test("a coloured frame carries the brand, and a plain one carries none of it", () => {
+  const coloured = paletteFor(true);
+  assert.equal(coloured.brand("◆"), "\x1b[36m◆\x1b[0m");
+  assert.equal(coloured.ok("✓"), "\x1b[32m✓\x1b[0m");
+  assert.equal(coloured.warn("!"), "\x1b[33m!\x1b[0m");
+  assert.equal(coloured.bad("✖"), "\x1b[31m✖\x1b[0m");
+  assert.equal(coloured.dim("help"), "\x1b[2mhelp\x1b[0m");
+  const plain = paletteFor(false);
+  assert.equal(plain.brand("◆"), "◆");
+  assert.equal(plain.dim("help"), "help");
+});
+
+test("a coloured frame colours the marks and nothing else", async () => {
+  const stdout = fakeStdout();
+  const { stdin, promise } = await runPrompt((s) => singleSelect({
+    stdin: s,
+    stdout,
+    color: true,
+    title: "Choose",
+    options: [{ value: "a", label: "Alpha" }],
+  }));
+  keys(stdin, "\r");
+  await promise;
+  const text = stdout.text();
+  assert.match(text, /\x1b\[1;36m◆  Choose\x1b\[0m/); // 标题：品牌色 + 粗体
+  assert.match(text, /\x1b\[36m▸\x1b\[0m/); // 光标
+  assert.match(text, /\x1b\[1;32mAlpha\x1b\[0m/); // 选中项：绿色 + 粗体
+  assert.match(text, /\x1b\[2m↑↓ move/); // 帮助：灰
+});
+
+test("every frame line fits the terminal it is drawn in", async () => {
+  const stdout = fakeStdout({ columns: 40 });
+  const { stdin, promise } = await runPrompt((s) => multiSelect({
+    stdin: s,
+    stdout,
+    title: "Install to",
+    options: [
+      { value: "agents", label: "Codex / OpenCode / universal agents", hint: ".agents/skills · always installed" },
+      { value: "claude", label: "Claude Code with a very long label that will not fit", hint: "~/.claude/skills · shared link" },
+    ],
+    initial: ["agents"],
+  }));
+  keys(stdin, "\r");
+  await promise;
+  // 帧之间用 \x1b[u\x1b[J 重画，所以只看每一次重画的最后一行 —— 那就是当前帧。
+  const frame = stdout.text().split("\x1b[u\x1b[J").at(-1);
+  for (const line of frame.split("\n")) {
+    assert.ok(displayWidth(line) <= 40, `line is ${displayWidth(line)} wide: ${line}`);
+  }
+  assert.match(frame, /…/, "长标签被截断而不是换行");
+});
+
 test("arrows and j/k move the cursor, and the list wraps at both ends", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => select({
+  const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({
     stdin: s,
     stdout: o,
     title: "Choose",
@@ -174,11 +345,11 @@ test("arrows and j/k move the cursor, and the list wraps at both ends", async ()
   keys(stdin, "j", "k"); // j/k 与 ↑↓ 等价，净移动为零
   keys(stdin, "\r"); // 停在 Beta
   assert.equal(await promise, "b");
-  assert.match(stdout.text(), /◇  Beta/);
+  assert.match(stdout.text(), /└  Beta/);
 });
 
 test("ctrl+c cancels a prompt exactly the way escape does", async () => {
-  const selected = await runPrompt((s, o) => select({
+  const selected = await runPrompt((s, o) => singleSelect({
     stdin: s,
     stdout: o,
     title: "Choose",
@@ -188,7 +359,7 @@ test("ctrl+c cancels a prompt exactly the way escape does", async () => {
   assert.equal(await selected.promise, null);
   assert.match(selected.stdout.text(), /✖  cancel/);
 
-  const multi = await runPrompt((s, o) => multiselect({
+  const multi = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Select Packs",
@@ -200,7 +371,7 @@ test("ctrl+c cancels a prompt exactly the way escape does", async () => {
 });
 
 test("a searchable list filters as you type, erases, and selects from what it shows", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => multiselect({
+  const { stdin, stdout, promise } = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Select Skills",
@@ -217,8 +388,25 @@ test("a searchable list filters as you type, erases, and selects from what it sh
   assert.deepEqual(await promise, ["gamma"]);
 });
 
+test("searchableSelect filters and selects from what it shows", async () => {
+  const { stdin, stdout, promise } = await runPrompt((s, o) => searchableSelect({
+    stdin: s,
+    stdout: o,
+    title: "Pick one",
+    options: [
+      { value: "alpha", label: "Alpha" },
+      { value: "beta", label: "Beta" },
+    ],
+  }));
+  keys(stdin, "b");
+  assert.match(stdout.text(), /\(1\/2\)/);
+  keys(stdin, "\r");
+  assert.equal(await promise, "beta");
+  assert.match(stdout.text(), /└  Beta/);
+});
+
 test("a fixed row cannot be turned off, and typing never steals its selection", async () => {
-  const { stdin, stdout, promise } = await runPrompt((s, o) => multiselect({
+  const { stdin, stdout, promise } = await runPrompt((s, o) => multiSelect({
     stdin: s,
     stdout: o,
     title: "Install to",
@@ -231,9 +419,9 @@ test("a fixed row cannot be turned off, and typing never steals its selection", 
     minSelected: 1,
   }));
   keys(stdin, " "); // 光标在必选项上：空格什么也不做
-  assert.match(stdout.text(), /\(2 checked\)/);
+  assert.match(stdout.text(), /\(2 selected\)/);
   keys(stdin, "\x1b[B", " "); // 移到可选项上关掉它
-  assert.match(stdout.text(), /\(1 checked\)/);
+  assert.match(stdout.text(), /\(1 selected\)/);
   keys(stdin, "\r");
   assert.deepEqual(await promise, ["agents"]);
 });
@@ -249,12 +437,8 @@ test("a text prompt takes typed input and will not settle on nothing", async () 
   keys(stdin, "\x7f"); // backspace 删掉最后一个字符
   keys(stdin, "\r");
   assert.equal(await promise, "owner/rep");
-  assert.match(stdout.text(), /│  owner\/repo/); // 输入过程中逐字回显
-  assert.match(stdout.text(), /◇  owner\/rep/); // 落定帧
-
-  const cancelled = await runPrompt((s, o) => text({ stdin: s, stdout: o, title: "Repository" }));
-  keys(cancelled.stdin, "x", "\x1b");
-  assert.equal(await cancelled.promise, null);
+  assert.match(stdout.text(), /▸ owner\/repo/); // 输入过程中逐字回显
+  assert.match(stdout.text(), /└  owner\/rep/); // 落定帧
 });
 
 // ---- 端到端：假 TTY 驱动 dispatchSkills 的交互流程 ----
@@ -322,13 +506,13 @@ test("interactive install: source → packs → Install to → scope → confirm
       const stdout = fakeStdout();
       const environment = { AVENIC_CATALOG_SPEC: catalogRoot, AVENIC_STATE_DIR: path.join(projectRoot, ".avenic-state") };
       const run = dispatchSkills(["install"], { cwd: projectRoot, environment, prompts: { stdin, stdout }, io: { log() {} } });
-      await waitFor("◇  Select Packs", stdout);
+      await waitFor("◆  Select Packs", stdout);
       keys(stdin, "\x1b[B", " ", "\r"); // → Development，space 选中，Enter 确认（common 预选）
-      await waitFor("◇  Install to", stdout);
+      await waitFor("◆  Install to", stdout);
       assert.match(stdout.text(), /Found 3 Skills in 2 Packs/); // 发现步骤先报了数量
       assert.match(stdout.text(), /\.agents\/skills · always installed/);
       keys(stdin, "\r"); // 默认：真身 + 共享链接都勾上
-      await waitFor("◇  Scope", stdout);
+      await waitFor("◆  Scope", stdout);
       keys(stdin, "\r"); // Project（默认）
       await waitFor("Install 2 Packs?", stdout);
       assert.match(stdout.text(), /├─ Skills: 3 — alpha, beta, gamma/);
@@ -343,7 +527,7 @@ test("interactive install: source → packs → Install to → scope → confirm
       assert.match(text, /├─ Common/);
       assert.match(text, /└─ Development/);
       assert.match(text, /✓  Done! Installed 2 Packs/);
-      assert.match(text, /◇  Select Packs \(2 checked\)/);
+      assert.match(text, /◇  Select Packs \(2 selected\)/);
       // 交互安装的是项目作用域：Skills 落盘于项目 .agents（universal 目标），锁文件在项目根
       assert.ok(existsSync(path.join(projectRoot, ".agents", "skills", "alpha")), "alpha on disk");
       assert.ok(existsSync(path.join(projectRoot, ".agents", "skills", "beta")), "beta on disk");
@@ -364,11 +548,11 @@ test("interactive install: source → packs → Install to → scope → confirm
       const reinstallIn = new FakeTTY();
       const reinstallOut = fakeStdout();
       const runAgain = dispatchSkills(["install"], { cwd: projectRoot, environment, prompts: { stdin: reinstallIn, stdout: reinstallOut }, io: { log() {} } });
-      await waitFor("◇  Select Packs", reinstallOut);
+      await waitFor("◆  Select Packs", reinstallOut);
       keys(reinstallIn, "\r"); // common 预选
-      await waitFor("◇  Install to", reinstallOut);
+      await waitFor("◆  Install to", reinstallOut);
       keys(reinstallIn, "\r");
-      await waitFor("◇  Scope", reinstallOut);
+      await waitFor("◆  Scope", reinstallOut);
       keys(reinstallIn, "\r");
       await waitFor("Install 1 Pack?", reinstallOut);
       keys(reinstallIn, "\r"); // Yes
@@ -394,7 +578,7 @@ test("the Skills menu offers every action and Back changes nothing", async () =>
       const stdin = new FakeTTY();
       const stdout = fakeStdout();
       const run = dispatchSkills([], { cwd: projectRoot, environment, prompts: { stdin, stdout }, io: { log() {} } });
-      await waitFor("◇  Skills", stdout);
+      await waitFor("◆  Skills", stdout);
       const menu = stdout.text();
       for (const label of [
         "Add skills",
@@ -407,7 +591,7 @@ test("the Skills menu offers every action and Back changes nothing", async () =>
       ]) {
         assert.match(menu, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       }
-      assert.match(menu, /AVENIC/); // 菜单是 AVENIC 的，不是另一个命令的区别名
+      assert.match(menu, /█▀▀█/); // 菜单开在 AVENIC 的字标下面
       keys(stdin, "\x1b"); // Esc = Back
       await run;
       assert.match(stdout.text(), /✖  back/);
@@ -432,13 +616,13 @@ test("Add from a repository discovers, lists, and installs the picked Skills", a
       const stdout = fakeStdout();
       const environment = { AVENIC_STATE_DIR: path.join(projectRoot, ".avenic-state") };
       const run = dispatchSkills(["add", repoRoot], { cwd: projectRoot, environment, prompts: { stdin, stdout }, io: { log() {} } });
-      await waitFor("◇  Select Skills", stdout);
+      await waitFor("◆  Select Skills", stdout);
       assert.match(stdout.text(), /Found 3 skills/);
       keys(stdin, "b"); // 过滤到 beta
       keys(stdin, " ", "\r"); // 选中 beta
-      await waitFor("◇  Install to", stdout);
+      await waitFor("◆  Install to", stdout);
       keys(stdin, "\r");
-      await waitFor("◇  Scope", stdout);
+      await waitFor("◆  Scope", stdout);
       keys(stdin, "\r");
       await waitFor("Install 1 Skill?", stdout);
       assert.match(stdout.text(), /├─ Skills: 1 — beta/); // 摘要说的是这一次要装的东西
