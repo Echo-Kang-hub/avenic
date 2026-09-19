@@ -1,10 +1,18 @@
 /* ===== Avenic Dashboard —— 终端 / 极客风格 =====
-   主题：颜色全部取自 VS Code 注入的 --vscode-* 变量（含 terminal.ansi* 终端色板），
-   深/浅主题自适应不做手动判断（规则 R4）。字体用编辑器等宽字体（终端感）。
+   主题：颜色取 VS Code 注入的 --vscode-* 变量（次要信息 = descriptionForeground、
+   成功 = ansiGreen、警告 = ansiYellow、错误 = ansiRed），品牌色是产品自己的红橙
+   （与 CLI 的 brand 同一个色，见下方 --avenic-*）。深/浅主题自适应不做手动判断
+   （规则 R4）。字体用编辑器等宽字体（终端感）。
    图标（codicon）：本地随包字体 media/dashboard/codicon.ttf（@vscode/codicons，Microsoft，
    MIT — 详见同目录 LICENSES.md），经 @font-face + ::before content 字形映射渲染；
    数据图标名只经 CSS 映射，不走远程资源（规则 R1）。安全：文本仍只经 textContent 渲染。
    排版铁律：单列 + max-width，任何一行绝不横向溢出（ellipsis / break-all / overflow-x hidden）。 */
+
+:root {
+  --avenic-brand: #ff7a18;
+  --avenic-brand-strong: #ff4d2e;
+  --avenic-brand-soft: #ff9e5e;
+}
 
 body {
   font-family: var(--vscode-editor-font-family, ui-monospace, "Cascadia Mono", monospace);
@@ -18,10 +26,10 @@ body {
   max-width: 100%;
 }
 
-/* 等宽终端：所有字号角色共用编辑器等宽字体，角色差异靠权重 + ANSI 色（h1 品牌绿、h2 注释灰、
-   value 常规、meta 黄色）。区块标题不做 ALL-CAPS 徽标（AI 设计默认款）——终端注释「# 区块名」
+/* 等宽终端：所有字号角色共用编辑器等宽字体，角色差异靠权重 + 颜色（h1 品牌橙、h2 注释灰、
+   value 常规、meta 灰）。区块标题不做 ALL-CAPS 徽标（AI 设计默认款）——终端注释「# 区块名」
    更贴近本工具素材，且普通大小写对中文可读性更好。 */
-h1 { font-size: 1rem; font-weight: 700; margin: 0; letter-spacing: 0.18em; color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+h1 { font-size: 1rem; font-weight: 700; margin: 0; letter-spacing: 0.18em; color: var(--avenic-brand-strong, var(--vscode-foreground)); }
 h2 { font-size: 0.72rem; font-weight: 600; margin: 0; letter-spacing: 0.02em; color: var(--vscode-descriptionForeground); }
 h3 { font-size: 0.78rem; font-weight: 600; margin: 0; }
 p { margin: 0; }
@@ -87,7 +95,7 @@ p { margin: 0; }
   display: inline-block;
   width: 0.55em;
   height: 1em;
-  background: var(--vscode-terminal-ansiGreen, var(--vscode-foreground));
+  background: var(--avenic-brand-strong, var(--vscode-foreground));
   animation: blink 1.1s steps(1) infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
@@ -112,14 +120,14 @@ p { margin: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.prompt-line .dollar { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
-.prompt-line .cmd { color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); }
+.prompt-line .dollar { color: var(--vscode-descriptionForeground); }
+.prompt-line .cmd { color: var(--avenic-brand, var(--vscode-foreground)); }
 
 /* ---------- 终端行卡片（单列，左侧色条，绝不换行溢出） ---------- */
 .status-grid { display: flex; flex-direction: column; gap: 0.25rem; margin: 0 0 0.85rem; }
 .card {
   /* terminal 行风格:无圆角、左边 2px 彩色条 */
-  border-left: 2px solid var(--vscode-terminal-ansiBlue, var(--vscode-focusBorder));
+  border-left: 2px solid var(--avenic-brand-soft, var(--vscode-focusBorder));
   background: var(--vscode-editorWidget-background, none);
   padding: 0.3rem 0.55rem;
   min-width: 0;
@@ -136,7 +144,7 @@ p { margin: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;    /* 长路径/长 spec：省略号而非撑破一行 */
 }
-.meta  { font-size: 0.78rem; color: var(--vscode-terminal-ansiYellow, var(--vscode-descriptionForeground)); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta  { font-size: 0.78rem; color: var(--vscode-descriptionForeground); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hint  { font-size: 0.8rem; color: var(--vscode-descriptionForeground); margin-top: 0.2rem; }
 
 /* ---------- 区块标题 ---------- */
@@ -148,7 +156,7 @@ p { margin: 0; }
   margin: 0 0 0.4rem;
   font-size: 0.72rem;
   font-weight: 600;
-  color: var(--vscode-terminal-ansiGreen, var(--vscode-descriptionForeground));
+  color: var(--avenic-brand-soft, var(--vscode-descriptionForeground));
 }
 /* 终端注释标记「# 区块名」：结构与内容同源（配置/脚本里的注释行即如此），替代 ALL-CAPS 徽标 */
 .block-title::before {
@@ -172,7 +180,7 @@ p { margin: 0; }
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  border-left: 2px solid var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
+  border-left: 2px solid var(--avenic-brand-soft, var(--vscode-focusBorder));
   background: var(--vscode-editorWidget-background, none);
   padding: 0.28rem 0.55rem;
   min-width: 0;
@@ -198,7 +206,7 @@ p { margin: 0; }
   border-color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
   color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
 }
-.agent-status { font-size: 0.8rem; color: var(--vscode-terminal-ansiCyan, var(--vscode-foreground)); flex: none; }
+.agent-status { font-size: 0.8rem; color: var(--vscode-descriptionForeground); flex: none; }
 .agent-meta { font-size: 0.74rem; color: var(--vscode-descriptionForeground); margin-left: auto; flex: none; }
 /* Agent 品牌标记（inline SVG，currentColor 继承前景色）：全宽态与窄屏态都显示 */
 .agent-mark { width: 13px; height: 13px; flex: none; }
@@ -251,7 +259,7 @@ p { margin: 0; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.button:hover:not(:disabled) { border-color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder)); color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
+.button:hover:not(:disabled) { border-color: var(--avenic-brand, var(--vscode-focusBorder)); color: var(--avenic-brand, var(--vscode-foreground)); }
 .button:disabled { opacity: 0.45; cursor: default; }
 .button .icon { width: 12px; height: 12px; font-size: 12px; line-height: 12px; }
 /* 键盘可达性底线：焦点环可见，不破坏极客观感 */

@@ -41,13 +41,29 @@ is a bug even when every test passes.
 
 Every surface a user reads — `init`, `change`, `sessions`, `skills`, `status`,
 self-update, progress and results — is rendered by the one terminal layer in
-`packages/cli/src/cli/prompts.mjs`, and it has to look like a modern
-skills-CLI: a readable ASCII `AVENIC` wordmark, a hierarchy of `◆`/`◇`
-sections over `│ ◇ ◆ └` rails, and one colour system in which cyan/teal is the
-brand, green means success or the selected row, yellow warns, red errors, and
-dim grey is secondary.
+`packages/cli/src/cli/prompts.mjs` over the one brand layer in
+`packages/cli/src/cli/brand.mjs`, and it has to look like a modern
+skills-CLI: the fixed `AVENIC` mark (a 12-row asset, not a drawing routine), a
+hierarchy of `◆`/`◇` sections over `│ ◇ ◆ └` rails, and one colour system in
+which red-orange is the brand — `◆`/`◇`/`▸`/`◉`, selected rows and the active
+cursor — while green is left to mean success/current and nothing else, yellow
+warns, red errors, and dim grey is secondary.
 
 Rules that follow from that:
+
+- The logo is a fixed asset: `scripts/brand/avenic-logo.sh` is the design
+  source, `test/fixtures/brand/avenic-logo.ansi` is its output,
+  `packages/cli/src/cli/brand-logo.mjs` holds it as constants, and
+  `test/brand-logo.test.mjs` pins the three together byte for byte. Never
+  redraw it, re-font it, resize it, or generate it at runtime.
+- Two banner shapes and no more: `fullLogo()` for `init`/`change`/`sessions`/
+  `skills`, `compactBrand()` (one line) for `status`/self-update and for any
+  terminal too narrow for the mark. A plain `avenic claude|codex|opencode`
+  launch prints neither.
+- ANSI numbers live only in `brand.mjs` as semantic tokens
+  (`brand`, `brandStrong`, `brandSoft`, `cursor`, `selected`, `selectedStrong`,
+  `muted`, `text`, `strong`, `success`, `warning`, `error`); they degrade
+  TrueColor → 256 → 16 and vanish under `NO_COLOR` without touching layout.
 
 - The cursor (`▸`) and the selection (`◉`/`○`) are different marks: a user must
   always be able to tell where they are from what they have chosen.

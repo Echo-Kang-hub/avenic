@@ -13,6 +13,7 @@
     "pretest": "npm run sync-core",
     "test": "node --test test/*.test.mjs",
     "perf": "node scripts/perf/profile.mjs",
+    "perf:tui": "node scripts/perf/tui-render.mjs --runs 200",
     "test:vscode": "npm --prefix packages/vscode test",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "test:release": "npm run sync-core && node integration/release-smoke.mjs",
