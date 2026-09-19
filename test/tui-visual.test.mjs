@@ -64,20 +64,37 @@ test("a command that does not draw chrome does not print the logo", async () => 
 });
 
 test("the CLI paints a real screen on a real terminal", { skip: ptyAvailable() ? false : "no pseudoconsole on this platform" }, async () => {
-  const version = capturePty(process.execPath, [cli, "--version"], { cwd: path.join(here, ".."), columns: 100, rows: 40, timeoutMs: 60_000 });
+  // The terminal is named by the test, not inherited: whether this machine has
+  // NO_COLOR set, or a TERM this process happened to be started with, decides
+  // what the child paints. A colour assertion has to be about the product, so
+  // it asks for a TrueColor terminal explicitly — the depths below it are
+  // covered by the fixtures, which pin each one.
+  const terminal = { cwd: path.join(here, ".."), columns: 100, rows: 40, timeoutMs: 60_000, environment: { COLORTERM: "truecolor", TERM: "xterm-256color", NO_COLOR: "" } };
+  const version = capturePty(process.execPath, [cli, "--version"], terminal);
   assert.equal(version.status, "ok", version.detail ?? version.output);
   assert.match(stripControl(version.output), /Avenic \d+\.\d+\.\d+/);
 
-  const status = capturePty(process.execPath, [cli, "status"], { cwd: path.join(here, ".."), columns: 100, rows: 40, timeoutMs: 60_000 });
+  const status = capturePty(process.execPath, [cli, "status"], terminal);
   assert.equal(status.status, "ok", status.detail ?? status.output);
   const screen = stripControl(status.output);
   assert.match(screen, /AVENIC · Status/, "the status page leads with the compact brand");
   assert.match(screen, /│ {2}/, "the rail is drawn");
-  // The brand reaches the terminal as a real colour. Which depth it lands on is
-  // the terminal's business — TrueColor when it advertises COLORTERM, the 256
-  // brand otherwise — but it must never fall back to the 16-colour approximation
-  // unless the terminal really only has sixteen colours.
-  const branded = /\x1b\[(?:1;)?38;2;255;(?:122;24|77;46|158;94)m/.test(status.output)
-    || /\x1b\[(?:1;)?38;5;(?:202|208|215)m/.test(status.output);
+  // A TrueColor terminal gets the TrueColor brand — the same three colours the
+  // palette module declares, not a 16-colour approximation of them.
+  const branded = /\x1b\[(?:1;)?38;2;255;(?:122;24|77;46|158;94)m/.test(status.output);
   assert.ok(branded, `the brand colour reaches a real terminal (got: ${JSON.stringify(status.output.slice(0, 120))})`);
+
+  // And a terminal that asks for no colour at all gets none of it, while the
+  // screen it draws is still the same screen. It is read as content rather than
+  // compared byte for byte: a console that repaints over its own frame writes
+  // unchanged runs of spaces as cursor moves, so two captures of the same
+  // screen differ in what the terminal did, not in what is on it. The fixtures
+  // are where the layout is pinned character by character.
+  const plain = capturePty(process.execPath, [cli, "status"], { ...terminal, environment: { ...terminal.environment, NO_COLOR: "1" } });
+  assert.equal(plain.status, "ok", plain.detail ?? plain.output);
+  assert.doesNotMatch(plain.output, /\x1b\[[0-9;]*3[0-9]m/, "NO_COLOR reaches a real terminal too");
+  const plainScreen = stripControl(plain.output);
+  for (const row of ["AVENIC · Status", "◇  Project", "│  Agents", "│  Claude Code"]) {
+    assert.ok(plainScreen.includes(row), `NO_COLOR keeps the layout: ${row}\n${plainScreen.slice(0, 400)}`);
+  }
 });

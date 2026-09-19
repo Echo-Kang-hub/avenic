@@ -14,6 +14,9 @@
 // 其余命令也不会为大 Logo 付解析成本，直到真的要把它画出来。
 
 const ANSI = /\x1b\[[0-9;]*m/g;
+// 同一套颜色码，按「序列 / 文字」切开用：截断时序列要原样留下，但不占列。
+const ANSI_PARTS = /(\x1b\[[0-9;]*m)/;
+const RESET = "\x1b[0m";
 
 /** 是否给这个流上色：NO_COLOR / FORCE_COLOR 优先，其次看它是不是终端。 */
 export function colorEnabled(stream = process.stdout, environment = process.env) {
@@ -85,20 +88,37 @@ export function displayWidth(text) {
   return width;
 }
 
-/** 按显示宽度截断到 width 列，末尾一个 …。 */
+/**
+ * 按显示宽度截断到 width 列，末尾一个 …。
+ *
+ * 颜色码原样带过去，但一列都不占——只有可见字符算列，所以上过色的行和纯文本
+ * 行截在同一个字上。截断处若还在颜色里，这一行自己补一个复位：颜色码是整段
+ * 转义，切一半写出去，终端读到的既不是原来的颜色，后面几行也跟着变色。
+ */
 export function truncate(text, width) {
   const plain = String(text);
   if (width <= 0) return "";
   if (displayWidth(plain) <= width) return plain;
+  // split 保留了捕获组，所以奇数位是颜色码，偶数位是文字。
+  const parts = plain.split(ANSI_PARTS);
   let out = "";
   let used = 0;
-  for (const character of plain) {
-    const size = displayWidth(character);
-    if (used + size > width - 1) break;
-    out += character;
-    used += size;
+  let painted = false;
+  const settle = () => `${out}…${painted ? RESET : ""}`;
+  for (const [index, part] of parts.entries()) {
+    if (index % 2 === 1) {
+      out += part;
+      painted = true;
+      continue;
+    }
+    for (const character of part) {
+      const size = displayWidth(character);
+      if (used + size > width - 1) return settle();
+      out += character;
+      used += size;
+    }
   }
-  return `${out}…`;
+  return settle();
 }
 
 // ---- 品牌 ----

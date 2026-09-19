@@ -44,6 +44,16 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * The environment the child runs in. What a terminal can paint is the child's
+ * business, not the machine's: a test that asserts a colour has to say which
+ * terminal it is asking for, or the same commit passes here and fails wherever
+ * NO_COLOR or a bare TERM is set. `options.environment` pins it.
+ */
+function childEnvironment(options) {
+  return { ...process.env, ...(options.environment ?? {}) };
+}
+
 /** Windows: a pseudoconsole through the PowerShell client. */
 function captureWithConPty(command, args, options) {
   const work = mkdtempSync(path.join(os.tmpdir(), "avenic-conpty-"));
@@ -65,7 +75,7 @@ function captureWithConPty(command, args, options) {
       "-Input", options.input ? Buffer.from(options.input, "utf8").toString("base64") : "",
       "-InputDelayMs", String(options.inputDelayMs ?? 1200),
       "-TimeoutMs", String(options.timeoutMs ?? 60_000),
-    ], { encoding: "utf8", timeout: (options.timeoutMs ?? 60_000) + 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    ], { encoding: "utf8", timeout: (options.timeoutMs ?? 60_000) + 30_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"], env: childEnvironment(options) });
 
     let output = "";
     try {
@@ -107,7 +117,7 @@ function captureWithScript(command, args, options) {
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
       input: options.input ? Buffer.from(options.input, "utf8") : undefined,
-      env: { ...process.env, TERM: process.env.TERM ?? "xterm-256color", COLUMNS: String(options.columns ?? 100), LINES: String(options.rows ?? 40) },
+      env: { ...childEnvironment(options), TERM: options.environment?.TERM ?? process.env.TERM ?? "xterm-256color", COLUMNS: String(options.columns ?? 100), LINES: String(options.rows ?? 40) },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let output = "";

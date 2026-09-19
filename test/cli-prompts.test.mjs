@@ -282,6 +282,26 @@ test("truncate cuts by display width and marks what it cut", () => {
   assert.equal(truncate("abc", 0), "");
 });
 
+test("colour costs no columns, and a cut never lands inside a colour code", () => {
+  // 选择器里被截断的行是上过色的（搜索行、已选行）。颜色码本身不是字符：
+  // 把它算进列数，行会提前二十列就断掉；截在序列中间，终端读到一个残缺的
+  // 转义，那一行既不是这个颜色，后面的内容也跟着变色。
+  const painted = "\x1b[38;2;255;122;24mALPHA BRAVO CHARLIE DELTA ECHO\x1b[0m";
+  const plain = "ALPHA BRAVO CHARLIE DELTA ECHO";
+  for (const width of [28, 20, 12, 6]) {
+    const cut = truncate(painted, width);
+    assert.equal(cut.replace(/\x1b\[[0-9;]*m/g, ""), truncate(plain, width), `${width} 列：颜色不占列`);
+    assert.ok(displayWidth(cut) <= width, `${width} 列：不超出宽度`);
+    assert.doesNotMatch(cut, /\x1b\[[0-9;]*$/, `${width} 列：颜色码被切成了两半`);
+    assert.equal(cut.replace(/\x1b\[[0-9;]*m/g, "").includes("\x1b"), false, `${width} 列：没有残缺的转义`);
+  }
+  // 截断处若还在颜色里，这一行要自己复位，不能把颜色留给下面的内容。
+  assert.ok(truncate(painted, 20).endsWith("\x1b[0m"), "被截断的行要复位");
+  // 没有颜色的字符串一个字节都不多。
+  assert.equal(truncate(plain, 20), `${truncate(plain, 20)}`);
+  assert.equal(/\x1b/.test(truncate(plain, 20)), false);
+});
+
 test("isInteractive requires both ends to be TTY", () => {
   const input = new FakeTTY();
   const output = fakeStdout();
