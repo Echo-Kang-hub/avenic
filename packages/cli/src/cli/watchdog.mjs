@@ -3,10 +3,27 @@ import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sessionLeasePath, WATCH_INTERVAL_MS } from "#core";
+import { durableEnvironment, sessionLeasePath, WATCH_INTERVAL_MS } from "#core";
 import { timed } from "#core/runtime/timing.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * What the detached watchdog reads back. The environment is narrowed to the
+ * variables that resolve native storage and home — the state file sits in the
+ * temp directory for as long as the launch group lives, so the token that
+ * started the agent must not be in it.
+ */
+export function watchdogState(agentId, projectRoot, member, environment, intervalMs, parentPid = process.pid) {
+  return {
+    member,
+    parentPid,
+    agentId,
+    projectRoot,
+    environment: durableEnvironment(environment),
+    intervalMs,
+  };
+}
 
 // Start the detached watchdog that keeps this launch's sessions durable while
 // the agent runs, and finishes the launch if the CLI process is killed without
@@ -23,7 +40,7 @@ export async function spawnSessionWatchdog(agentId, projectRoot, member, environ
     await mkdir(stateDir, { recursive: true });
     await writeFile(
       path.join(stateDir, "watchdog.json"),
-      JSON.stringify({ member, parentPid: process.pid, agentId, projectRoot, environment, intervalMs }),
+      JSON.stringify(watchdogState(agentId, projectRoot, member, environment, intervalMs)),
       { encoding: "utf8", mode: 0o600 },
     );
   });

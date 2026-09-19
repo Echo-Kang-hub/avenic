@@ -1626,6 +1626,36 @@ scan, no full native-history walk, no unmapped-session materialization and no
 polling; `test/launch-latency.test.mjs` holds the invariant that a plain launch
 touches no canonical history before the agent's TUI starts.
 
+## Final acceptance pass — a defect found by running it, not by reading it
+
+Acceptance ran the real commands on a real project instead of trusting the
+suite, and `avenic status` answered for this repository — which is when the
+launch state in the OS temp directory got read rather than assumed. It held
+`"ANTHROPIC_AUTH_TOKEN":"sk-…"` in plain text, and so did 188 other
+`avenic-launch-*/watchdog.json` files from launches earlier in the day.
+
+The cause is a copy where a selection belonged: `spawnSessionWatchdog` handed
+the detached helper its environment by writing the whole of `process.env` into
+the state file. The helper — capture, reconcile, restore — needs only the
+variables that locate an agent's native storage and home directory, so the
+file now carries `durableEnvironment(environment)`: an allow-list of those
+names (`PATH`, `HOME`/`USERPROFILE`/`APPDATA`, `XDG_CONFIG_HOME`,
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `TEMP`, `GIT_*`, …) with anything
+credential-shaped refused even if a future entry names it. `OPENCODE_CONFIG_CONTENT`,
+which carries a projected model's key, is out by the same rule.
+
+Coverage: `test/launch-environment.test.mjs` (four tests — the kept set, the
+refusal rule, the written state containing no credential, and an environment
+with nothing durable in it yielding nothing), plus an artifact-level assertion
+in `release-smoke`: the launch runs with a marked token in its environment and
+the smoke then reads every `avenic-launch-*.json` in the temp directory and
+fails if the marker appears.
+
+The 189 existing state files on this machine were rewritten in place with the
+narrowed environment (0 carry a credential now), and the changelog and release
+notes tell anyone who ran an earlier version to delete the stale directories
+and rotate what they had exported.
+
 ## P1 — `avenic status`
 
 One core model (`packages/core/src/status.mjs`, `STATUS_SCHEMA_VERSION = 1`)
@@ -1713,7 +1743,7 @@ daily ten, documented in their own chapters.
 type-to-filter and its `⌕ ga  (1/3)` counter, a fixed row refusing to toggle,
 empty-input Enter staying in place, an empty required selection staying open,
 and a pipe (non-TTY) taking the script path with no control sequences in the
-output. 18 tests in that file, 515 in the suite.
+output. 18 tests in that file, 519 in the suite.
 
 ## P12 — CLI / VS Code parity
 
@@ -1732,25 +1762,22 @@ docs and binary assets (codicon.ttf, icon.png) excluded, non-blank lines:
 
 | Area | Before | After | Net |
 |---|---|---|---|
-| core (`packages/core/src`) | 7 164 | 7 596 | **+432** |
-| CLI (`packages/cli/src`) | 2 701 | 3 098 | **+397** |
+| core (`packages/core/src`) | 7 164 | 7 937 | **+773** |
+| CLI (`packages/cli/src`) | 2 701 | 3 401 | **+700** |
 | CLI scripts | 69 | 87 | **+18** |
 | VS Code src | 2 761 | 2 792 | **+31** |
 | VS Code media (js/css/html/svg) | 1 803 | 1 838 | **+35** |
-| **Total** | **14 498** | **15 411** | **+913** |
-
-`git diff --numstat` counts the churn behind the net figures: 941 added and
-512 removed in `packages/cli/src`, 526 added and 72 removed in
-`packages/core/src` (both excluding the files below, which are new).
+| **Total** | **14 498** | **16 055** | **+1 557** |
 
 New files: `core/status.mjs` (228), `cli/launch.mjs` (181),
-`cli/status-cli.mjs` (98), `core/runtime/timing.mjs` (42),
-`core/util/stamp.mjs` (15), `cli/agent-commands.mjs` (8) — 572 lines, no file
-deleted. The reshaping is consolidation inside existing files rather than
-growth for its own sake: `dispatcher.mjs` shrank from 909 to 803 raw lines by
-handing the launch sequence to `launch.mjs` and the legacy spellings to one
-forwarding table, and `skills-cli.mjs` traded its one-off orchestration for the
-single Add flow that four entry points now share.
+`cli/status-cli.mjs` (98), `core/runtime/environment.mjs` (55),
+`core/runtime/timing.mjs` (42), `core/util/stamp.mjs` (15),
+`cli/agent-commands.mjs` (8) — 627 lines, no file deleted. The reshaping is
+consolidation inside existing files rather than growth for its own sake:
+`dispatcher.mjs` shrank from 909 to 803 raw lines by handing the launch
+sequence to `launch.mjs` and the legacy spellings to one forwarding table, and
+`skills-cli.mjs` traded its one-off orchestration for the single Add flow that
+four entry points now share.
 
 Duplicated orchestration, before → after:
 
@@ -1770,13 +1797,13 @@ Duplicated orchestration, before → after:
   Current / Latest / Source for the executable `PATH` would run.
 - Versions: core 1.4.2 → **1.5.0**, CLI 1.5.2 → **1.6.0**, extension 0.3.0 →
   **0.4.0** (new capability in all three; no breaking removals).
-- Full regression: `npm test` 515 tests / 512 pass / 3 skipped / 0 fail;
+- Full regression: `npm test` 519 tests / 516 pass / 3 skipped / 0 fail;
   `npm run test:install` PASS; `npm run test:release` PASS on the packed
   tarball; VS Code typecheck + 154 tests + `npm run package` PASS;
   `npm run pack:cli` reports 66 files and `avenic@1.6.0`.
 - Artifacts in `dist/release-20260919-1006/` with `SHA256SUMS.txt` and
-  `RELEASE-NOTES.md`: `avenic-1.6.0.tgz` (162 824 B), `avenic-core-1.5.0.tgz`
-  (118 799 B), `avenic-agent-manager.vsix` (217 461 B). This exact tarball,
+  `RELEASE-NOTES.md`: `avenic-1.6.0.tgz` (163 964 B), `avenic-core-1.5.0.tgz`
+  (119 818 B), `avenic-agent-manager.vsix` (217 472 B). This exact tarball,
   installed into a temp global prefix, prints `Avenic 1.6.0` and teaches only
   the converged surface.
 - Real Hub sync through the system's own git credentials: `git ls-remote`

@@ -184,6 +184,11 @@ export function sessionLeasePath(agentId: string, projectRoot: string): string;
 // its exit sequence, "idle" means nothing to recover from.
 export function launchGroupState(agentId: string, projectRoot: string): Promise<"idle" | "running" | "interrupted">;
 export function processAlive(pid: number): boolean;
+// The part of an environment a detached launch helper keeps: the variables that
+// locate an agent's native storage and home directory, and nothing credential
+// shaped. Whatever writes launch state to disk writes this, not the environment
+// it was handed.
+export function durableEnvironment(environment?: ProcessEnvLike): ProcessEnvLike;
 export function samePath(left: string, right: string): boolean;
 export function normalizeProjectIdentity(value: string): string | null;
 export function hashContent(content: string): string;

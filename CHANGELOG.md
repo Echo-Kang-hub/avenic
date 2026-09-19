@@ -38,6 +38,15 @@
   spellings still work and say which one replaced them: `avenic doctor` →
   `avenic status`, top-level `avenic add|install|uninstall|adopt|packs|tree`
   → the same verb under `avenic skills`, `avenic catalog` → `avenic hub`.
+- **Security:** a launch no longer writes your credentials to disk. The
+  detached helper that keeps a run's sessions durable is handed its
+  environment through a file in the temp directory, and that file used to
+  hold the whole environment — so a shell that exported `ANTHROPIC_AUTH_TOKEN`
+  or an API key left it in plain text for as long as the launch state lived.
+  The file now carries only what locates an agent's native storage and home,
+  chosen from an allow-list that refuses anything credential-shaped. Anyone
+  who ran an earlier version should delete the stale `avenic-launch-*`
+  directories in their temp directory and rotate what was exported.
 
 ## 1.5.2 / 1.4.2 - 2026-09-19
 

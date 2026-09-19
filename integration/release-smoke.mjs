@@ -133,6 +133,21 @@ async function listTree(directory) {
   return entries.filter((entry) => entry.isFile()).map((entry) => path.join(entry.parentPath ?? entry.path, entry.name));
 }
 
+// The JSON a launch writes about itself: launch state lives in the OS temp
+// directory rather than in the project, so it is what a leak would be found in.
+async function launchStateFiles() {
+  const tempRoot = os.tmpdir();
+  const files = [];
+  for (const name of await readdir(tempRoot).catch(() => [])) {
+    if (!name.startsWith("avenic-launch-")) continue;
+    const directory = path.join(tempRoot, name);
+    for (const entry of await readdir(directory).catch(() => [])) {
+      if (entry.endsWith(".json")) files.push(path.join(directory, entry));
+    }
+  }
+  return files;
+}
+
 async function main() {
   await mkdir(home, { recursive: true });
   await mkdir(projectRoot, { recursive: true });
@@ -185,8 +200,23 @@ async function main() {
   // project's shared history by the time the command returns.
   const claudeSession = "11111111-2222-3333-4444-000000000001";
   const claudeEvents = path.join(projectRoot, ".agents", "sessions", "canonical", `claude-${claudeSession}`, "events.jsonl");
-  const launched = avenic(["claude"], { ...environment, AVENIC_SMOKE_SESSION: claudeSession });
+  // A launch hands its environment to a detached watchdog through a file in the
+  // temp directory, and that file outlives the command. The variable that pays
+  // for the agent travels with the launch and must not travel into it.
+  const launchSecret = `sk-ant-smoke-${process.pid}-0000000000000000`;
+  const launched = avenic(["claude"], {
+    ...environment,
+    AVENIC_SMOKE_SESSION: claudeSession,
+    ANTHROPIC_AUTH_TOKEN: launchSecret,
+  });
   assert.match(launched.stdout, /claude-stub/, "the official agent's stdio must reach the user");
+  const launchState = await launchStateFiles();
+  assert.ok(launchState.length > 0, "the launch leaves state behind for the credential scan to be meaningful");
+  const leaked = [];
+  for (const file of launchState) {
+    if ((await readFile(file, "utf8").catch(() => "")).includes(launchSecret)) leaked.push(file);
+  }
+  assert.deepEqual(leaked, [], `launch state must not carry the launch's credentials: ${leaked.join(", ")}`);
   const events = (await readFile(claudeEvents, "utf8")).split("\n").filter(Boolean);
   assert.ok(events.length >= 4, `shared history must hold the run's events, got ${events.length}`);
 
