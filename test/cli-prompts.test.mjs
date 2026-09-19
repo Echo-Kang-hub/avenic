@@ -15,7 +15,6 @@ import test from "node:test";
 process.env.NO_COLOR = "1";
 
 const {
-  banner,
   cancel,
   colorEnabled,
   columns,
@@ -39,6 +38,7 @@ const {
   truncate,
   warning,
 } = await import("../packages/cli/src/cli/prompts.mjs");
+const { compactBrand, fullLogo } = await import("../packages/cli/src/cli/brand.mjs");
 const { dispatchSkills } = await import("../packages/cli/src/cli/skills-cli.mjs");
 const { FakeTTY, fakeStdout, keys, runPrompt } = await import("./helpers/fake-tty.mjs");
 
@@ -55,7 +55,7 @@ test("singleSelect resolves the chosen value and settles the frame", async () =>
   assert.equal(await promise, "b");
   const frame = stdout.text();
   assert.match(frame, /◆  Choose a catalog/); // 帧头
-  assert.match(frame, /│  ▸ ◉  Beta/); // 光标行 = 选中行（品牌 ▸ + 绿色 ◉）
+  assert.match(frame, /│  ▸ ◉  Beta/); // 光标行 = 选中行（品牌 ▸ + 橙色 ◉）
   assert.match(frame, /│    ○  Alpha/); // 未选中
   assert.match(frame, /◇  Choose a catalog/); // 落定帧
   assert.match(frame, /└  Beta/); // 摘要行
@@ -218,7 +218,7 @@ test("the printed emitters work with no stream at all", () => {
     return true;
   };
   try {
-    banner(undefined, { subtitle: "shared history" });
+    compactBrand(undefined, { title: "shared history" });
     intro(undefined, "Install Skills");
     section(undefined, "Agents");
     field(undefined, "Mode", "shared");
@@ -233,7 +233,7 @@ test("the printed emitters work with no stream at all", () => {
     process.stdout.write = real;
   }
   const text = written.join("");
-  assert.match(text, /█▀▀█/, "the banner draws the wordmark");
+  assert.match(text, /AVENIC · shared history/, "the compact brand names the product");
   assert.match(text, /◆ {2}Install Skills/);
   assert.match(text, /◇ {2}Agents/);
   assert.match(text, /│ {2}Mode {6}shared/);
@@ -258,24 +258,21 @@ test("table aligns columns and stays inside the terminal", () => {
   assert.equal(rows[1].indexOf("4"), rows[0].indexOf("History"), "第三列对齐");
 });
 
-test("the banner is a readable three-line wordmark, not a control sequence", () => {
-  const stdout = fakeStdout();
-  banner(stdout, { subtitle: "shared history" });
+test("the full logo is twelve fixed rows, and steps aside on a narrow screen", async () => {
+  const stdout = fakeStdout({ columns: 100 });
+  await fullLogo(stdout);
   const text = stdout.text();
-  assert.doesNotMatch(text, /\x1b/);
+  assert.doesNotMatch(text, /\x1b/); // 本文件 NO_COLOR：去掉的只是颜色，字形与排版一个不少
   const rows = text.trimEnd().split("\n");
-  assert.equal(rows.length, 4);
-  const [one, two, three] = rows;
-  // 三行一样宽，都是块字符画的 —— 可读的字，不是抽象符号。
-  assert.equal(displayWidth(one), displayWidth(two));
-  assert.equal(displayWidth(one), displayWidth(three));
-  assert.ok(displayWidth(one) <= columns(), "字标要放得进一屏");
-  for (const row of [one, two, three]) assert.match(row, /[█▀▄]/);
-  assert.match(rows[3], /shared history/);
-  // 窄终端下副标题让位，字标自己不受影响
+  assert.equal(rows.length, 12, "字标是设计源里的十二行");
+  for (const row of rows) assert.equal(displayWidth(row), 76, row);
+  assert.match(rows[0], /▄▀▀▀▀▀▀▀▄/);
+  assert.match(rows.at(-1), /█▄▄▄▄▌/);
+  // 窄终端：让位的是字标，不是布局 —— 换成一行紧凑品牌。
   const narrow = fakeStdout({ columns: 30 });
-  banner(narrow, { subtitle: "shared history · skills · sessions · models · the hub" });
-  assert.equal(narrow.text().trimEnd().split("\n").length, 3);
+  await fullLogo(narrow);
+  assert.equal(narrow.text().trimEnd().split("\n").length, 1);
+  assert.match(narrow.text(), /AVENIC/);
 });
 
 test("truncate cuts by display width and marks what it cut", () => {
@@ -305,15 +302,25 @@ test("colour is on for a terminal and off when asked, on every stream", () => {
 });
 
 test("a coloured frame carries the brand, and a plain one carries none of it", () => {
-  const coloured = paletteFor(true);
-  assert.equal(coloured.brand("◆"), "\x1b[36m◆\x1b[0m");
-  assert.equal(coloured.ok("✓"), "\x1b[32m✓\x1b[0m");
-  assert.equal(coloured.warn("!"), "\x1b[33m!\x1b[0m");
-  assert.equal(coloured.bad("✖"), "\x1b[31m✖\x1b[0m");
-  assert.equal(coloured.dim("help"), "\x1b[2mhelp\x1b[0m");
-  const plain = paletteFor(false);
+  const coloured = paletteFor(true, {}); // 空环境 = 16 色兜底：数字固定，可以逐字断言
+  assert.equal(coloured.brand("◆"), "\x1b[93m◆\x1b[0m");
+  assert.equal(coloured.brandStrong("AVENIC"), "\x1b[91mAVENIC\x1b[0m");
+  assert.equal(coloured.cursor("▸"), "\x1b[91m▸\x1b[0m");
+  assert.equal(coloured.selected("Beta"), "\x1b[93mBeta\x1b[0m");
+  assert.equal(coloured.selectedStrong("Beta"), "\x1b[1;93mBeta\x1b[0m");
+  assert.equal(coloured.success("✓"), "\x1b[32m✓\x1b[0m");
+  assert.equal(coloured.warning("!"), "\x1b[33m!\x1b[0m");
+  assert.equal(coloured.error("✖"), "\x1b[31m✖\x1b[0m");
+  assert.equal(coloured.muted("help"), "\x1b[2mhelp\x1b[0m");
+  const plain = paletteFor(false, {});
   assert.equal(plain.brand("◆"), "◆");
-  assert.equal(plain.dim("help"), "help");
+  assert.equal(plain.muted("help"), "help");
+});
+
+test("the brand colour degrades to whatever the terminal understands", () => {
+  assert.equal(paletteFor(true, { COLORTERM: "truecolor" }).brand("◆"), "\x1b[38;2;255;122;24m◆\x1b[0m");
+  assert.equal(paletteFor(true, { TERM: "xterm-256color" }).brand("◆"), "\x1b[38;5;208m◆\x1b[0m");
+  assert.equal(paletteFor(true, { TERM: "xterm" }).brand("◆"), "\x1b[93m◆\x1b[0m");
 });
 
 test("a coloured frame colours the marks and nothing else", async () => {
@@ -322,15 +329,16 @@ test("a coloured frame colours the marks and nothing else", async () => {
     stdin: s,
     stdout,
     color: true,
+    environment: {}, // 16 色：断言的数字与终端无关
     title: "Choose",
     options: [{ value: "a", label: "Alpha" }],
   }));
   keys(stdin, "\r");
   await promise;
   const text = stdout.text();
-  assert.match(text, /\x1b\[1;36m◆  Choose\x1b\[0m/); // 标题：品牌色 + 粗体
-  assert.match(text, /\x1b\[36m▸\x1b\[0m/); // 光标
-  assert.match(text, /\x1b\[1;32mAlpha\x1b\[0m/); // 选中项：绿色 + 粗体
+  assert.match(text, /\x1b\[93m◆\x1b\[0m {2}\x1b\[1mChoose\x1b\[0m/); // 标题：橙色 ◆ + 粗体暖白
+  assert.match(text, /\x1b\[91m▸\x1b\[0m/); // 光标：亮红橙
+  assert.match(text, /\x1b\[1;93mAlpha\x1b\[0m/); // 选中项：橙 + 粗体
   assert.match(text, /\x1b\[2m↑↓ move/); // 帮助：灰
 });
 
@@ -616,7 +624,7 @@ test("the Skills menu offers every action, and Escape leaves without doing anyth
       ]) {
         assert.match(menu, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       }
-      assert.match(menu, /█▀▀█/); // 菜单开在 AVENIC 的字标下面
+      assert.match(menu, /▄▀▀▀▀▀▀▀▄/); // 菜单开在 AVENIC 的字标下面
       assert.match(menu, /│  Add, update, or remove Skills in the project scope/);
       // 这一帧只列可以做的事：离开是 Esc，不是列表里的一行。
       assert.doesNotMatch(menu, /○\s+(Back|cancel|Cancel)\b/);

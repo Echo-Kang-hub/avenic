@@ -4,7 +4,8 @@
 // question with the same answer.
 import { collectStatus, shortTimestamp } from "#core";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
-import { collectLines, field, intro, note, palette, section, table } from "./prompts.mjs";
+import { collectLines, field, note, palette, section, table } from "./prompts.mjs";
+import { compactBrand } from "./brand.mjs";
 
 const SYNC_LABELS = {
   current: "current",
@@ -63,7 +64,7 @@ export function renderStatus(status, io = console, options = {}) {
   const { sink, line: blank, flush } = collectLines({ ...io, columns: (options.stdout ?? process.stdout).columns });
   const at = { colors };
 
-  intro(sink, "Avenic Status", { ...at, description: project.root });
+  compactBrand(sink, { ...at, title: "Status", description: project.root });
   blank();
   section(sink, "Project", at);
   field(sink, "Name", project.name, at);

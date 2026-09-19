@@ -5,7 +5,6 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { takeOption } from "./options.mjs";
 import {
-  banner,
   cancel,
   confirm,
   error,
@@ -20,6 +19,7 @@ import {
   singleSelect,
   text,
 } from "./prompts.mjs";
+import { fullLogo } from "./brand.mjs";
 import {
   AGENTS,
   addDirectSkills,
@@ -1323,7 +1323,7 @@ async function skillsMenu(options = {}) {
   const prompts = options.prompts ?? {};
   const stdout = stdoutOf(prompts);
   const context = createInstallContext(options.global ?? false, options);
-  banner(stdout);
+  await fullLogo(stdout);
   // 帧头自己就是 ◆ Skills：同一帧里不再多印一条 intro。
   const choice = await singleSelect({
     ...prompts,

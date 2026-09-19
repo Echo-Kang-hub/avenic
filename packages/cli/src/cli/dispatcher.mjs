@@ -42,7 +42,8 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { banner, collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect } from "./prompts.mjs";
+import { collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect } from "./prompts.mjs";
+import { fullLogo } from "./brand.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
 import { loadTranscript, printTranscript, transcriptPreview } from "./transcript-cli.mjs";
 import { dispatchStatusCommand } from "./status-cli.mjs";
@@ -157,7 +158,7 @@ async function dispatchProjectSetup(argumentsList, editing = false, options = {}
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
   let draft;
   if (argumentsList.length === 0 && isInteractive(prompts)) {
-    banner(prompts.stdout);
+    await fullLogo(prompts.stdout);
     draft = await interactiveProjectDraft(projectRoot, editing, prompts);
     if (!draft) return 0;
     console.log();
@@ -677,7 +678,7 @@ async function dispatchSessions(argumentsList, options = {}) {
   const prompts = options.prompts ?? {};
   const projectRoot = options.projectRootOverride ?? locateProjectRoot();
   if (!command && isInteractive(prompts)) {
-    banner(prompts.stdout);
+    await fullLogo(prompts.stdout);
     const interop = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
     const action = await singleSelect({
       ...prompts,
@@ -775,8 +776,8 @@ async function dispatchSessions(argumentsList, options = {}) {
         // agent's own session has been brought, and whether the next launch
         // needs a delta or nothing at all.
         const state = command === "status"
-          ? `${current ? colors.ok("current") : colors.warn("stale")}  @${mapping.lastCanonicalEventId ?? "none"}`
-          : `${current ? colors.ok("current") : colors.warn("stale")}`;
+          ? `${current ? colors.success("current") : colors.warning("stale")}  @${mapping.lastCanonicalEventId ?? "none"}`
+          : `${current ? colors.success("current") : colors.warning("stale")}`;
         field(out, agentLabel(agentId), `${mapping.nativeSessionId}  ${state}`, { colors });
       }
     }

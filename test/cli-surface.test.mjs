@@ -192,7 +192,7 @@ test("runtime overview and doctor cover all three agents", async () => {
   await withTempDirectory("avenic-overview-", async (projectRoot) => {
     const status = runAgent(projectRoot, ["status"]);
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /◆  Avenic Status/);
+    assert.match(status.stdout, /AVENIC · Status/);
     // 一页四个区块，每个区块一个 ◇，区块内的行挂 │
     for (const block of ["Project", "History", "Agents", "Skills"]) {
       assert.match(status.stdout, new RegExp(`◇  ${block}\\n│  `), `status is missing the ${block} block`);

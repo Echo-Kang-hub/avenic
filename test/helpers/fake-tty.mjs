@@ -43,3 +43,8 @@ export async function runPrompt(factory) {
 export function keys(stdin, ...sequence) {
   for (const key of sequence) stdin.write(key);
 }
+
+/** 帧文本去掉 ANSI 之后的样子：断言的是用户看到的字，不是包着它的颜色字节。 */
+export function visible(text) {
+  return String(text).replace(/\x1b\[[0-9;]*m/g, "");
+}

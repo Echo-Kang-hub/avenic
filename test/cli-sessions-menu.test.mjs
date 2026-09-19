@@ -13,7 +13,7 @@ import {
   setSessionInteropMode,
 } from "../packages/core/src/index.mjs";
 import { runCli } from "../packages/cli/src/cli/dispatcher.mjs";
-import { FakeTTY, fakeStdout, keys } from "./helpers/fake-tty.mjs";
+import { FakeTTY, fakeStdout, keys, visible } from "./helpers/fake-tty.mjs";
 import { keepingHostProject } from "./helpers/host-project.mjs";
 
 // `avenic sessions` with no arguments is the only place a user meets Shared
@@ -33,7 +33,7 @@ async function waitFor(condition, description, timeout = 8000) {
 
 /** Every row the second prompt has painted: a frame's option lines. */
 function paintedRows(stdout, title) {
-  const text = stdout.text().replace(/\x1b\[[0-9;]*m/g, ""); // 位置由字形决定，颜色与它无关
+  const text = visible(stdout.text()); // 位置由字形决定，颜色与它无关
   return [...text.slice(text.lastIndexOf(title)).matchAll(/│ {2}▸ ◉ {2}([^\n]+)/g)].map((row) => row[1]);
 }
 
@@ -73,7 +73,7 @@ async function withSessionsProject(run) {
 test("the Sessions menu shows shared history and Esc leaves the project unchanged", async () => {
   await withSessionsProject(async ({ projectRoot, menu }) => {
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(visible(stdout.text())), "the sessions menu");
     for (const label of ["Continue shared session", "List sessions", "Import histories", "Set active session", "Status"]) {
       assert.ok(stdout.text().includes(label), `shared menu is missing "${label}"`);
     }
@@ -90,7 +90,7 @@ test("the Sessions menu shows shared history and Esc leaves the project unchange
 test("the Sessions menu sets the active shared session to the one the user picked", async () => {
   await withSessionsProject(async ({ projectRoot, logged, menu }) => {
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(visible(stdout.text())), "the sessions menu");
     keys(stdin, "\x1b[B", "\x1b[B", "\x1b[B", "\r"); // continue → list → import → set active
     await waitFor(() => paintedRows(stdout, "◆  Set active session").length > 0, "the session list");
     const picked = paintedRows(stdout, "◆  Set active session").at(-1);
@@ -112,13 +112,13 @@ test("the Sessions menu reads one shared conversation as a timeline", async () =
       { id: "codex:n2:a2", role: "assistant", createdAt: "2026-09-19T01:00:02.000Z", content: [{ type: "text", text: "And now it caches it." }] },
     ]);
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(shared\)/.test(visible(stdout.text())), "the sessions menu");
     keys(stdin, "\x1b[B", "\r"); // Continue shared session → List sessions
-    await waitFor(() => /◆ {2}Sessions/.test(stdout.text()) && stdout.text().includes("beta"), "the session list");
+    await waitFor(() => /◆ {2}Sessions/.test(visible(stdout.text())) && stdout.text().includes("beta"), "the session list");
     keys(stdin, "\r"); // the newest session is first
     await waitFor(() => stdout.text().includes("View history"), "the session actions");
     keys(stdin, "\r");
-    await waitFor(() => stdout.text().includes("◆  Session beta"), "the transcript heading");
+    await waitFor(() => visible(stdout.text()).includes("◆  Session beta"), "the transcript heading");
     const text = stdout.text();
     // The timeline, with each answer attributed to the agent that gave it.
     for (const speaker of ["You", "Claude", "Codex"]) {
@@ -137,7 +137,7 @@ test("the Sessions menu offers the isolated→shared switch and Esc leaves mode 
   await withSessionsProject(async ({ projectRoot, menu, interop }) => {
     await setSessionInteropMode(projectRoot, "isolated");
     const { stdin, stdout, promise } = menu();
-    await waitFor(() => /◆ {2}Sessions \(isolated\)/.test(stdout.text()), "the sessions menu");
+    await waitFor(() => /◆ {2}Sessions \(isolated\)/.test(visible(stdout.text())), "the sessions menu");
     assert.ok(stdout.text().includes("Switch to Shared"));
     assert.ok(!stdout.text().includes("Continue shared session"), "an isolated project has no shared session to continue");
     assert.ok(!stdout.text().includes("Set active session"), "an isolated project has no active shared session");

@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { parseCliVersion, spawnExecutableSync } from "#core";
+import { compactBrand } from "./brand.mjs";
 
 function output(result) {
   return String(result?.stdout ?? "").trim();
@@ -36,7 +38,7 @@ export async function updateAvenic(packageRoot, options = {}) {
     throw new Error(`${error.message}; update was not attempted`);
   }
   if (!latest) throw new Error(`Registry did not return a version for ${packageSpec}`);
-  console.log("Avenic self-update");
+  compactBrand(process.stdout, { title: "self-update" });
   console.log(`Current: ${current ?? "unknown"}`);
   console.log(`Latest:  ${latest}`);
   console.log(`Source:  ${packageSpec}`);

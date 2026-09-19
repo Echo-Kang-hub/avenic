@@ -43,16 +43,16 @@ function wrap(text, width) {
 }
 
 function speakerLine(colors, turn, width) {
-  const at = turn.at ? `  ${colors.dim(clock(turn.at))}` : "";
-  const who = turn.kind === "user" ? colors.ok(turn.speaker) : colors.brand(turn.speaker);
-  const model = turn.model ? `  ${colors.dim(truncate(turn.model, 24))}` : "";
+  const at = turn.at ? `  ${colors.muted(clock(turn.at))}` : "";
+  const who = turn.kind === "user" ? colors.strong(turn.speaker) : colors.brand(turn.speaker);
+  const model = turn.model ? `  ${colors.muted(truncate(turn.model, 24))}` : "";
   return truncate(`${who}${at}${model}`, width);
 }
 
 function toolLine(colors, tool, width) {
   const mark = tool.kind === "result" ? "←" : "→";
   const body = `[${tool.name}]${tool.detail ? ` ${tool.detail}` : ""}`;
-  return `${colors.dim(mark)}  ${colors.dim(truncate(body, width - 3))}`;
+  return `${colors.muted(mark)}  ${colors.muted(truncate(body, width - 3))}`;
 }
 
 /**
@@ -70,7 +70,7 @@ export function printTranscript(stdout, { summary, turns }, options = {}) {
   field(stdout, "Recorded", summary.startedAt ? `${stamp(summary.startedAt)} → ${stamp(summary.endedAt)}` : "unknown", { colors, labelWidth: 10 });
   field(stdout, "Agents", who, { colors, labelWidth: 10 });
   for (const projection of summary.projections) {
-    const state = projection.state === "current" ? colors.ok("current") : colors.warn(projection.state);
+    const state = projection.state === "current" ? colors.success("current") : colors.warning(projection.state);
     field(stdout, projection.label, `${projection.nativeSessionId}  ${state}`, { colors, labelWidth: 10 });
   }
   if (turns.length === 0) {
