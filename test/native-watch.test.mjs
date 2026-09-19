@@ -95,7 +95,7 @@ test("a running agent's session becomes durable before the agent exits", async (
     const run = await launchAsync(["claude"], {
       AVENIC_WATCH_INTERVAL_MS: "300",
       AVENIC_AGENT_WRITE: JSON.stringify({ file: liveFile, records: 2, sleepMs }),
-    });
+    }, { keepOutput: true });
 
     // The agent is still alive here: it appended its records and went back to
     // work. Everything below must already be durable.
@@ -114,7 +114,8 @@ test("a running agent's session becomes durable before the agent exits", async (
     assert.ok(events >= 3, `the live session must be durable while the agent runs (saw ${events} events)`);
     assert.equal(await readFile(liveFile, "utf8").then((text) => text.includes("live message 1")), true);
 
-    assert.equal((await run.completion).status, 0);
+    const finished = await run.completion;
+    assert.equal(finished.status, 0, `the launch's exit sequence must finish cleanly (status ${finished.status} after ${finished.elapsedMs}ms)\n${run.output()}`);
   }, { sessions: 0 });
 });
 

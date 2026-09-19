@@ -503,23 +503,38 @@ export async function withClaudeProject(run, options = {}) {
     /**
      * Start a launch without waiting for it, so a test can watch what Avenic
      * does while the agent is still running.
+     *
+     * A launch's own output is discarded by default, which is what a launch
+     * looks like to a terminal Avenic is not attached to. `{ keepOutput: true }`
+     * collects it instead (drained as it arrives, so a child that writes more
+     * than a pipe buffer holds cannot block) — the launcher puts the reason it
+     * failed on stderr, and a test asserting that a launch exited cleanly is
+     * otherwise left with a bare number.
      */
-    async launchAsync(argumentsList, overrides = {}) {
+    async launchAsync(argumentsList, overrides = {}, options = {}) {
       const probe = path.join(projectRoot, ".agent-probe.json");
       await rm(probe, { force: true });
       const startedAt = Date.now();
       const child = spawn(
         process.execPath,
         [path.join(packageRoot, "packages", "cli", "scripts", "skills.mjs"), ...argumentsList],
-        { cwd: projectRoot, env: { ...environment, ...overrides, AVENIC_AGENT_PROBE: probe }, stdio: "ignore" },
+        {
+          cwd: projectRoot,
+          env: { ...environment, ...overrides, AVENIC_AGENT_PROBE: probe },
+          stdio: options.keepOutput ? ["ignore", "pipe", "pipe"] : "ignore",
+        },
       );
       const completion = new Promise((resolve) => {
         child.on("exit", (status) => resolve({ status, elapsedMs: Date.now() - startedAt }));
       });
+      const chunks = [];
+      child.stdout?.on("data", (chunk) => chunks.push(chunk));
+      child.stderr?.on("data", (chunk) => chunks.push(chunk));
       return {
         child,
         completion,
         elapsedMs: () => Date.now() - startedAt,
+        output: () => Buffer.concat(chunks).toString("utf8").trim(),
         async probe() {
           try {
             return JSON.parse(await readFile(probe, "utf8"));
