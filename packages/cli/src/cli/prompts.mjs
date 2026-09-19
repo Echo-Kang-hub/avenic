@@ -152,10 +152,18 @@ export function section(stdout, title, options = {}) {
 /** 一条「标签  值」的信息行，带 │ 竖线（status 的分节内容）。 */
 export function field(stdout, label, value, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
-  const labelWidth = options.labelWidth ?? 9;
+  const labelWidth = options.labelWidth ?? 10;
   const label_ = label.padEnd(labelWidth);
   const text = truncate(`${label_}${value}`, columns(stdout) - 4);
   stdout.write(`│  ${colors.dim(text.slice(0, labelWidth))}${text.slice(labelWidth)}\n`);
+}
+
+/** 区块里的一条提示行：│  ! 文本（黄）或 │  · 文本（灰）。 */
+export function note(stdout, text, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  const mark = options.mark ?? "·";
+  const paint = mark === "!" ? colors.warn : colors.dim;
+  stdout.write(`│  ${paint(mark)}  ${truncate(text, columns(stdout) - 6)}\n`);
 }
 
 export function success(stdout, text, options = {}) {

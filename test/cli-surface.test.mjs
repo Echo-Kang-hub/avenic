@@ -192,14 +192,17 @@ test("runtime overview and doctor cover all three agents", async () => {
   await withTempDirectory("avenic-overview-", async (projectRoot) => {
     const status = runAgent(projectRoot, ["status"]);
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /Avenic Status/);
-    assert.match(status.stdout, /Project\s+\S+/);
-    assert.match(status.stdout, /History\s+(shared|isolated)/);
+    assert.match(status.stdout, /◆  Avenic Status/);
+    // 一页四个区块，每个区块一个 ◇，区块内的行挂 │
+    for (const block of ["Project", "History", "Agents", "Skills"]) {
+      assert.match(status.stdout, new RegExp(`◇  ${block}\\n│  `), `status is missing the ${block} block`);
+    }
+    assert.match(status.stdout, /│  Mode      (shared|isolated)/);
     assert.match(status.stdout, /Claude Code/);
     assert.match(status.stdout, /Codex/);
     assert.match(status.stdout, /OpenCode/);
     assert.match(status.stdout, /not initialized/);
-    assert.match(status.stdout, /Skills/);
+    assert.doesNotMatch(status.stdout, /\x1b\[/, "管道里不该出现终端控制序列");
     // The same model, unrendered, for hosts that draw it themselves.
     const json = runAgent(projectRoot, ["status", "--json"]);
     assert.equal(json.status, 0, json.stderr);

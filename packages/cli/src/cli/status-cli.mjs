@@ -4,6 +4,7 @@
 // question with the same answer.
 import { collectStatus, shortTimestamp } from "#core";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
+import { field, intro, note, palette, section, table } from "./prompts.mjs";
 
 const SYNC_LABELS = {
   current: "current",
@@ -50,45 +51,58 @@ function agentRow(agent) {
   ];
 }
 
-function printTable(io, headers, rows) {
-  const widths = headers.map((header, column) => Math.max(header.length, ...rows.map((row) => row[column].length)));
-  const line = (cells) => cells.map((cell, column) => cell.padEnd(widths[column])).join("  ").trimEnd();
-  io.log(`  ${line(headers)}`);
-  for (const row of rows) io.log(`  ${line(row)}`);
-}
-
-export function renderStatus(status, io = console) {
+/**
+ * `avenic status`, drawn: ◆ heading, one ◇ block per question, │ for what is
+ * inside it, ! for what needs an action. The same blocks and the same wording
+ * the editor's dashboard uses, because both read the one status object.
+ */
+export function renderStatus(status, io = console, options = {}) {
   const { project, history, agents, skills } = status;
-  io.log("Avenic Status\n");
-  io.log(`Project   ${project.name}`);
-  io.log(`Root      ${project.root}`);
-  io.log(`Agents    ${project.agents.length > 0 ? project.agents.join(", ") : "none configured"}`);
-  io.log(`History   ${history.mode}`);
+  const colors = options.colors ?? palette(options.stdout ?? process.stdout);
+  const lines = [];
+  // 这一页由多个「写一行」的助手拼成；收集它们，最后一次性交给 io.log。
+  const sink = {
+    columns: (options.stdout ?? process.stdout).columns,
+    write(text) {
+      const parts = String(text).split("\n");
+      if (parts.at(-1) === "") parts.pop();
+      lines.push(...parts);
+    },
+  };
+  const blank = () => lines.push("");
+  const at = { colors };
 
-  io.log("\nHistory");
-  io.log(`  Mode      ${history.mode}`);
-  io.log(`  Sessions  ${history.sessions}`);
+  intro(sink, "Avenic Status", { ...at, description: project.root });
+  blank();
+  section(sink, "Project", at);
+  field(sink, "Name", project.name, at);
+  field(sink, "Agents", project.agents.length > 0 ? project.agents.join(", ") : "none configured", at);
+  blank();
+  section(sink, "History", at);
+  field(sink, "Mode", history.mode, at);
+  field(sink, "Sessions", String(history.sessions), at);
   if (history.active) {
-    io.log(`  Active    ${history.active}${history.activeTitle ? `  ${history.activeTitle}` : ""}`);
-    io.log(`  Events    ${history.activeEvents ?? "unknown"}`);
+    field(sink, "Active", `${history.active}${history.activeTitle ? `  ${history.activeTitle}` : ""}`, at);
+    field(sink, "Events", String(history.activeEvents ?? "unknown"), at);
   } else {
-    io.log(`  Active    ${history.mode === "shared" ? "none — run: avenic sessions list" : "— (isolated history)"}`);
+    field(sink, "Active", history.mode === "shared" ? "none — run: avenic sessions list" : "— (isolated history)", at);
   }
-  io.log(`  Updated   ${shortTimestamp(history.updatedAt) ?? "—"}`);
-
-  io.log("\nAgents");
-  printTable(io, ["Agent", "CLI", "Auth", "Sessions", "History", "Sync"], agents.map(agentRow));
+  field(sink, "Updated", shortTimestamp(history.updatedAt) ?? "—", at);
+  blank();
+  section(sink, "Agents", at);
+  table(sink, ["Agent", "CLI", "Auth", "Sessions", "History", "Sync"], agents.map(agentRow), { colors });
   for (const agent of agents) {
     const remedy = SYNC_REMEDIES[agent.history.sync];
-    if (remedy) io.log(`  ${agent.displayName}: ${SYNC_LABELS[agent.history.sync]} — ${remedy}`);
-    else if (!agent.available) io.log(`  ${agent.displayName}: the ${agent.command} CLI is not on PATH — Avenic still manages its history`);
-    else if (!agent.initialized) io.log(`  ${agent.displayName}: run: avenic ${agent.id} init`);
+    if (remedy) note(sink, `${agent.displayName}: ${SYNC_LABELS[agent.history.sync]} — ${remedy}`, { ...at, mark: "!" });
+    else if (!agent.available) note(sink, `${agent.displayName}: the ${agent.command} CLI is not on PATH — Avenic still manages its history`, at);
+    else if (!agent.initialized) note(sink, `${agent.displayName}: run: avenic ${agent.id} init`, at);
   }
-
-  io.log("\nSkills");
-  io.log(`  Project  ${scopeSummary(skills.project)}`);
-  io.log(`  Global   ${scopeSummary(skills.global)}`);
-  io.log(`  Hub      ${hubSummary(skills.hub)}`);
+  blank();
+  section(sink, "Skills", at);
+  field(sink, "Project", scopeSummary(skills.project), at);
+  field(sink, "Global", scopeSummary(skills.global), at);
+  field(sink, "Hub", hubSummary(skills.hub), at);
+  io.log(lines.join("\n"));
   return 0;
 }
 
@@ -105,5 +119,5 @@ export async function dispatchStatusCommand(argumentsList = [], options = {}) {
     io.log(JSON.stringify(status, null, 2));
     return 0;
   }
-  return renderStatus(status, io);
+  return renderStatus(status, io, options);
 }

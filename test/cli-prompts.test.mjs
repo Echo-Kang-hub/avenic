@@ -197,7 +197,7 @@ test("the printed line vocabulary is one line per meaning", () => {
     "◆  Install Skills",
     "│  from the SkillsHub",
     "◇  Agents",
-    "│  Mode     shared",
+    "│  Mode      shared",
     "✓  Done! Installed 1 Pack",
     "!  12 records could not be read",
     "✖  boom",
