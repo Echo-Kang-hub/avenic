@@ -20,9 +20,10 @@ export const PROJECTION_KIND = {
   handoff: "handoff-prompt",
 };
 
-// Claude Code receives its briefing as a command-line argument on Windows,
-// where cmd.exe stops at 8191 characters, so the briefing is budgeted well
-// below that. Codex receives its history as JSON on a pipe.
+// The budget is the only thing that decides how much of a conversation
+// travels; it is never a per-turn limit. Handing over a clipped answer is
+// handing over a different answer, which is the failure Shared mode exists to
+// remove, so a turn is delivered whole unless it alone would blow the budget.
 export const BRIEFING_BUDGET = 6_000;
 export const NATIVE_BUDGET = 400_000;
 const TURN_TEXT_LIMIT = 2_000;
@@ -136,7 +137,7 @@ export function buildProjection({ session, events, targetAgent, nativeSessionId 
     const event = projectable[index];
     const text = eventText(event);
     if (!text) continue;
-    const clipped = clamp(text, TURN_TEXT_LIMIT);
+    const clipped = clamp(text, Math.max(TURN_TEXT_LIMIT, budget));
     const cost = clipped.length + 32;
     // The newest turn is always kept, even if it alone exceeds the budget:
     // dropping it would hand the next agent a history that stops mid-sentence.

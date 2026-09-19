@@ -166,6 +166,75 @@ test("one shared conversation survives Claude → Codex → Claude → Codex", a
   });
 });
 
+// The delta rule decides *which* turns travel; this decides what shape they
+// arrive in. A switch is supposed to hand over the conversation itself, so a
+// turn arrives whole — a clipped answer is a different answer, and a
+// conversation that silently condenses is exactly the "you have to re-explain"
+// failure Shared mode exists to remove.
+test("every turn of the shared conversation reaches the next agent whole", async () => {
+  await withClaudeProject(async ({ projectRoot, sessionIds, runCli, environment, root }) => {
+    const nativeClaude = sessionIds[0];
+    const probe = path.join(root, "agent-probe.json");
+    const injectLog = path.join(root, "codex-inject.jsonl");
+    const env = { ...environment, AVENIC_AGENT_PROBE: probe, AVENIC_CODEX_INJECT_LOG: injectLog };
+
+    const synced = runCli(["sessions", "sync"]);
+    assert.equal(synced.status, 0, synced.stderr);
+    const canonicalId = `claude-${nativeClaude}`;
+    await setActiveCanonicalSession(projectRoot, canonicalId);
+
+    // Two answers long enough that clipping one would be visible from the end of
+    // it, and enough short turns around them to make this a real conversation.
+    const claudeLong = `CLAUDE-LONG-START ${"api ".repeat(660)}CLAUDE-LONG-END`;
+    const codexLong = `CODEX-LONG-START ${"cli ".repeat(660)}CODEX-LONG-END`;
+    const handed = [
+      ["h1", "codex", "user", "the request that starts this stretch"],
+      ["h2", "claude", "assistant", claudeLong],
+      ["h3", "codex", "user", "and the follow-up"],
+      ["h4", "codex", "assistant", codexLong],
+    ];
+    await appendCanonicalEvents(projectRoot, canonicalId, handed.map(([suffix, agent, role, text]) => ({
+      id: `${agent}:native-${agent}-hand:${suffix}`,
+      agent,
+      role,
+      createdAt: "2026-09-19T00:00:04.000Z",
+      content: [{ type: "text", text }],
+    })));
+
+    // 1. Claude — a bootstrap, so the projection is the whole conversation, and
+    //    nothing in it may be clipped or folded into a summary.
+    const claudeRun = runCli(["sessions", "continue", canonicalId, "--agent", "claude"], env);
+    assert.equal(claudeRun.status, 0, claudeRun.stderr);
+    const briefing = await briefingFor(argsOf(JSON.parse(await readFile(probe, "utf8"))));
+    assert.ok(briefing, "Claude receives the shared turns");
+    assert.ok(briefing.includes("CODEX-LONG-END"), `a long answer reaches Claude whole, not clipped at ${briefing.length} chars`);
+    assert.doesNotMatch(briefing, /\[condensed\]/, "a conversation this size is handed over, not summarised");
+
+    // 2. Codex materialises from the same conversation: every turn, in order,
+    //    with the speaker still attributable.
+    const codexRun = runCli(["sessions", "continue", canonicalId, "--agent", "codex"], env);
+    assert.equal(codexRun.status, 0, codexRun.stderr);
+    const items = injectedTexts(await codexInjections(env));
+    assert.equal(items.length, HISTORY + handed.length, "every turn of the conversation is injected");
+    assert.equal(items[0], "message 0", "the oldest turn is still there");
+    assert.deepEqual(
+      items.slice(-handed.length),
+      [
+        "the request that starts this stretch",
+        `Claude: ${claudeLong}`,
+        "and the follow-up",
+        codexLong,
+      ],
+      "the newest turns arrive in order, whole, with the other agent named",
+    );
+  }, {
+    sessions: 1,
+    records: HISTORY,
+    agents: { claude: { auth: "global", sessions: "project" }, codex: { auth: "global", sessions: "project" } },
+    sessionInterop: "shared",
+  });
+});
+
 test("a long shared conversation is projected from its delta, not replayed", async () => {
   await withClaudeProject(async ({ projectRoot, sessionIds, runCli, environment, root }) => {
     const nativeClaude = sessionIds[0];

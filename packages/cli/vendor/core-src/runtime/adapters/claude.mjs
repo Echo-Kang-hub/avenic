@@ -17,7 +17,7 @@ import {
   syncDirectory,
 } from "../sessions.mjs";
 import { canonicalBlocks, eventTimestamp, isConversationRole, nativeEventId, parseJsonLines } from "./canonical.mjs";
-import { BRIEFING_BUDGET, PROJECTION_KIND, buildProjection, renderBriefing } from "../projection.mjs";
+import { NATIVE_BUDGET, PROJECTION_KIND, buildProjection, renderBriefing } from "../projection.mjs";
 
 export const agentId = "claude";
 
@@ -56,6 +56,9 @@ export function toCanonical(content, options = {}) {
 // session: `--system-prompt-snapshot off` keeps them out of the transcript, so
 // every switch re-renders the delta instead of assuming the last one is still
 // there. The mapping is still what says which native session to resume.
+//
+// The turns travel as a file, not as an argument, so the budget that used to
+// exist for cmd.exe's command-line limit does not apply: a turn arrives whole.
 export const projectionIsDurable = false;
 
 export function resumeArguments(nativeSessionId) {
@@ -79,7 +82,7 @@ export function claudeSessionId(canonicalSessionId) {
 
 export async function projectCanonical(projectRoot, { session, events, mapping = null }, options = {}) {
   const nativeSessionId = mapping?.nativeSessionId ?? claudeSessionId(session?.id ?? "session");
-  const projection = buildProjection({ session, events, targetAgent: agentId, nativeSessionId, budget: BRIEFING_BUDGET });
+  const projection = buildProjection({ session, events, targetAgent: agentId, nativeSessionId, budget: NATIVE_BUDGET });
   const briefing = projection.turns.length > 0 || projection.checkpoint ? renderBriefing(projection) : null;
   const argumentsList = mapping
     ? ["--resume", nativeSessionId]
