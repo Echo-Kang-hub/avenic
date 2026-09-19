@@ -10,7 +10,7 @@
 {muted}│{/}  {muted}Sessions  {/}24
 {muted}│{/}  {muted}Active    {/}claude-bee6f9b7-0000-0000-0000-000000000000  claude bee6f9b7
 {muted}│{/}  {muted}Events    {/}5939
-{muted}│{/}  {muted}Updated   {/}2026-09-19 17:51
+{muted}│{/}  {muted}Updated   {/}{time}
 
 {brandSoft}◇{/}  {strong}Agents{/}
 {muted}│{/}  {muted}Agent        CLI    Auth             Sessions     History  Sync{/}

@@ -73,6 +73,11 @@ test("the CLI paints a real screen on a real terminal", { skip: ptyAvailable() ?
   const screen = stripControl(status.output);
   assert.match(screen, /AVENIC · Status/, "the status page leads with the compact brand");
   assert.match(screen, /│ {2}/, "the rail is drawn");
-  // TrueColor reaches the terminal, not a 16-colour approximation of it.
-  assert.match(status.output, /\x1b\[(?:1;)?38;2;255;(?:122;24|77;46|158;94)m/, "the brand colour reaches a real terminal");
+  // The brand reaches the terminal as a real colour. Which depth it lands on is
+  // the terminal's business — TrueColor when it advertises COLORTERM, the 256
+  // brand otherwise — but it must never fall back to the 16-colour approximation
+  // unless the terminal really only has sixteen colours.
+  const branded = /\x1b\[(?:1;)?38;2;255;(?:122;24|77;46|158;94)m/.test(status.output)
+    || /\x1b\[(?:1;)?38;5;(?:202|208|215)m/.test(status.output);
+  assert.ok(branded, `the brand colour reaches a real terminal (got: ${JSON.stringify(status.output.slice(0, 120))})`);
 });

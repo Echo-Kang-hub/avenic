@@ -116,6 +116,11 @@ function captureWithScript(command, args, options) {
     } catch {
       output = String(result.stdout ?? "");
     }
+    // `script` writes a header and a footer into the typescript file; they are
+    // about the capture, not about the screen.
+    output = output
+      .replace(/^Script started on [^\n]*\n/, "")
+      .replace(/\n?Script done on [^\n]*\n?$/, "");
     if (result.error?.code === "ETIMEDOUT") return { status: "timeout", exitCode: null, output, detail: "the pty run hit its timeout" };
     if (result.error) return { status: "error", exitCode: null, output, detail: String(result.error.message) };
     return { status: "ok", exitCode: result.status, output };

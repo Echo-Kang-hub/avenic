@@ -59,7 +59,8 @@ function agentRow(agent) {
  */
 export function renderStatus(status, io = console, options = {}) {
   const { project, history, agents, skills } = status;
-  const colors = options.colors ?? palette(options.stdout ?? process.stdout);
+  // One environment decides both: the colour depth and what the page reports.
+  const colors = options.colors ?? palette(options.stdout ?? process.stdout, options.environment ?? process.env);
   // 这一页由多个「写一行」的助手拼成；收集它们，最后一次性交给 io.log。
   const { sink, line: blank, flush } = collectLines({ ...io, columns: (options.stdout ?? process.stdout).columns });
   const at = { colors };

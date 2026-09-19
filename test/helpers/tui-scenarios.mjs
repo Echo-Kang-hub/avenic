@@ -33,6 +33,9 @@ export function normalize(text) {
     .replace(/\x1b\[2m/g, "{muted}")
     .replace(/\x1b\[1m/g, "{strong}")
     .replace(/\x1b\[0m/g, "{/}")
+    // A timestamp is local time, so it would pin the golden to one machine's
+    // timezone. Its shape is what the fixture is for; its spelling is not.
+    .replace(/\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z?/g, "{time}")
     .replace(/\r/g, "");
 }
 

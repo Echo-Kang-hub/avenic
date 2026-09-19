@@ -13,7 +13,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { renderAll } from "../test/helpers/tui-scenarios.mjs";
-import { capturePty } from "../test/helpers/pty-capture.mjs";
+import { capturePty, stripControl } from "../test/helpers/pty-capture.mjs";
 
 const here = path.dirname(import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname));
 const goldenDir = path.join(process.cwd(), "test", "fixtures", "tui");
@@ -78,32 +78,55 @@ async function update(fixtures) {
   process.stdout.write(`Wrote ${written.length} goldens to ${path.relative(process.cwd(), goldenDir)}.\n`);
 }
 
-/** 真终端验收：把 CLI 的几条命令各跑一遍，屏幕内容留档（P17）。 */
+/**
+ * 真终端验收（P17）：把每个界面在真终端里跑一次，屏幕原样留档。
+ *
+ * 交互界面（init / change / sessions / skills）跑到第一帧就停：它们本来就
+ * 在等人按键，等到超时被结束，屏幕就是我们要的那张。这些截图只写到
+ * dist/（不入库），里面可能含真实会话信息，永远不进 fixtures。
+ */
 async function ptyCaptures(outDir) {
   await mkdir(outDir, { recursive: true });
+  const scratch = path.join(outDir, "scratch");
+  await mkdir(scratch, { recursive: true });
+  const cli = path.join(process.cwd(), "packages", "cli", "scripts", "skills.mjs");
   const captures = [
-    { name: "status", args: ["status"] },
-    { name: "sessions-list", args: ["sessions", "list"] },
-    { name: "skills-tree", args: ["skills", "tree"] },
-    { name: "version", args: ["--version"] },
+    { name: "status", args: ["status"], where: "project" },
+    { name: "version", args: ["--version"], where: "project" },
+    { name: "init", args: ["init"], where: "scratch", interactive: true },
+    { name: "change", args: ["change"], where: "scratch", interactive: true },
+    { name: "sessions", args: ["sessions"], where: "project", interactive: true },
+    { name: "skills", args: ["skills"], where: "project", interactive: true },
+    { name: "sessions-list", args: ["sessions", "list"], where: "project" },
   ];
   const summary = [];
+  const report = [];
   for (const capture of captures) {
-    const result = await capturePty(process.execPath, [path.join(process.cwd(), "packages", "cli", "scripts", "skills.mjs"), ...capture.args], {
-      cwd: process.cwd(),
+    const result = capturePty(process.execPath, [cli, ...capture.args], {
+      cwd: capture.where === "scratch" ? scratch : process.cwd(),
       columns: 100,
       rows: 40,
-      timeoutMs: 60_000,
+      timeoutMs: capture.interactive ? 8_000 : 60_000,
     });
-    if (result.status !== "ok") {
+    // A menu that waits for a key is a screen, not a failure: what matters is
+    // that it painted, and that it is the frame we asked for.
+    const painted = result.output.length > 0 && (result.status === "ok" || (capture.interactive && result.status === "timeout"));
+    report.push({ name: capture.name, status: result.status, exitCode: result.exitCode, bytes: result.output.length, columns: 100, rows: 40, painted });
+    if (!painted) {
       summary.push(`${capture.name}: ${result.status}${result.detail ? ` (${result.detail})` : ""}`);
       continue;
     }
     await writeFile(path.join(outDir, `${capture.name}.ansi`), result.output);
-    await writeFile(path.join(outDir, `${capture.name}.txt`), result.output.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\r/g, ""));
-    summary.push(`${capture.name}: ${result.output.length} bytes`);
+    await writeFile(path.join(outDir, `${capture.name}.txt`), stripControl(result.output));
+    summary.push(`${capture.name}: ${result.output.length} bytes${result.status === "timeout" ? " (held at the first frame)" : ""}`);
   }
+  await writeFile(path.join(outDir, "captures.json"), `${JSON.stringify({
+    at: new Date().toISOString(),
+    platform: process.platform,
+    captures: report,
+  }, null, 2)}\n`);
   process.stdout.write(`PTY captures (${summary.join(", ")}) → ${path.relative(process.cwd(), outDir)}\n`);
+  if (report.some((entry) => !entry.painted)) process.exitCode = 1;
 }
 
 const fixtures = await renderAll(options.only);
