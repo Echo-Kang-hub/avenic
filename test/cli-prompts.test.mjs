@@ -109,10 +109,15 @@ async function slowApplyWizard(applyMs, onApply) {
       { id: "pick", kind: "single", title: "Pick", options: [{ value: "a", label: "Alpha" }], value: () => "a", write: () => {}, summary: () => "Alpha" },
       { id: "apply", kind: "single", title: "Apply configuration?", options: [{ value: true, label: "Yes" }, { value: false, label: "No" }], value: () => true, apply: true },
     ],
-    apply: () => new Promise((resolve) => {
+    apply: () => {
       onApply();
-      setTimeout(() => resolve({ result: "written", summary: "done" }), applyMs);
-    }),
+      // applyMs === null：写盘永远不会结束（卡住的那种），用来验证这一帧还剩
+      // 不剩出口。
+      if (applyMs === null) return new Promise(() => {});
+      return new Promise((resolve) => {
+        setTimeout(() => resolve({ result: "written", summary: "done" }), applyMs);
+      });
+    },
   });
   return { stdin, stdout, promise };
 }
@@ -154,6 +159,30 @@ test("escape while Apply is writing is not reported as a cancellation", async ()
   assert.equal(await promise, "written", "the answer is the write that happened, not the key that arrived too late");
   assert.equal(writes, 1);
   assert.doesNotMatch(stdout.text(), /✖  cancel/, "a write that lands must never be reported as a cancel");
+});
+
+test("Ctrl+C while Apply is writing ends the frame instead of being swallowed", async () => {
+  // 写盘卡住的时候（切到 Shared 要先迁移所有 agent 的 native 历史，可能很久），
+  // Esc 已经太晚，但 Ctrl+C 也不能跟着被吃掉：那样用户会被永远留在 raw mode 里，
+  // 对着一帧没有任何反馈的「Apply configuration?」。它不当取消 —— 写盘撤不回来，
+  // 也不一定失败 —— 它结束这一帧，并以「被打断」收场。
+  let writes = 0;
+  const { stdin, stdout, promise } = await slowApplyWizard(null, () => { writes += 1; });
+  await waitForWizardFrame(stdout, /◆ {2}Pick/, "the first step");
+  keys(stdin, "\r");
+  await waitForWizardFrame(stdout, /◆ {2}Apply configuration\?/, "the confirmation");
+  keys(stdin, "\r");
+  await new Promise((resolve) => setTimeout(resolve, 80)); // 写盘正在进行，而且不会结束
+  keys(stdin, "\x03");
+  const outcome = await Promise.race([
+    promise.then(() => "settled", (error) => error),
+    new Promise((resolve) => setTimeout(() => resolve("pending"), 500)),
+  ]);
+  assert.notEqual(outcome, "pending", "a write that never settles must not make Ctrl+C unanswerable");
+  assert.match(String(outcome?.message), /interrupted/i, "Ctrl+C is an interruption, not an answer to the question");
+  assert.equal(stdin.raw, false, "the terminal must come back out of raw mode");
+  assert.equal(writes, 1, "interrupting must not start a second write");
+  assert.doesNotMatch(stdout.text(), /✖  cancel/, "an interruption is not the cancel the wizard never got");
 });
 
 test("cancelling is Escape, not a row in the list", async () => {

@@ -226,7 +226,10 @@ const CANCEL_LABEL = "cancel";
 /** 一次按键 → 一个意图。无法识别的按键返回 null，由 reducer 决定是否忽略。 */
 function keyIntent({ value, key = {} }) {
   const name = key.name ?? (typeof value === "string" ? value : "");
-  if (key.ctrl && (name === "c" || name === "d")) return "cancel";
+  // Ctrl+C / Ctrl+D 和 Esc 不是同一个意图：这一帧空闲时两者都是「取消」，但写盘
+  // 在飞的时候 Esc 只是一个太晚的取消键，而 Ctrl+C 是「现在停下」，是那时唯一的
+  // 出口。所以它们在源头就分开。
+  if (key.ctrl && (name === "c" || name === "d")) return "interrupt";
   if (key.ctrl && name === "a") return "all"; // 搜索框里也能全选：字母键让给过滤词
   if (name === "escape") return "cancel";
   // Shift+Tab 是「上一步」：向导里唯一的回退键，也是终端里通行的那个。
@@ -295,6 +298,7 @@ const moreDown = (count, colors) => colors.muted(`│  ↓ ${count} more`);
  * 向导就是这样推进到下一步的），一个 Promise（异步确认，落定由它决定），或什么
  * 都不返回（保持这一帧 —— 空选择是提示，不是取消）。返回 Promise 之后键盘就交给
  * 它：写盘撤不回来，所以在那期间再按确认不是第二次写盘，按取消也不会变成取消。
+ * 唯一的例外是 Ctrl+C / Ctrl+D —— 它不回答这一帧，它结束这一帧，并以失败收场。
  */
 function prompt(options, model) {
   const { stdin = process.stdin, stdout = process.stdout } = options;
@@ -306,8 +310,20 @@ function prompt(options, model) {
     // 所以既不能按第二次（那就是第二次写盘），也不能按键取消（那会把已经落盘的
     // 配置报成取消）。落定由那次写盘自己决定。
     let busy = false;
+    // 已经收场的帧（落定、失败或被打断）不再接受第二次落定：迟到的写盘结果既不
+    // 能再画一遍，也不能再 resolve 一次。
+    let done = false;
     const session = startFrame(stdin, stdout, () => model.paint());
+    const abandon = (failure) => {
+      if (done) return;
+      done = true;
+      session.close();
+      stop();
+      reject(failure);
+    };
     const settle = (result, lines, summary) => {
+      if (done) return;
+      done = true;
       session.close();
       stop();
       if (result === null) {
@@ -320,6 +336,7 @@ function prompt(options, model) {
       resolve(result);
     };
     const settleOutcome = (outcome) => {
+      if (done) return;
       if (!outcome || outcome.repaint) {
         // 异步确认若只是要求重画（或者什么都没返回），那就没有写盘在飞：键盘
         // 得还回来，否则这一帧从此不再响应任何键，连 Esc 也按不动。
@@ -339,18 +356,22 @@ function prompt(options, model) {
       if (outcome && typeof outcome.then === "function") {
         // 异步确认（向导的 Apply 要写盘）：落定或失败由它决定。
         busy = true;
-        outcome.then(settleOutcome, (failure) => {
-          session.close();
-          stop();
-          reject(failure);
-        });
+        outcome.then(settleOutcome, abandon);
         return;
       }
       settleOutcome(outcome);
     };
     stop = listenKeys(stdin, (intent) => {
-      if (busy) return;
-      if (intent === "cancel") {
+      if (busy) {
+        // 写盘期间的键盘：Esc 什么都不做（取消已经太晚），Ctrl+C 结束这一帧 ——
+        // 一次卡住的写盘不该把用户永远锁在 raw mode 里，对着一帧没有反馈的画面。
+        // 它不当成功，也不当取消：写盘撤不回来，结果只有那次写盘自己知道。
+        if (intent === "interrupt") {
+          abandon(new Error("Interrupted while the answer was being written"));
+        }
+        return;
+      }
+      if (intent === "cancel" || intent === "interrupt") {
         settle(null);
         return;
       }

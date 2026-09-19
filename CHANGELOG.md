@@ -66,7 +66,9 @@
   wizard, and nothing is written before the final Confirm. Once Apply is
   writing, the keyboard stops counting: a second Enter is not a second write,
   and a late Esc cannot turn a configuration that landed into a reported
-  cancel. The two flows share
+  cancel. Ctrl+C is the exception — it is not an answer to the question, so it
+  ends the frame as an interruption rather than leaving a stalled write with no
+  way out of the prompt. The two flows share
   one state machine and one set of questions, which the VS Code extension
   consumes as well, so a host decides how to draw a step and never what the
   steps are.
