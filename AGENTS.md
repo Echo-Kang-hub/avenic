@@ -96,6 +96,16 @@ a projection must never let provenance break continuity. Concretely:
 - The launch path stays free of this work: a plain `avenic claude` pays no
   projection cost, and a switch costs its delta, not the whole history.
 
+Known limitation, recorded 2026-09-19 as next-version work (not a 1.8.x
+blocker): **long-session native projection checkpointing** — when the canonical
+model-visible context exceeds `NATIVE_BUDGET`, the projection condenses the
+oldest turns into the deterministic checkpoint rather than summarizing them:
+canonical keeps every event, but a target whose delta alone exceeds the budget
+reads a summary of the older part instead of its words. The next version
+decides whether canonical history past the budget should be summarized or
+checkpointed instead of dropped from the target projection. Details and the
+measured numbers: `docs/session-interop-design.md` → "Known limitations".
+
 ## Setup
 
 ```bash

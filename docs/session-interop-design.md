@@ -61,6 +61,11 @@ Events are append-oriented. When two projections append from the same parent, bo
 
 Capability levels are documented from tests rather than inferred: L1 readable, L2 native import, L3 resumable, L4 bidirectional sync. Private/signed reasoning is never fabricated or transported.
 
+## Known limitations
+
+- **A switch carries at most 400,000 characters of turn text; the rest is condensed.** `buildProjection` (`packages/core/src/runtime/projection.mjs`) keeps the newest turns up to `NATIVE_BUDGET` and folds everything older into the deterministic checkpoint, which reaches the target as `[condensed]` lines: the count and date range of the events, the original request, the most recent requests, and the tool-call count — not the turns themselves. Measured through the core the installed CLI ships, on a synthetic 60-turn conversation of 867,580 characters: 27 turns and 396,387 characters were carried verbatim, 33 events were condensed. Within the budget the projection is exact — including the delta a mapping cuts, which is normally far under it — and the budget never triggers a model call, so the same history always projects to the same hash. The limitation is what condensation costs: a target switched into a conversation whose delta alone exceeds the budget reads a summary of the older part instead of its words.
+  Recorded 2026-09-19 during the 1.8.1 distribution acceptance as next-version work, not a 1.8.1 blocker: reaching the limit needs a single delta of that size, which no verification run on the published artifacts produced. The next version decides whether to page the projection (several appends), raise the budget per agent, or leave the condensation and state it in the launch notice.
+
 ## References
 
 - [OpenAI Codex transcript discussion](https://github.com/openai/codex/discussions/12668)
