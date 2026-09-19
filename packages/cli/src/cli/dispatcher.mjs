@@ -1,51 +1,38 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
   applyProjectConfiguration,
   agentEnvironment,
   agentExecutableAvailable,
-  buildHandoff,
   clearLocalAuth,
-  createInstallContext,
   deinitializeAgent,
   effectiveAgentConfig,
-  ensureSkillLinks,
-  finishLaunch,
-  formatLinkSummary,
-  formatSessionDiagnostics,
   getAgent,
   getActiveCanonicalSessionId,
   getSessionAdapter,
   git,
   initializeAgent,
   importProjectSessions,
-  linkSummaryChanged,
-  joinLaunchGroup,
   recoverSharedNativeSessions,
   loadRuntime,
   locateProjectRoot,
-  logConflicts,
   listCanonicalSessions,
   captureCanonicalSession,
   reconcileCanonicalSession,
   continueCanonicalSession,
   continuationLaunchArguments,
   prepareCanonicalContinuation,
-  managedSkillNames,
   projectCanonicalSession,
   readCanonicalSession,
   projectConfig,
-  resolveEffectiveAgentRuntime,
-  sessionLeasePath,
   sessionsGitIgnored,
   setLocalAuth,
   setSessionsGitIgnored,
   setActiveCanonicalSession,
-  spawnExecutableSync,
   validateAuthMode,
   validateSessionInteropMode,
   validateSessionsMode,
@@ -54,47 +41,23 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { spawnSessionWatchdog } from "./watchdog.mjs";
 import { banner, confirm, isInteractive, multiselect, select } from "./prompts.mjs";
+import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
+import { dispatchStatusCommand } from "./status-cli.mjs";
+import { mark, reportLaunchTiming, timed } from "#core/runtime/timing.mjs";
+
+// Everything above this line is the price of being able to answer the command
+// at all: node starting, then the CLI and core modules loading.
+mark("modules");
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const packageVersion = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")).version;
 
-function launchExecutable(executable, argumentsList, options = {}) {
-  const result = spawnExecutableSync(executable, argumentsList, {
-    cwd: options.cwd,
-    env: options.environment,
-    stdio: options.input !== undefined ? ["pipe", "inherit", "inherit"] : (options.capture ? "pipe" : "inherit"),
-    input: options.input,
-    windowsHide: Boolean(options.capture),
-  });
-  if (result.error) {
-    throw new Error(`Unable to launch ${executable}: ${result.error.message}`);
-  }
-  return result.status ?? 1;
-}
-
-function launchCaptured(executable, argumentsList, options = {}) {
-  const result = spawnExecutableSync(executable, argumentsList, {
-    cwd: options.cwd,
-    env: options.environment,
-    stdio: "pipe",
-    input: options.input,
-    windowsHide: true,
-    encoding: "utf8",
-  });
-  if (result.error) throw new Error(`Unable to launch ${executable}: ${result.error.message}`);
-  return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-}
-
-// Tell the detached durability watch that this launch is finishing, so it
-// stops its periodic capture and leaves the exit sequence sole ownership of
-// the last pass. Best-effort: a missing marker only costs a redundant capture.
-function markLaunchClosing(agentId, projectRoot) {
-  try {
-    writeFileSync(path.join(sessionLeasePath(agentId, projectRoot), "closing"), "");
-  } catch {}
-}
+// Skills verbs that are also accepted at the top level. Each one is the same
+// command under `avenic skills`, so the top-level spelling says so and then
+// runs the identical code path — there is no second implementation to keep in
+// step, and nothing to remove later beyond these seven words.
+const LEGACY_SKILLS_VERBS = new Set(["add", "remove", "adopt", "install", "uninstall", "packs", "tree"]);
 
 function parseAgentList(value) {
   const agents = value.split(",").filter(Boolean);
@@ -227,6 +190,8 @@ CLI: avenic (shorthand: ave)
 Everyday use:
   avenic init                         Set up this project (interactive on a terminal)
   avenic claude | codex | opencode    Start an agent's own TUI
+  avenic status                       What this project is, and what state it is in
+  avenic skills                       Manage Skills (interactive menu on a terminal)
   avenic sessions                     Manage shared sessions (interactive)
   avenic change                       Change auth, session storage or history mode
   avenic self-update                  Update Avenic from the registry
@@ -254,11 +219,11 @@ Per-agent commands (thin wrappers over the project settings):
   avenic <claude|codex|opencode> sessions [import|writeback|status]
   avenic <claude|codex|opencode> [official CLI arguments...]
 
-Diagnostics:
-  avenic status                       Show all three agents
-  avenic doctor                       Check the environment
+Status:
+  avenic status [--json]              Project, history, agents and Skills in one view
 
 Skills:
+  avenic skills                       Open the Skills menu (interactive on a terminal)
   avenic skills install [pack...]     Install Packs (no args: interactive multi-select on a terminal; scripts fall back to common)
   avenic skills [pack...]             Shorthand for skills install
   avenic skills add <owner/repo> [skill...] [-g]    Install directly from a GitHub repo
@@ -280,7 +245,12 @@ Hub:
   Private repos use your local git credentials (gh auth login or SSH)
   avenic hub doctor|update|skill-add|remove|pack-add|pack-remove|source-add
                                       (run inside your Hub Git clone)
-  Note: the deprecated verb 'catalog' still works, with a deprecation warning.
+
+Deprecated, still working:
+  avenic doctor                       Use: avenic status
+  avenic add|remove|adopt|install|uninstall|packs|tree
+                                      Use the same verb under: avenic skills
+  avenic catalog                      Use: avenic hub
 
 Models:
   avenic model                       Show library path, project binding and projection status
@@ -314,7 +284,7 @@ function printAgentStatus(agent, projectRoot, state) {
 
 async function dispatchAgent(agentId, argumentsList, options = {}) {
   const agent = getAgent(agentId);
-  const projectRoot = options.projectRoot ?? locateProjectRoot();
+  const projectRoot = options.projectRoot ?? await timed("project", () => locateProjectRoot());
   const [command, ...remainingArguments] = argumentsList;
 
   if (command === "help" || command === "--help" || command === "-h") {
@@ -435,121 +405,9 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     return 0;
   }
 
-  const state = await loadRuntime(projectRoot);
-  const config = effectiveAgentConfig(state, agentId);
-  if (!config) {
-    throw new Error(`${agent.displayName} is not initialized. Run: avenic ${agentId} init`);
-  }
-  const environment = options.environment ?? agentEnvironment(state, projectRoot, agentId);
-  const adapter = getSessionAdapter(agentId);
-  const portableSessions = config.sessions !== "global";
-  const sharedSessions = projectConfig(state).sessionInterop === "shared";
-  // Recovery for sessions another agent left behind belongs to the explicit
-  // `sessions` and `change` commands. A plain launch must reach the official
-  // TUI first: it captures its own agent's history on exit, and the runtime
-  // watcher keeps that history durable while it runs.
-  // A plain agent launch is intentionally transparent: storage scope does not
-  // imply a launch target. Shared-session continuation is opt-in via
-  // `sessions continue`, while this path preserves the agent's native new/
-  // default-session UX (including its own /resume command).
-  // Plain launch is deliberately a zero-session-control-plane path. Do not
-  // parse another agent's history, create projections, or call a model before
-  // the official TUI appears. Explicit `sessions continue` performs recovery
-  // and reconciliation; ordinary exits capture the selected native history.
-  // Sessions created during a run live only in the project: the first launch
-  // of a project+agent group snapshots the native storage and the last exit
-  // reverts it. Launches of the same project+agent may run concurrently.
-  // opencode's storage is managed by the official CLI, so it captures without
-  // snapshotting or reverting; the group is null for it.
-  const group = portableSessions ? await joinLaunchGroup(projectRoot, agentId, { environment }) : null;
-  if (portableSessions) {
-    // Every project-scoped launch gets a durability watch, whether or not the
-    // agent's native storage is isolated for the run.
-    try {
-      await spawnSessionWatchdog(agentId, projectRoot, group?.member ?? null, environment);
-    } catch {}
-  }
-  if (portableSessions && !options.skipRestore) {
-    // Project session records take priority on launch: conflicting native
-    // copies are overwritten silently. Native storage is never written to
-    // proactively; only `avenic <agent> sessions writeback` writes
-    // project records back to native storage.
-    try {
-      await adapter.restore(projectRoot, { environment });
-    } catch (error) {
-      if (group) {
-        // Leaving the group reverts native storage when this was the only
-        // launch in it.
-        try {
-          await group.release();
-        } catch {}
-      }
-      throw error;
-    }
-  }
-  // 启动补齐（spec §5.5）：会话适配器收尾之后、拉起 Agent 之前，按受管集合把缺席/失效的
-  // 链接补回来。未安装过 Skills 的项目零副作用（受管集合为空 → 一个字节都不写）。
-  // 失败绝不影响启动：打印一行警告后照常拉起 Agent（spec §11）。
-  try {
-    const installContext = createInstallContext(false, { cwd: projectRoot, environment: process.env });
-    const managed = await managedSkillNames(installContext);
-    if (managed.size > 0) {
-      const linkResult = await ensureSkillLinks(installContext, managed, { silent: true });
-      const { counts } = linkResult;
-      if (linkSummaryChanged(counts)) {
-        console.log(`Skills shared: ${formatLinkSummary(counts)}`);
-      }
-      logConflicts(console, linkResult.conflicts);
-    }
-  } catch (error) {
-    console.warn(`⚠ Skills repair skipped: ${error.code ?? error.message}`);
-  }
-  const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, {
-    state,
-    environment,
-    argumentsList,
-    io: console,
-  });
-  if (runtime.note) console.log(runtime.note);
-  let status;
-  let launchResult;
-  try {
-    launchResult = options.capture
-      ? launchCaptured(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input })
-      : launchExecutable(runtime.executable, runtime.argumentsList, { cwd: projectRoot, environment: runtime.environment, input: options.input });
-    status = options.capture ? launchResult.status : launchResult;
-  } finally {
-    if (portableSessions) {
-      // The run is over: stop the detached durability watch before this
-      // process starts its own exit sequence, so the two never capture the
-      // same tree at once.
-      markLaunchClosing(agentId, projectRoot);
-      const captured = await finishLaunch(projectRoot, agentId, {
-        environment,
-        member: group?.member ?? null,
-        setActive: !options.skipCanonical && sharedSessions,
-        // The continuation reader must still see the native session this run
-        // produced, so it runs before the last member reinstates the snapshot.
-        beforeRevert: options.onExit,
-      });
-      reportSessionDiagnostics(captured.diagnostics);
-    }
-  }
-  return options.capture ? launchResult : status;
-}
-
-async function dispatchStatus() {
-  const projectRoot = locateProjectRoot();
-  const state = await loadRuntime(projectRoot);
-  console.log("Avenic Status\n");
-  console.log(`Project  ${projectRoot}\n`);
-  console.log(`History  ${projectConfig(state).sessionInterop}\n`);
-  for (const agentId of Object.keys(AGENTS)) {
-    const agent = getAgent(agentId);
-    const config = effectiveAgentConfig(state, agentId);
-    console.log(`${agent.displayName.padEnd(12)} ${config ? `Initialized (${config.auth} auth)` : "Not initialized"}`);
-  }
-  return 0;
+  // The plain launch is its own module so that starting an Agent loads only
+  // what starting an Agent needs. There is one implementation of it.
+  return launchAgent(agentId, argumentsList, { ...options, projectRoot });
 }
 
 async function dispatchDoctor() {
@@ -604,12 +462,6 @@ async function reportReconciliation(projectRoot) {
 }
 
 // The outermost layer is the only place that reports what could not be read
-// from native history: one line per problem, once per command.
-function reportSessionDiagnostics(diagnostics) {
-  const { warnings, notes } = formatSessionDiagnostics(diagnostics);
-  for (const note of notes) console.log(note);
-  for (const warning of warnings) console.warn(`⚠ ${warning}`);
-}
 
 // One continuation sequence for every agent: capture what the target already
 // has, prepare the delta, let the official CLI run in the foreground, capture
@@ -882,6 +734,7 @@ export async function runCli(options = {}) {
     return dispatchAgent(forcedAgent, argumentsList);
   }
   const [command, ...remainingArguments] = argumentsList;
+  mark("command");
   if (command === "--version" || command === "-v" || command === "version") {
     console.log(`Avenic ${packageVersion}`);
     return 0;
@@ -929,16 +782,19 @@ export async function runCli(options = {}) {
     return 0;
   }
   if (command === "status") {
-    return dispatchStatus();
+    return dispatchStatusCommand(remainingArguments, { io: console, environment: process.env });
   }
   if (command === "doctor") {
+    console.warn("warning: `avenic doctor` is deprecated; use `avenic status`");
     return dispatchDoctor();
   }
-  // Anything left is either a legacy top-level command (add, self-update,
-  // uninstall, packs, tree, ...) or a Pack id. Pack ids are user-defined, so
-  // the catalog is the only source of truth for telling Packs from typos;
-  // delegate to the skills dispatcher, which resolves known commands locally
-  // before any catalog work.
+  // Anything left is either a legacy top-level command (add, install,
+  // uninstall, packs, tree, ...) or a Pack id. A bare Pack id is how a Pack is
+  // installed and is not an alias of anything; the rest are the older spelling
+  // of a Skills verb, so each one names the spelling that replaces it.
+  if (LEGACY_SKILLS_VERBS.has(command)) {
+    console.warn(`warning: \`avenic ${command}\` is deprecated; use \`avenic skills ${command}\``);
+  }
   return dispatchSkills(argumentsList, {
     io: console,
     cwd: process.cwd(),

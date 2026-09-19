@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sessionLeasePath, WATCH_INTERVAL_MS } from "#core";
+import { timed } from "#core/runtime/timing.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -18,18 +19,22 @@ export async function spawnSessionWatchdog(agentId, projectRoot, member, environ
   const intervalMs = Number(process.env.AVENIC_WATCH_INTERVAL_MS) || WATCH_INTERVAL_MS;
   // Without a launch group (an agent that manages its own native storage) the
   // state directory exists only for this watch.
-  await mkdir(stateDir, { recursive: true });
-  await writeFile(
-    path.join(stateDir, "watchdog.json"),
-    JSON.stringify({ member, parentPid: process.pid, agentId, projectRoot, environment, intervalMs }),
-    { encoding: "utf8", mode: 0o600 },
-  );
-  const child = spawn(process.execPath, [path.join(packageRoot, "scripts", "watchdog.mjs"), stateDir], {
-    cwd: os.tmpdir(),
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
+  await timed("watchdog.state", async () => {
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, "watchdog.json"),
+      JSON.stringify({ member, parentPid: process.pid, agentId, projectRoot, environment, intervalMs }),
+      { encoding: "utf8", mode: 0o600 },
+    );
   });
+  const child = await timed("watchdog.spawn", async () =>
+    spawn(process.execPath, [path.join(packageRoot, "scripts", "watchdog.mjs"), stateDir], {
+      cwd: os.tmpdir(),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    }),
+  );
   child.unref();
   return child;
 }

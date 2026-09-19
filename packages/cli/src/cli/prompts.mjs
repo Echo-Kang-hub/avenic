@@ -38,6 +38,11 @@ export function cancel(stdout, text = "Cancelled") {
   stdout.write(`✖  ${text}\n`);
 }
 
+/** 错误线：一次失败的原因，格式与取消线一致（✖ 在最左，理由跟其后）。 */
+export function error(stdout, text) {
+  stdout.write(`✖  ${text}\n`);
+}
+
 // ---- 帧重绘机制 ----
 // 每次重绘：\x1b[u 回到帧首（帧开始前写入 \x1b[s 记住位置）→ \x1b[J 到屏底 →
 // 写整个新帧。raw 模式在帧会话期间开启，结束/取消时恢复并暂停 stdin。
@@ -72,221 +77,390 @@ function settleFrame(stdout, title, extraLines) {
   stdout.write(`\x1b[u\x1b[J${extraLines.length === 0 ? `◇  ${title}\n` : [`◇  ${title}`, ...extraLines, ""].join("\n")}`);
 }
 
-/** 单选项选择（catalog select / 手动流中的任一单选）。 */
-export function select(options = {}) {
+// ---- 键盘 ----
+// 这一节是 Avenic 唯一的按键实现。每个提示都是一个把「意图」映射到下一个
+// 状态的 reducer，而 Ctrl+C、Esc、方向键在每一帧里都表示同一件事；换一个
+// 终端前端时，要改的也只有这里。
+
+const CANCEL_LABEL = "cancel";
+
+/** 一次按键 → 一个意图。无法识别的按键返回 null，由 reducer 决定是否忽略。 */
+function keyIntent({ value, key = {} }) {
+  const name = key.name ?? (typeof value === "string" ? value : "");
+  if (key.ctrl && (name === "c" || name === "d")) return "cancel";
+  if (key.ctrl && name === "a") return "all"; // 搜索框里也能全选：字母键让给过滤词
+  if (name === "escape") return "cancel";
+  if (name === "up") return "up";
+  if (name === "down") return "down";
+  if (name === "return" || name === "enter") return "accept";
+  if (name === "backspace" || name === "delete") return "erase";
+  if (name === "space") return "toggle";
+  if (typeof value === "string" && value.length === 1 && value >= " " && value !== "\x7f") {
+    return { text: value, name };
+  }
+  return null;
+}
+
+/**
+ * The one place a prompt listens for a key. `reduce` receives an intent and
+ * returns true (repaint), "accept" (answer now) or nothing; the returned
+ * teardown detaches the listener, so a finished prompt can never consume the
+ * next keystroke. Nothing else in this module — or in the CLI — attaches a
+ * keypress listener of its own.
+ */
+function listenKeys(stdin, reduce) {
+  const listener = (value, key) => reduce(keyIntent({ value, key }));
+  stdin.on("keypress", listener);
+  return () => stdin.removeAllListeners("keypress");
+}
+
+// 单字母快捷键只在「这一帧不是搜索框」时才生效：可搜索的列表里，所有能打出来
+// 的字符都属于过滤词，否则用户永远搜不到 s/k/j/a/n 开头的名字。
+const movesUp = (intent, letters) => intent === "up" || (letters && intent?.text === "k");
+const movesDown = (intent, letters) => intent === "down" || (letters && intent?.text === "j");
+const letter = (intent, expected) => intent?.text === expected;
+
+/** 环绕移动光标；多一行「cancel」时把行数传成 count + 1。 */
+function step(cursor, delta, rows) {
+  return (cursor + delta + rows) % rows;
+}
+
+/** 长列表只画一屏：光标始终可见，两端各留一行省略标记。返回窗口与它的行号。 */
+function windowFor(count, cursor, height) {
+  if (count <= height) return { from: 0, to: count };
+  const from = Math.max(0, Math.min(cursor - Math.floor(height / 2), count - height));
+  return { from, to: from + height };
+}
+
+/** 输入即过滤：空查询保留全部，否则标签或值包含查询词（不分大小写）。 */
+function filterEntries(entries, query) {
+  const needle = query.toLowerCase();
+  if (needle.length === 0) return entries;
+  return entries.filter((entry) =>
+    entry.label.toLowerCase().includes(needle) || String(entry.value).toLowerCase().includes(needle));
+}
+
+// ---- 提示 ----
+// 帧、键盘、落定、取消只在这里实现一次；每个提示只回答「画什么」和「按键之后
+// 状态怎么变」。因此新增一个交互面（如 Skills 菜单）是写一个 reducer，而不是
+// 再写一遍终端循环。
+
+/**
+ * `model.paint()` 返回当前帧的行，`model.reduce(intent)` 返回 true（重画）、
+ * "accept"（立即确认）或什么都不返回，`model.accept()` 返回 `{ result, lines,
+ * summary }`、`{ cancel: true }` 或什么都不返回（保持这一帧 —— 空选择或回车行
+ * 是提示，不是取消）。
+ */
+function prompt(options, model) {
   const { stdin = process.stdin, stdout = process.stdout } = options;
-  const entries = options.options; // [{ value, label }]
-  const title = options.title;
-  const initial = options.initial ?? 0;
-  const cancelLabel = options.cancelLabel ?? "cancel";
-  const footer = options.footer ?? "↑↓ move · enter select · esc cancel";
+  const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
   return new Promise((resolve) => {
-    const count = entries.length;
-    const cursorRow = count; // cancel 行在 entries 之后
-    let cursor = Math.max(0, Math.min(initial, cursorRow));
-    const optionRows = (mark) => {
-      const rows = [];
-      for (let index = 0; index < count; index += 1) {
-        rows.push(`│  ${mark(index, cursorRow)}  ${entries[index].label}`);
-      }
-      return rows;
-    };
-    const paint = () => {
-      const rows = [`◇  ${title}`];
-      for (let index = 0; index < count; index += 1) {
-        rows.push(`│  ${index === cursor ? "●" : "○"}  ${entries[index].label}`);
-      }
-      rows.push(frameSeparator());
-      rows.push(`│  ${cursor === cursorRow ? "●" : "○"}  ${cancelLabel}`);
-      rows.push(frameSeparator());
-      rows.push(footer);
-      return rows;
-    };
-    const session = startFrame(stdin, stdout, paint);
-    const finish = (pickedIndex) => {
+    let stop = () => {};
+    const session = startFrame(stdin, stdout, () => model.paint());
+    const settle = (result, lines, summary) => {
       session.close();
-      stdin.removeAllListeners("keypress");
-      if (pickedIndex === null) {
-        settleFrame(stdout, title, []);
+      stop();
+      if (result === null) {
+        settleFrame(stdout, model.titleLine(), []);
         stdout.write(`✖  ${cancelLabel}\n`);
         resolve(null);
         return;
       }
-      settleFrame(stdout, title, [...optionRows((index) => (index === pickedIndex ? "●" : "○")), "◇  " + entries[pickedIndex].label]);
-      resolve(entries[pickedIndex].value);
+      settleFrame(stdout, model.titleLine(), [...lines, `◇  ${summary}`]);
+      resolve(result);
     };
-    stdin.on("keypress", (value, key) => {
-      if (key.ctrl && key.name === "c") {
-        finish(null);
+    const accept = () => {
+      const outcome = model.accept();
+      if (!outcome) {
+        session.refresh(); // 还没有可确认的东西：重画，让提示可见
         return;
       }
-      if (key.name === "up" || key.name === "k") {
-        cursor = (cursor - 1 + count + 1) % (count + 1);
-        session.refresh();
-      } else if (key.name === "down" || key.name === "j") {
-        cursor = (cursor + 1) % (count + 1);
-        session.refresh();
-      } else if (key.name === "return" || key.name === "enter") {
-        finish(cursor >= count ? null : cursor);
-      } else if (key.name === "escape") {
-        finish(null);
+      if (outcome.cancel) {
+        settle(null);
+        return;
       }
+      settle(outcome.result, outcome.lines, outcome.summary);
+    };
+    stop = listenKeys(stdin, (intent) => {
+      if (intent === "cancel") {
+        settle(null);
+        return;
+      }
+      if (intent === "accept") {
+        accept();
+        return;
+      }
+      if (intent === null) return;
+      const changed = model.reduce(intent);
+      if (changed === "accept") accept();
+      else if (changed) session.refresh();
     });
   });
 }
 
-/** 多选项选择（space 逐项切换，a 全选，n 清空）。返回选中值数组或 null。 */
-export function multiselect(options = {}) {
-  const { stdin = process.stdin, stdout = process.stdout } = options;
+/** 单选项选择（catalog select / 手动流中的任一单选）。 */
+export function select(options = {}) {
   const entries = options.options; // [{ value, label }]
+  const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
+  const height = Math.max(1, options.height ?? 12);
+  const count = entries.length;
+  const cancelRow = count; // cancel 行在 entries 之后
+  const footer = options.footer ?? "↑↓ move · enter select · esc cancel";
+  let cursor = Math.max(0, Math.min(options.initial ?? 0, cancelRow));
+  const row = (index) =>
+    `│  ${index === cursor ? "●" : "○"}  ${entries[index].label}${entries[index].hint ? `   ${entries[index].hint}` : ""}`;
+  return prompt({ ...options, footer }, {
+    titleLine: () => options.title,
+    paint() {
+      const { from, to } = windowFor(count, Math.min(cursor, Math.max(0, count - 1)), height);
+      const rows = [`◇  ${options.title}`];
+      if (from > 0) rows.push(`│  ↑ ${from} more`);
+      for (let index = from; index < to; index += 1) rows.push(row(index));
+      if (to < count) rows.push(`│  ↓ ${count - to} more`);
+      rows.push(frameSeparator());
+      rows.push(`│  ${cursor === cancelRow ? "●" : "○"}  ${cancelLabel}`);
+      rows.push(frameSeparator());
+      rows.push(footer);
+      return rows;
+    },
+    reduce(intent) {
+      if (movesUp(intent, true) || movesDown(intent, true)) {
+        cursor = step(cursor, movesUp(intent, true) ? -1 : 1, count + 1);
+        return true;
+      }
+      return false;
+    },
+    accept() {
+      if (cursor >= count) return { cancel: true };
+      return {
+        result: entries[cursor].value,
+        lines: entries.map((_, index) => row(index)),
+        summary: entries[cursor].label,
+      };
+    },
+  });
+}
+
+/**
+ * 多选项选择（space 逐项切换，a 全选，n 清空）。可搜索时（`searchable: true`）
+ * 单字符一律进入过滤词，列表随输入缩小，空格仍然切换当前项。
+ */
+export function multiselect(options = {}) {
+  const entries = options.options; // [{ value, label, hint }]
   const title = options.title;
+  const searchable = options.searchable === true;
+  const fixed = new Set(options.fixed ?? []); // 不能取消的条目（如唯一存储）
   const checked = new Set(options.initial ?? []);
   const minSelected = Math.max(0, options.minSelected ?? 0);
   const emptyMessage = options.emptyMessage ?? "Select at least one item";
-  const cancelLabel = options.cancelLabel ?? "cancel";
-  const footer = options.footer ?? "↑↓ move · space toggle · a all · n none · enter confirm · esc cancel";
-  return new Promise((resolve) => {
-    const count = entries.length;
-    const cursorRow = count;
-    let cursor = 0;
-    let validationMessage = "";
-    const titleLine = () =>
-      checked.size > 0 ? `◇  ${title} (${checked.size} checked)` : `◇  ${title}`;
-    const optionRows = () => {
-      const rows = [];
-      for (let index = 0; index < count; index += 1) {
-        rows.push(
-          `│    ${checked.has(entries[index].value) ? "●" : "○"}  ${entries[index].label}`,
-        );
-      }
-      return rows;
-    };
-    const paint = () => {
-      const rows = [titleLine()];
-      for (let index = 0; index < count; index += 1) {
-        rows.push(
-          `│  ${index === cursor ? "▸" : " "}  ${checked.has(entries[index].value) ? "●" : "○"}  ${entries[index].label}`,
-        );
-      }
+  const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
+  const height = Math.max(1, options.height ?? 12);
+  const footer = options.footer ?? (searchable
+    ? "type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel"
+    : "↑↓ move · space toggle · a all · n none · enter confirm · esc cancel");
+  let query = "";
+  let cursor = 0;
+  let validationMessage = "";
+  let shown = entries;
+  // titleLine 不带 ◇：骨架负责前缀（帧内和落定帧用的是同一行）。
+  const titleLine = () => (checked.size > 0 ? `${title} (${checked.size} checked)` : title);
+  const row = (entry, marked) =>
+    `│  ${marked ? "▸" : " "}  ${checked.has(entry.value) ? "●" : "○"}  ${entry.label}${entry.hint ? `   ${entry.hint}` : ""}`;
+  return prompt({ ...options, footer }, {
+    titleLine,
+    paint() {
+      shown = filterEntries(entries, query);
+      cursor = Math.min(cursor, shown.length); // 可能停在 cancel 行
+      const { from, to } = windowFor(shown.length, Math.min(cursor, Math.max(0, shown.length - 1)), height);
+      const rows = [`◇  ${titleLine()}`];
+      if (from > 0) rows.push(`│  ↑ ${from} more`);
+      for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
+      if (to < shown.length) rows.push(`│  ↓ ${shown.length - to} more`);
       rows.push(frameSeparator());
-      rows.push(`│  ${cursor === cursorRow ? "▸" : " "}  ○  ${cancelLabel}`);
+      rows.push(`│  ${cursor >= shown.length ? "▸" : " "}  ○  ${cancelLabel}`);
+      if (searchable) rows.push(`│  ⌕ ${query.length > 0 ? query : "&"}${shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : ""}`);
       rows.push(frameSeparator());
       rows.push(footer);
       if (validationMessage) rows.push(validationMessage);
       return rows;
-    };
-    const session = startFrame(stdin, stdout, paint);
-    const finish = (values) => {
-      session.close();
-      stdin.removeAllListeners("keypress");
-      if (values === null) {
-        settleFrame(stdout, titleLine(), []);
-        stdout.write(`✖  ${cancelLabel}\n`);
-        resolve(null);
-        return;
+    },
+    reduce(intent) {
+      if (movesUp(intent, !searchable) || movesDown(intent, !searchable)) {
+        if (shown.length === 0) return false;
+        cursor = step(cursor, movesUp(intent, !searchable) ? -1 : 1, shown.length + 1);
+        return true;
       }
-      settleFrame(stdout, titleLine(), [
-        ...optionRows(),
-        `◇  ${values.length === 1
-          ? entries.find((entry) => entry.value === values[0]).label
-          : `${values.length} selected`}`,
-      ]);
-      resolve(values);
-    };
-    stdin.on("keypress", (value, key) => {
-      if (key.ctrl && key.name === "c") {
-        finish(null);
-        return;
+      if ((intent === "toggle" || (!searchable && letter(intent, "s"))) && cursor < shown.length) {
+        const { value } = shown[cursor];
+        if (fixed.has(value)) return false; // 必选项：空格不改它，也不重画
+        if (checked.has(value)) checked.delete(value);
+        else checked.add(value);
+        return true;
       }
-      if (key.name === "up" || key.name === "k") {
-        cursor = (cursor - 1 + count + 1) % (count + 1);
-        session.refresh();
-      } else if (key.name === "down" || key.name === "j") {
-        cursor = (cursor + 1) % (count + 1);
-        session.refresh();
-      } else if ((key.name === "space" || key.name === "s") && cursor < count) {
-        const entry = entries[cursor];
-        if (checked.has(entry.value)) checked.delete(entry.value);
-        else checked.add(entry.value);
-        session.refresh();
-      } else if (key.name === "a") {
-        for (const entry of entries) checked.add(entry.value);
-        session.refresh();
-      } else if (key.name === "n") {
-        checked.clear();
-        session.refresh();
-      } else if (key.name === "return" || key.name === "enter") {
-        if (cursor < count && checked.size < minSelected) {
-          validationMessage = emptyMessage;
-          session.refresh();
-          return;
+      if (searchable) {
+        if (intent === "erase") {
+          query = query.slice(0, -1);
+          cursor = 0;
+          return true;
         }
-        finish(cursor >= count ? null : [...checked]);
-      } else if (key.name === "escape") {
-        finish(null);
+        if (intent?.text && intent.text !== " ") {
+          query += intent.text;
+          cursor = 0;
+          return true;
+        }
+        return false;
       }
-    });
+      if (intent === "all" || letter(intent, "a")) {
+        for (const entry of entries) checked.add(entry.value);
+        return true;
+      }
+      if (letter(intent, "n")) {
+        for (const entry of entries) {
+          if (!fixed.has(entry.value)) checked.delete(entry.value);
+        }
+        return true;
+      }
+      return false;
+    },
+    accept() {
+      // cancel 行优先于校验：用户在「取消」上回车就是要取消，哪怕一个也没选。
+      if (shown.length > 0 && cursor >= shown.length) return { cancel: true };
+      if (checked.size < minSelected) {
+        validationMessage = emptyMessage;
+        return null; // 留在这一帧，提示已经画在帧里
+      }
+      const values = [...checked];
+      return {
+        result: values,
+        lines: entries.filter((entry) => checked.has(entry.value)).map((entry) => row(entry, false)),
+        summary: values.length === 1
+          ? (entries.find((entry) => entry.value === values[0])?.label ?? String(values[0]))
+          : `${values.length} selected`,
+      };
+    },
   });
 }
 
-/** Yes/No 确认（↑↓/y/n/Enter）。返回 true/false，Esc → null。 */
-export function confirm(options = {}) {
-  const { stdin = process.stdin, stdout = process.stdout } = options;
+/**
+ * 可搜索单选：输入即过滤，↑↓ 在结果里移动，Enter 选中。列表长度不设限，
+ * 一屏放不下时只画光标周围的一段——「找到那一条」不因为多了几十条而变慢。
+ */
+export function searchSelect(options = {}) {
+  const entries = options.options; // [{ value, label, hint }]
   const title = options.title;
-  const initial = options.initial ?? true;
-  const footer = "↑↓ move · y yes · n no · enter confirm · esc cancel";
+  const height = Math.max(1, options.height ?? 12);
+  const footer = options.footer ?? "type to filter · ↑↓ move · enter select · esc cancel";
+  let query = "";
+  let cursor = 0;
+  let shown = entries;
+  const row = (entry, marked) =>
+    `│  ${marked ? "●" : "○"}  ${entry.hint ? `${entry.label}  ${entry.hint}` : entry.label}`;
+  return prompt({ ...options, footer }, {
+    titleLine: () => title,
+    paint() {
+      shown = filterEntries(entries, query);
+      cursor = Math.min(cursor, Math.max(0, shown.length - 1));
+      const { from, to } = windowFor(shown.length, cursor, height);
+      const rows = [`◇  ${title}`];
+      if (shown.length === 0) rows.push("│  (no matches)");
+      if (from > 0) rows.push(`│  ↑ ${from} more`);
+      for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
+      if (to < shown.length) rows.push(`│  ↓ ${shown.length - to} more`);
+      rows.push(frameSeparator());
+      rows.push(`│  ⌕ ${query.length > 0 ? query : "&"}${shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : ""}`);
+      rows.push(frameSeparator());
+      rows.push(footer);
+      return rows;
+    },
+    reduce(intent) {
+      if (movesUp(intent, false) || movesDown(intent, false)) {
+        if (shown.length === 0) return false;
+        cursor = step(cursor, movesUp(intent, false) ? -1 : 1, shown.length);
+        return true;
+      }
+      if (intent === "erase") {
+        query = query.slice(0, -1);
+        cursor = 0;
+        return true;
+      }
+      if (intent?.text && intent.text !== " ") {
+        query += intent.text;
+        cursor = 0;
+        return true;
+      }
+      return false;
+    },
+    accept() {
+      if (shown.length === 0) return null; // 没有可选项：回车不是取消，是留在原地
+      return { result: shown[cursor].value, lines: [row(shown[cursor], true)], summary: shown[cursor].label };
+    },
+  });
+}
+
+/**
+ * 单行文本输入（仓库地址之类）。空格是内容不是按键；Enter 落定，空输入时
+ * Enter 什么都不做（与本模块其他提示一致：没内容不等于取消），Esc → null。
+ */
+export function text(options = {}) {
+  const title = options.title;
+  const footer = options.footer ?? "type · enter confirm · esc cancel";
+  let value = options.initial ?? "";
+  return prompt({ ...options, footer }, {
+    titleLine: () => title,
+    paint: () => [`◇  ${title}`, `│  ${value}`, frameSeparator(), footer],
+    reduce(intent) {
+      if (intent === "erase") {
+        value = value.slice(0, -1);
+        return true;
+      }
+      if (intent === "toggle") {
+        value += " ";
+        return true;
+      }
+      if (typeof intent?.text === "string") {
+        value += intent.text;
+        return true;
+      }
+      return false;
+    },
+    accept() {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) return null; // 空输入：留在原地
+      return { result: trimmed, lines: [`│  ${trimmed}`], summary: trimmed };
+    },
+  });
+}
+
+/** Yes/No 确认。y/n 直接作答并立即落定，↑↓ 移动后 Enter 确认。Esc → null。 */
+export function confirm(options = {}) {
+  const title = options.title;
+  const footer = options.footer ?? "↑↓ move · y yes · n no · enter confirm · esc cancel";
   const choices = [
     { value: true, label: "Yes" },
     { value: false, label: "No" },
   ];
-  return new Promise((resolve) => {
-    let cursor = initial ? 0 : 1;
-    const paint = () => {
-      const rows = [`◇  ${title}`];
-      for (let index = 0; index < choices.length; index += 1) {
-        rows.push(`│  ${index === cursor ? "●" : "○"}  ${choices[index].label}`);
-      }
-      rows.push(footer);
-      return rows;
-    };
-    const session = startFrame(stdin, stdout, paint);
-    const finish = (value) => {
-      session.close();
-      stdin.removeAllListeners("keypress");
-      if (value === null) {
-        settleFrame(stdout, title, []);
-        stdout.write(`✖  cancel\n`);
-        resolve(null);
-        return;
-      }
-      const rows = [];
-      for (let index = 0; index < choices.length; index += 1) {
-        rows.push(`│  ${choices[index].value === value ? "●" : "○"}  ${choices[index].label}`);
-      }
-      settleFrame(stdout, title, [...rows, `◇  ${value ? "Yes" : "No"}`]);
-      resolve(value);
-    };
-    stdin.on("keypress", (value, key) => {
-      if (key.ctrl && key.name === "c") {
-        finish(null);
-        return;
-      }
-      if (key.name === "up" || key.name === "k") {
+  let cursor = (options.initial ?? true) ? 0 : 1;
+  const row = (index) => `│  ${index === cursor ? "●" : "○"}  ${choices[index].label}`;
+  const settleOn = (index) => {
+    cursor = index;
+    return "accept";
+  };
+  return prompt({ ...options, footer }, {
+    titleLine: () => title,
+    paint: () => [`◇  ${title}`, ...choices.map((_, index) => row(index)), footer],
+    reduce(intent) {
+      if (movesUp(intent, true) || movesDown(intent, true)) {
         cursor = 1 - cursor;
-        session.refresh();
-      } else if (key.name === "down" || key.name === "j") {
-        cursor = 1 - cursor;
-        session.refresh();
-      } else if (key.name === "y") {
-        finish(true);
-      } else if (key.name === "n") {
-        finish(false);
-      } else if (key.name === "return" || key.name === "enter") {
-        finish(choices[cursor].value);
-      } else if (key.name === "escape") {
-        finish(null);
+        return true;
       }
-    });
+      // y/n 直接作答：帧下沿写着 y yes / n no，这一行就是承诺，不该再要一次回车。
+      if (letter(intent, "y")) return settleOn(0);
+      if (letter(intent, "n")) return settleOn(1);
+      return false;
+    },
+    accept() {
+      return { result: choices[cursor].value, lines: choices.map((_, index) => row(index)), summary: choices[cursor].label };
+    },
   });
 }
 
