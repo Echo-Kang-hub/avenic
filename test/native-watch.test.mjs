@@ -136,7 +136,12 @@ test("a running agent's session becomes durable before the agent exits", async (
   await withClaudeProject(async ({ projectRoot, nativeRoot, launchAsync, createUnmappedSession }) => {
     const sessionId = await createUnmappedSession(1, "live-session-0001");
     const liveFile = path.join(nativeRoot, `${sessionId}.jsonl`);
-    const sleepMs = 5000;
+    // Observed once in six full-suite runs: this window is the shortest one in
+    // the suite and the whole file runs alongside 600 other tests, so a loaded
+    // machine can reach the deadline before the launch has even spawned. The
+    // window is sized for that machine, not for a quiet one; the assertion
+    // below still fails if the watch itself misses the appends.
+    const sleepMs = 8000;
     const run = await launchAsync(["claude"], {
       AVENIC_WATCH_INTERVAL_MS: "300",
       AVENIC_AGENT_WRITE: JSON.stringify({ file: liveFile, records: 2, sleepMs }),
@@ -156,11 +161,8 @@ test("a running agent's session becomes durable before the agent exits", async (
     const probe = await run.probe();
     assert.ok(probe?.wroteAt, "the agent must have started writing");
     assert.equal(run.child.exitCode, null, "the agent must still be running");
-    // Observed once in six full-suite runs: this window is the shortest one in
-    // the suite and the whole file runs alongside 600 other tests, so a loaded
-    // machine can reach the deadline before the launch has even spawned. The
-    // message carries the launch's own output so the next occurrence says
-    // which half was late instead of only how many events were seen.
+    // The message carries the launch's own output, so an occurrence says which
+    // half was late instead of only how many events were seen.
     assert.ok(
       events >= 3,
       `the live session must be durable while the agent runs (saw ${events} events, probe ${JSON.stringify(probe)})\n${run.output()}`,

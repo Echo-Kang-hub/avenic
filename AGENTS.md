@@ -90,7 +90,8 @@ a projection must never let provenance break continuity. Concretely:
   conversation, in any mode. Shared says what the project *can* do, never what
   one launch must do. Entering the shared conversation is explicit: `avenic
   sessions continue <id> --agent <agent>`, the sessions menu, or the agent's
-  own `/resume`. Resume arguments on an unrequested launch were the 1.8.3 P0.
+  own `/resume`. Resume arguments on an unrequested launch were the P0 of the
+  1.8.2 that shipped; 1.8.3 removes them.
 - The target agent receives the *delta* it has not seen — its own turns are
   never sent back to it — projected through the agent's official surface
   (`session-interop.mjs`, `projection.mjs`, `adapters/*`).
