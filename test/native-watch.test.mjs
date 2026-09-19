@@ -46,6 +46,51 @@ test("a durability pass does not move the active session", async () => {
   }, { sessions: 2, records: 4 });
 });
 
+test("a durability pass does not cancel the selection the exit still owes", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds, appendRecords }) => {
+    const { getActiveCanonicalSessionId } = await import("../packages/core/src/runtime/config.mjs");
+    const { finishLaunch } = await import("../packages/core/src/runtime/session-interop.mjs");
+    // The agent writes what turn out to be its final bytes, a durability pass
+    // imports them while it may not select, and the exit pass then finds
+    // nothing new on disk. The conversation the run produced must still become
+    // the active one — otherwise the next launch silently starts a new
+    // conversation instead of continuing it.
+    await appendRecords(sessionIds[0], 2);
+    const watch = await flushNativeSessions(projectRoot, "claude", { environment });
+    assert.equal(watch.imported, 1, "the watch must have imported the file while the agent was still writing");
+
+    const exit = await finishLaunch(projectRoot, "claude", { environment, setActive: true });
+
+    assert.equal(exit.imported, 0, "the exit pass must find the file already imported");
+    assert.equal(await getActiveCanonicalSessionId(projectRoot), `claude-${sessionIds[0]}`);
+  }, { sessions: 1, records: 4 });
+});
+
+test("when only a watch has imported the conversations, the one written last is selected", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds, appendRecords }) => {
+    const { getActiveCanonicalSessionId } = await import("../packages/core/src/runtime/config.mjs");
+    const { importProjectSessions } = await import("../packages/core/src/runtime/session-interop.mjs");
+    // Two conversations were written while only passes that may not select
+    // were looking. The first pass that may select picks the one that moved
+    // last, and the older conversation must not take over a later pass.
+    await appendRecords(sessionIds[0], 2);
+    await flushNativeSessions(projectRoot, "claude", { environment });
+    await delay(25);
+    await appendRecords(sessionIds[1], 2);
+    await flushNativeSessions(projectRoot, "claude", { environment });
+
+    await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(await getActiveCanonicalSessionId(projectRoot), `claude-${sessionIds[1]}`);
+
+    await importProjectSessions(projectRoot, "claude", { environment });
+    assert.equal(
+      await getActiveCanonicalSessionId(projectRoot),
+      `claude-${sessionIds[1]}`,
+      "a conversation an earlier pass already resolved must not take over a later one",
+    );
+  }, { sessions: 2, records: 4 });
+});
+
 test("the watch keeps capturing while the agent runs and stops on request", async () => {
   await withClaudeProject(async ({ projectRoot, environment, sessionIds, appendRecords }) => {
     const watcher = startNativeWatch(projectRoot, "claude", { environment, intervalMs: 40 });

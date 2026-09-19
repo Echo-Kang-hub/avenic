@@ -192,8 +192,15 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
   const captured = options.skipCapture
     ? { count: 0, changed: false, diagnostics: [] }
     : await adapter.capture(projectRoot, { ...options, cursors });
-  let discovered = 0; let imported = 0; let unchanged = 0; let skipped = 0; let failed = 0;
+  let discovered = 0; let imported = 0; let unchanged = 0; let skipped = 0; let failed = 0; let selected = 0;
   const diagnostics = [...(captured.diagnostics ?? [])];
+  // Files some pass imported while it was not allowed to select them (the
+  // durability watch, startup recovery, `sessions sync`) still owe a
+  // selection. Without one, a clean launch whose final bytes the watch
+  // happened to import first never becomes the active conversation — the exit
+  // pass finds the very stamp the watch recorded and skips the file — and the
+  // next launch silently starts a new conversation instead of continuing it.
+  const pending = [];
   for (const relative of await listFiles(portable)) {
     if (!isConversationFile(relative)) continue;
     const absolute = path.join(portable, relative);
@@ -201,10 +208,12 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
     // The bookmark records the portable file as it was when it was last
     // imported, which is deliberately not the same stamp the capture just
     // refreshed: a capture that copied new bytes must still be imported.
-    if (bookmark?.canonicalId && bookmark.imported === true && sameStamp(bookmark.importedStamp, await stampOf(absolute))) {
+    const stamp = await stampOf(absolute);
+    if (bookmark?.canonicalId && bookmark.imported === true && sameStamp(bookmark.importedStamp, stamp)) {
       discovered += 1;
       skipped += 1;
       unchanged += 1;
+      if (bookmark.pending === true) pending.push({ relative, canonicalId: bookmark.canonicalId, at: stamp?.mtimeMs ?? 0 });
       continue;
     }
     let native;
@@ -237,7 +246,10 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       // everything the target already had.
       ...(appended.added > 0 ? { lastCanonicalEventId: native.events.at(-1)?.id ?? null } : {}),
     });
-    if (options.setActive !== false) await setActiveCanonicalSession(projectRoot, canonicalId);
+    if (options.setActive !== false) {
+      await setActiveCanonicalSession(projectRoot, canonicalId);
+      selected += 1;
+    }
     if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
     files[relative] = {
       ...bookmark,
@@ -245,8 +257,22 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       canonicalId,
       nativeSessionId: native.nativeSessionId,
       imported: true,
+      pending: options.setActive === false,
     };
     if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
+  }
+  // The selection the skipped files are owed. A pass that may select decides
+  // by the same rule an import always has: the file that moved last is the
+  // conversation that counts — for a launch's exit pass, the run that just
+  // ended, whatever the watch imported first. Every claim is resolved by this
+  // pass either way, so a conversation imported out of order cannot take over
+  // a later pass.
+  if (options.setActive !== false && pending.length > 0) {
+    if (selected === 0) {
+      const newest = pending.reduce((best, item) => (item.at >= best.at ? item : best));
+      await setActiveCanonicalSession(projectRoot, newest.canonicalId);
+    }
+    for (const item of pending) files[item.relative].pending = false;
   }
   if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
   return { ...captured, discovered, imported, unchanged, skipped, failed, diagnostics };
