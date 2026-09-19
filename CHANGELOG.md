@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.8.0 / 1.6.1 - 2026-09-19
+
+- **The terminal has a face of its own.** Avenic's brand is red-orange, and it
+  starts with the `AVENIC` wordmark: a fixed twelve-row asset that is the design
+  it is meant to be — the same eleven rows every time, held byte for byte
+  against the script that drew it, and printed only where it belongs (`init`,
+  `change`, `sessions`, `skills`, the wizard). `status` and self-update answer
+  with a one-line brand instead, and a plain `avenic claude` prints neither, so
+  starting an agent costs nothing but the agent.
+- The colour system is one module with names, not a scatter of escape codes:
+  `◆` and `◇` sections, the `▸` cursor, `◉`/`○` selections, and the rows you
+  have chosen are red-orange; green is left to mean only "success" and
+  "current", yellow warns, red is an error, and grey is secondary. Every surface
+  picks the same token for the same meaning, so no screen can drift from the
+  others. TrueColor is used when the terminal advertises it, then 256 colours,
+  then sixteen; `NO_COLOR` removes the colour and keeps the layout exactly as it
+  was.
+- Redrawing stayed that cheap on purpose. The mark renders in 0.03 ms at the
+  median and the heaviest keypress paints its frame in 0.11 ms, measured from
+  the write to the next console write, against budgets of 5 ms and 16 ms. No
+  keypress reads the filesystem, the core, git, the registry or history: a
+  filtered list is a repaint, not a lookup.
+- Every terminal surface now has a golden that a machine cannot disagree with:
+  eighteen screens — logo, wizard, a change, the Sessions menu, a Skills list
+  with the search open and several rows chosen, the status page, a narrow
+  terminal, `NO_COLOR`, a pipe, progress, a summary, an error — rendered through
+  the production code and compared to a fixture that reads like the screen it
+  describes. The goldens pin the colour depth, so a fixture rendered on one
+  machine passes on the next one; the same suite runs green on Windows and on
+  Linux.
+- Those screens are also captured from a real terminal, because a frame only
+  repaints when stdout is a TTY: a ConPTY pseudoconsole on Windows and a pty on
+  Linux, both driven from the test harness. The `AVENIC` wordmark and every rail
+  are identical on both.
+- **A turn of a shared conversation now travels whole.** Handing Claude or
+  Codex the history it has not seen used to clip every turn to the budget meant
+  for a summary, so a long answer arrived cut off in the middle and the
+  receiving agent could not tell — the one failure Shared mode exists to
+  prevent. The bound is now the whole projection rather than each turn, and
+  Claude's context arrives as a file, so the size limit that once applied to a
+  command-line argument no longer applies at all.
+- The extension's Sessions and dashboard pages carry the same brand tokens
+  (`--avenic-brand`, `--avenic-brand-strong`) instead of the old cyan, and still
+  take every other colour from the editor's theme, so light, dark and
+  high-contrast themes stay readable.
+
 ## 1.7.0 / 1.6.0 - 2026-09-19
 
 - **Shared history is one conversation.** In Shared mode, Claude Code, Codex

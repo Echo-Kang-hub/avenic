@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+- The Sessions and dashboard pages now wear the product's own brand: the
+  red-orange `--avenic-brand` tokens replace the old cyan, so the panel, the
+  terminal and the wordmark are recognisably one product. Green is still what
+  marks "active" and "current", yellow warns, red is an error, and every other
+  colour still comes from the editor's own theme, so light, dark and
+  high-contrast themes stay readable. The page still loads no remote content and
+  sets no user data as HTML.
+
 ## 0.5.0
 
 - Added a Sessions page: the shared conversation, read in the editor. It is the
