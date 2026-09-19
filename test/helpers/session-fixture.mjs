@@ -64,7 +64,7 @@ async function writeRuntime(projectRoot, agents, sessionInterop) {
 async function writeFakeAgent(bin, name) {
   await mkdir(bin, { recursive: true });
   const target = path.join(bin, `${name}.mjs`);
-  await writeFile(target, `import { appendFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+  await writeFile(target, `import { appendFileSync, existsSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 const startedAt = Date.now();
@@ -123,9 +123,44 @@ if (process.argv[2] === "app-server") {
 } else {
 const canonical = path.join(process.cwd(), ".agents", "sessions", "canonical");
 const snapshot = () => { try { return readdirSync(canonical); } catch { return []; } };
+// \`--session-id <id>\` is the official CLI's "open this exact session" contract,
+// and a real Claude Code creates the transcript under its projects directory
+// when it sees one. The stand-in does the same, so a bootstrap continuation —
+// the path taken when the mapped native session is gone — has a real session
+// to read back afterwards instead of failing a launch that really succeeded.
+{
+  const argv = process.argv.slice(2);
+  const index = argv.indexOf("--session-id");
+  const id = index >= 0 ? argv[index + 1] : null;
+  if (id) {
+    const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".claude");
+    const projectDirectory = path.join(claudeHome, "projects", process.cwd().replace(/[^a-zA-Z0-9]/g, "-"));
+    mkdirSync(projectDirectory, { recursive: true });
+    const file = path.join(projectDirectory, \`\${id}.jsonl\`);
+    if (!existsSync(file)) {
+      const lines = Array.from({ length: 4 }, (_, i) => JSON.stringify({
+        type: i % 2 === 0 ? "user" : "assistant",
+        uuid: \`session-id-\${i}\`,
+        sessionId: id,
+        timestamp: new Date(Date.UTC(2026, 6, 1) + i * 1000).toISOString(),
+        cwd: process.cwd(),
+        message: { role: i % 2 === 0 ? "user" : "assistant", model: "claude-sonnet-5", content: [{ type: "text", text: \`session-id message \${i}\` }] },
+      }));
+      writeFileSync(file, \`\${lines.join("\\n")}\\n\`);
+    }
+  }
+}
+// What native storage held at the instant the official TUI started. A test
+// that asserts a resume is safe needs to see the store the resume will read,
+// not the store as it stands after the launch's exit capture rebuilt it.
+const nativeList = () => {
+  const root = process.env.AVENIC_AGENT_NATIVE_LIST;
+  if (!root) return null;
+  try { return readdirSync(root); } catch { return null; }
+};
 if (probe) {
   mkdirSync(path.dirname(probe), { recursive: true });
-  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), startedAt }));
+  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), native: nativeList(), startedAt }));
 }
 // AVENIC_AGENT_WRITE lets a test drive a live agent: the file a working agent
 // is appending to, how many records, and how long to stay alive afterwards.
@@ -549,12 +584,12 @@ export async function withClaudeProject(run, options = {}) {
      * Run a launch and report both what the agent saw at spawn time and how
      * long the wrapper took to get there.
      */
-    async launch(argumentsList) {
+    async launch(argumentsList, overrides = {}) {
       const probe = path.join(projectRoot, ".agent-probe.json");
       await rm(probe, { force: true });
       const startedAt = Date.now();
       const started = process.hrtime.bigint();
-      const result = helpers.runCli(argumentsList, { AVENIC_AGENT_PROBE: probe });
+      const result = helpers.runCli(argumentsList, { AVENIC_AGENT_PROBE: probe, ...overrides });
       let observed = null;
       try {
         observed = JSON.parse(await readFile(probe, "utf8"));

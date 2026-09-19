@@ -38,13 +38,29 @@ Native input is data, never executable code. Canonical persistence removes crede
 
 ## Sync and conflict model
 
-At launch, Avenic imports the source native session into canonical storage, projects canonical history to the selected target when that target has a verified resumable writer, then launches the agent. At exit it imports the target native delta. Existing native snapshot/restore/lease/watchdog remains responsible for project-mode storage isolation.
+A plain launch is the agent's own run: `avenic <agent>` hands the official CLI
+exactly the arguments the user typed and nothing else, so it opens a new
+conversation every time — whatever the project's history mode, and whatever any
+mapping happens to record. Shared history says what the project *can* do, never
+what a launch must do. The conversation a run produced is imported into
+canonical storage at exit; nothing is projected or resumed on the way in.
+Existing native snapshot/restore/lease/watchdog remains responsible for
+project-mode storage isolation.
 
-The active canonical session pointer is project-scoped. `avenic claude`,
-`avenic codex`, `avenic opencode`, and `avenic sessions continue` use the same
-continuation path when project sessions are enabled. Authentication scope and
-session scope are independent, giving all four combinations (global/project
-auth x global/project sessions) without copying credentials or moving sessions.
+Continuing is explicit and only explicit: `avenic sessions continue <canonical-id>
+--agent <agent>`, the continuation entry in the sessions menu, or the agent's own
+`/resume`. That is the path that projects shared history into the target agent's
+native storage, and it does so only where the target has a verified resumable
+writer — resuming the mapped native session when the project can still produce
+it, and bootstrapping with a handoff when it cannot. A mapping whose session the
+project no longer holds is repaired there rather than resumed. Authentication
+scope and session scope are independent, giving all four combinations
+(global/project auth × global/project sessions) without copying credentials or
+moving sessions.
+
+The active canonical session pointer is project-scoped bookkeeping, not a launch
+target: it is the conversation `avenic status` reports the project is on, and a
+run's exit sets it to the conversation that run produced.
 
 Events are append-oriented. When two projections append from the same parent, both events are retained as sibling branches. The store emits a conflict diagnostic and never uses silent last-write-wins. A later implementation may offer branch selection; it must not overwrite either branch.
 

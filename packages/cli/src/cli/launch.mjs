@@ -16,7 +16,7 @@ import {
 import { formatSessionDiagnostics } from "#core/runtime/diagnostics.mjs";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
 import { spawnExecutableSync } from "#core/runtime/process.mjs";
-import { finishLaunch, joinLaunchGroup, prepareSharedLaunch } from "#core/runtime/session-interop.mjs";
+import { finishLaunch, joinLaunchGroup } from "#core/runtime/session-interop.mjs";
 import { markLaunchClosing } from "#core/runtime/sessions.mjs";
 import { createInstallContext, managedSkillNames } from "#core/skills/install.mjs";
 import { ensureSkillLinks, formatLinkSummary, linkSummaryChanged, logConflicts } from "#core/skills/links.mjs";
@@ -91,28 +91,17 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
   const sharedSessions = projectConfig(state).sessionInterop === "shared";
   // Recovery for sessions another agent left behind belongs to the explicit
   // `sessions` and `change` commands. A plain launch reaches the official TUI
-  // first and captures its own agent's history on exit, while the runtime
-  // watcher keeps that history durable while it runs.
-  //
-  // In Shared mode that history is one conversation, so a plain launch with no
-  // arguments continues it: the agent's own session receives the turns it is
-  // missing and the user is handed nothing. Arguments mean the user is driving
-  // the official CLI (`avenic codex resume`, `avenic claude -p …`), and that
-  // path is left exactly as it was; `avenic sessions continue` is the explicit
-  // way to choose a session, and the place recovery and reconciliation happen.
+  // first — a new conversation, no projection work, whatever the project's
+  // history mode — and captures its own agent's history on exit, while the
+  // runtime watcher keeps that history durable while it runs. Continuing a
+  // shared conversation is an explicit act (`avenic sessions continue`), which
+  // is also where recovery and reconciliation happen.
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
   // opencode's storage is managed by the official CLI, so it captures without
   // snapshotting or reverting; the group is null for it.
   const group = portableSessions ? await timed("launch-group", () => joinLaunchGroup(projectRoot, agentId, { environment })) : null;
-  if (portableSessions) {
-    // Every project-scoped launch gets a durability watch, whether or not the
-    // agent's native storage is isolated for the run.
-    try {
-      await timed("watchdog", () => spawnSessionWatchdog(agentId, projectRoot, group?.member ?? null, environment));
-    } catch {}
-  }
   if (portableSessions && !options.skipRestore) {
     // Project session records take priority on launch: conflicting native
     // copies are overwritten silently. Native storage is never written to
@@ -130,6 +119,18 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
       }
       throw error;
     }
+  }
+  if (portableSessions) {
+    // Every project-scoped launch gets a durability watch, whether or not the
+    // agent's native storage is isolated for the run. It starts *after* the
+    // restore: a watch is a periodic capture of native storage, and one whose
+    // first pass lands mid-restore reads a half-filled native tree — the exact
+    // shape the capture's "native does not hold it" logic must never treat as
+    // a deletion. The agent cannot have written anything before it starts, so
+    // nothing is left unguarded by waiting.
+    try {
+      await timed("watchdog", () => spawnSessionWatchdog(agentId, projectRoot, group?.member ?? null, environment));
+    } catch {}
   }
   // 启动补齐（spec §5.5）：会话适配器收尾之后、拉起 Agent 之前，按受管集合把缺席/失效的
   // 链接补回来。未安装过 Skills 的项目零副作用（受管集合为空 → 一个字节都不写）。
@@ -150,30 +151,16 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
   } catch (error) {
     console.warn(`⚠ Skills repair skipped: ${error.code ?? error.message}`);
   }
-  // Shared mode, no arguments: continue the one conversation. The projection
-  // is a delta — an up-to-date mapping costs two small reads and no server — and
-  // a launch that cannot attach shared history is still a launch, so a failure
-  // here warns once and never blocks the agent.
-  let launchArguments = argumentsList;
-  if (sharedSessions && argumentsList.length === 0 && !options.skipJoin) {
-    let shared = null;
-    try {
-      shared = await timed("shared", () => prepareSharedLaunch({
-        projectRoot,
-        agentId,
-        environment,
-        activeCanonicalId: state.runtime.activeCanonicalSessionId ?? null,
-      }));
-    } catch (error) {
-      console.warn(`⚠ Shared history was not attached: ${error.message}`);
-    }
-    if (shared) {
-      launchArguments = [...shared.launch.argumentsList, ...argumentsList];
-      if (shared.projection?.turns?.length) {
-        console.log(`Continuing shared session ${shared.canonicalId}: ${shared.projection.turns.length} turn(s) from the other agent(s).`);
-      }
-    }
-  }
+  // The official CLI receives exactly the arguments the user typed — nothing
+  // more. `avenic claude` is `claude`: it opens a new conversation every time,
+  // even in a project whose history mode is Shared with an active conversation.
+  // Shared history says what the project *can* do, never what this launch must
+  // do; a resumed conversation is chosen by the user, through
+  // `avenic sessions continue <canonical-id> --agent <agent>` or the agent's
+  // own `/resume`. Injecting a session into a plain launch turned a stale
+  // mapping into `claude --resume <gone-session>` ("No conversation found with
+  // session ID …") and silently forked conversations that were meant to be new.
+  const launchArguments = argumentsList;
   const runtime = await timed("agent-runtime", () => resolveEffectiveAgentRuntime(projectRoot, agentId, {
     state,
     environment,

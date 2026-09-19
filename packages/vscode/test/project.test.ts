@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { PROJECT_ROOT_STATE_KEY, lastProjectRoot, projectRootForActiveEditor, rememberProjectRoot, rememberedProjectRoot, resolveProjectRoot, sameRootPath } from "../src/project.ts";
 
@@ -21,6 +25,22 @@ test("no folders returns null", () => {
 
 test("multi-root returns null (caller must pick)", () => {
   assert.equal(resolveProjectRoot([{ uri: { fsPath: "C:/a" } }, { uri: { fsPath: "C:/b" } }]), null);
+});
+
+// 配置命令落在用户选中的那个文件夹上，不会顺着仓库往上飘（与 `avenic init` 同一条规则：
+// 初始化的是当前目录，不是 git 根）。这条用例只有在有人给解析链加上 git 根提升时才会红。
+test("a folder nested in a git repository is never promoted to the repository root", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-git-subdir-"));
+  try {
+    const nested = path.join(root, "packages", "app");
+    await mkdir(nested, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    const folders = [{ uri: { fsPath: nested } }];
+    assert.equal(resolveProjectRoot(folders), nested);
+    assert.equal(projectRootForActiveEditor(folders, path.join(nested, "src", "index.ts")), nested);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("remember/last round-trips through state", () => {

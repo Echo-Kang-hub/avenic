@@ -18,7 +18,6 @@ import {
   agentSessionsRoot,
   configureProject,
   effectiveAgentConfig,
-  getActiveCanonicalSessionId,
   loadRuntime,
   projectAuthEnvironment,
   projectConfig,
@@ -382,14 +381,25 @@ export async function ensureNativeProjection({ projectRoot, canonicalId, targetA
   // sub-agent thread is continued through its parent. An adapter that knows the
   // difference answers here, before anything is read or started, and the
   // mapping keeps naming the session Avenic actually saw.
-  const mapped = existing?.nativeSessionId && typeof adapter.resolveResumableSession === "function"
-    ? await adapter.resolveResumableSession(projectRoot, existing.nativeSessionId, { environment })
-    : existing?.nativeSessionId ?? null;
-  if (!force && mapped && durable && existing.lastCanonicalEventId === tail) {
+  const named = existing?.nativeSessionId ?? null;
+  const mapped = named && typeof adapter.resolveResumableSession === "function"
+    ? await adapter.resolveResumableSession(projectRoot, named, { environment })
+    : named;
+  // A mapping can outlive the conversation it names — that is a ghost mapping,
+  // and resuming one can only fail ("No conversation found with session ID").
+  // The adapter answers whether either store still holds it; when it does not,
+  // the mapping is dropped and the projection is rebuilt from canonical
+  // history, which is the one path that always works. The question is asked of
+  // the session the mapping names: a derived resume target (a Codex
+  // sub-agent's parent thread) is held exactly when that rollout is.
+  const held = !named || typeof adapter.hasProjectCopy !== "function"
+    ? true
+    : await adapter.hasProjectCopy(projectRoot, named, { environment }).catch(() => true);
+  if (!force && mapped && held && durable && existing.lastCanonicalEventId === tail) {
     return { nativeSessionId: mapped, status: "current", mapping: existing, launch: null };
   }
   const stored = await readCanonicalSession(projectRoot, canonicalId);
-  const result = await project({ session: stored.session, events: stored.events, mapping: force ? null : existing, intent, projectRoot }, { environment });
+  const result = await project({ session: stored.session, events: stored.events, mapping: force || !held ? null : existing, intent, projectRoot }, { environment });
   if (!result?.nativeSessionId) throw new Error(`${targetAgent} projection did not return a native session id`);
   const mapping = await syncNativeMapping(projectRoot, canonicalId, {
     agentId: targetAgent,
@@ -483,36 +493,14 @@ function projectionLaunch(adapter, projected) {
   return null;
 }
 
-/**
- * What a plain launch needs in order to continue the shared conversation
- * instead of starting a native session of its own.
- *
- * Returns null whenever that is not possible — no shared conversation yet, a
- * projection the target cannot take, a canonical session that was deleted — and
- * the caller launches exactly as it would have. A plain launch never degrades
- * into a prompt: the shared history reaches the agent through the agent's own
- * session, or it is not attached at all.
- */
-export async function prepareSharedLaunch({ projectRoot, agentId, environment, activeCanonicalId = null }) {
-  const canonicalId = activeCanonicalId ?? await getActiveCanonicalSessionId(projectRoot);
-  if (!canonicalId) return null;
-  const adapter = getSessionAdapter(agentId);
-  if (!adapter) return null;
-  try {
-    await readCanonicalSessionRecord(projectRoot, canonicalId);
-  } catch {
-    return null;
-  }
-  const projected = await ensureNativeProjection({
-    projectRoot,
-    canonicalId,
-    targetAgent: agentId,
-    environment,
-    intent: "launch",
-  });
-  const launch = projectionLaunch(adapter, projected);
-  return launch ? { canonicalId, ...projected, launch } : null;
-}
+// A plain launch never resumes. This module used to expose a
+// `prepareSharedLaunch` that a launch called to continue the active shared
+// conversation by prepending the agent's resume arguments; it was the source
+// of the 1.8.3 P0 — `avenic claude` silently resumed whatever conversation
+// happened to be active, and a mapping whose native session had been reverted
+// turned into `claude --resume <gone-id>` ("No conversation found with session
+// ID …"). Continuing is `prepareCanonicalContinuation`, reached only from the
+// explicit `avenic sessions continue` path.
 
 export async function prepareCanonicalContinuation(projectRoot, canonicalSessionId, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);

@@ -42,6 +42,38 @@ test("a warm plain launch starts the agent without scanning history", async () =
   }, { sessions: 12, records: 120 });
 });
 
+/**
+ * The fastest warm launch in a project of a given size: one throwaway launch
+ * first, so the history is already imported and the runs being timed are the
+ * ones a user makes every day, then three timed launches and the quickest of
+ * them — the sample least polluted by whatever else the machine is doing.
+ */
+async function fastestWarmLaunch(options, runs = 2) {
+  let measured = null;
+  await withClaudeProject(async ({ launch }) => {
+    await launch(["claude"]);
+    const samples = [];
+    for (let index = 0; index < runs; index += 1) samples.push((await launch(["claude"])).toAgentMs);
+    measured = Math.min(...samples);
+  }, options);
+  return measured;
+}
+
+test("the wait before a plain launch starts does not grow with the project's history", async () => {
+  // The pre-spawn work is about the project, not about how many conversations
+  // it holds. A hundred against three: a per-session scan would be many times
+  // slower in the larger project, while the allowance here is a factor of three
+  // plus fixed slack — wide enough that machine noise cannot trip it, narrow
+  // enough that linear work cannot hide inside it.
+  const few = await fastestWarmLaunch({ sessions: 3, records: 3 });
+  const many = await fastestWarmLaunch({ sessions: 100, records: 3 });
+  assert.ok(Number.isFinite(few) && Number.isFinite(many), `both launches must reach the agent (${few} / ${many})`);
+  assert.ok(
+    many < few * 3 + 250,
+    `100 conversations took ${many} ms to reach the agent, against ${few} ms for 3`,
+  );
+});
+
 test("a plain launch never blocks on importing pre-existing history", async () => {
   await withClaudeProject(async ({ launch, projectRoot }) => {
     const result = await launch(["claude"]);

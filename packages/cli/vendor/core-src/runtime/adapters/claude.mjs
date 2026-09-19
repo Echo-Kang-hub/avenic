@@ -143,6 +143,20 @@ export function claudeProjectKey(projectRoot) {
   return path.resolve(projectRoot).replace(/[^a-zA-Z0-9]/g, "-");
 }
 
+// Whether any copy of one conversation still exists for this project. The
+// portable store is the durable one; native storage counts too, because a run
+// that is live right now keeps its session there until the exit capture. A
+// mapping can outlive both — that is the "ghost mapping" a revert plus an old
+// deletion pass used to leave behind, where `claude --resume <id>` answers
+// "No conversation found with session ID" — and status must read that as
+// missing rather than current.
+export async function hasProjectCopy(projectRoot, nativeSessionId, options = {}) {
+  if (!nativeSessionId) return false;
+  const { native, portable } = locations(projectRoot, options.environment);
+  const name = `${nativeSessionId}.jsonl`;
+  return existsSync(path.join(portable, name)) || existsSync(path.join(native, name));
+}
+
 function locations(projectRoot, environment = process.env) {
   const claudeHome = environment.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
   return {

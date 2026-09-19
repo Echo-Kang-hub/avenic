@@ -246,6 +246,25 @@ export async function resolveResumableSession(projectRoot, nativeSessionId, opti
   }
 }
 
+// Whether the project still holds a copy of one conversation. The portable
+// tree comes first — it is the durable one, and it is project-sized — but a
+// rollout the app server created moments ago lives only in native storage
+// until the run's exit capture lands, and a mapping naming one of those is a
+// conversation the user can still resume. Codex keeps every workspace's
+// rollouts in one directory, so a native match only counts when its head says
+// it belongs to this project. A mapping whose conversation exists in neither
+// store is a ghost, and status must read it as missing rather than current.
+export async function hasProjectCopy(projectRoot, nativeSessionId, options = {}) {
+  if (!nativeSessionId) return false;
+  const { nativeSessions, portable } = locations(projectRoot, options.environment);
+  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  // Everything under the project's own sessions root belongs to the project,
+  // so a portable match needs no further question.
+  if (await rolloutMetaById(path.join(portable, "sessions"), nativeSessionId, cursors)) return true;
+  const meta = await rolloutMetaById(nativeSessions, nativeSessionId, cursors);
+  return Boolean(meta) && samePath(meta.cwd, projectRoot);
+}
+
 function locations(projectRoot, environment = process.env) {
   const codexHome = environment.CODEX_HOME || path.join(homedir(), ".codex");
   return {

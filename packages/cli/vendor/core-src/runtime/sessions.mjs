@@ -144,10 +144,28 @@ export async function snapshotFiles(sourceRoot, relativeFiles, destination, tran
   });
 }
 
-// Copy only the native files whose stamp moved since the last capture, and
-// drop destination files whose native source is gone. A repeated capture with
-// nothing new must touch nothing: that is the common case for every launch
-// after the first.
+// Copy only the native files whose stamp moved since the last capture. A
+// repeated capture with nothing new must touch nothing: that is the common case
+// for every launch after the first.
+//
+// Capture is additive: a native file's absence never deletes its destination
+// copy. Native storage here is a cache the run borrows and gives back — the
+// first launch of a project+agent group snapshots it and the exit reverts it,
+// so *every* session a previous run produced is absent from native storage
+// most of the time. The portable files under `.agents/sessions/<agent>` are the
+// project's durable record (committed to git, and after a revert the only
+// copy), and a deletion pass keyed on "native does not hold it" therefore
+// deleted exactly the sessions the project had just saved. That is how a
+// project ends up with canonical history whose portable half is missing —
+// `claude --resume <id>` then answers "No conversation found with session ID".
+// The same rule covers the freshly cloned project, where native storage
+// starts empty and portable holds the whole history.
+//
+// A caller whose native store is nobody's cache asks for `remove: true`
+// instead. OpenCode's own session store is never snapshotted or reverted, so a
+// session missing from its list was deleted by the user, and keeping the
+// project's copy would import the deleted conversation back on the next
+// launch.
 //
 // An entry is either `{ relative, source }` — a file, stamped by its own
 // stat — or `{ relative, stamp, produce }`, for an agent whose history is only
@@ -155,16 +173,8 @@ export async function snapshotFiles(sourceRoot, relativeFiles, destination, tran
 // reported plus a function that fetches the content, which is called only when
 // that revision moved. A `stamp` of null means "this agent reports no
 // revision", and such an entry is always produced.
-export async function syncDirectory(entries, destinationRoot, transform, cursors, agentId) {
+export async function syncDirectory(entries, destinationRoot, transform, cursors, agentId, options = {}) {
   const files = agentCursors(cursors, agentId);
-  // No entries means the source had nothing to offer this run — a native root
-  // that is missing, or a scan that matched no session — and that is not the
-  // same as "every native session was deleted". The removal pass below cannot
-  // tell those apart, and choosing wrong deletes the project's only copy: after
-  // `avenic claude` reverts native storage, the portable files under
-  // `.agents/sessions/claude` are all the project has left, so the next capture
-  // finding no native root must leave them alone. Agents whose native history
-  // can be genuinely empty return before this point and report why.
   if (entries.length === 0) return { added: 0, updated: 0, unchanged: 0, removed: 0 };
   const seen = new Set();
   let added = 0;
@@ -192,12 +202,14 @@ export async function syncDirectory(entries, destinationRoot, transform, cursors
     if (destinationStamp) updated += 1; else added += 1;
   }
   let removed = 0;
-  for (const relative of await listFiles(destinationRoot)) {
-    if (seen.has(relative)) continue;
-    await rm(path.join(destinationRoot, relative), { force: true });
-    await removeEmptyDirectories(path.dirname(path.join(destinationRoot, relative)), destinationRoot);
-    delete files[relative];
-    removed += 1;
+  if (options.remove === true) {
+    for (const relative of await listFiles(destinationRoot)) {
+      if (seen.has(relative)) continue;
+      await rm(path.join(destinationRoot, relative), { force: true });
+      await removeEmptyDirectories(path.dirname(path.join(destinationRoot, relative)), destinationRoot);
+      delete files[relative];
+      removed += 1;
+    }
   }
   return { added, updated, unchanged, removed };
 }

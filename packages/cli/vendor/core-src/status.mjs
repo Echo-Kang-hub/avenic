@@ -83,19 +83,40 @@ async function projectionsOf(projectRoot, activeSessionId) {
 /**
  * The sync word for one agent, in the order the words stop being true: a live
  * launch owns this agent's history right now, a dead one left it incomplete,
- * an uninitialized agent has nothing to be in sync with, a projection behind
- * its canonical events needs rehydrating, and history the project expects but
- * does not hold is missing.
+ * an uninitialized agent has nothing to be in sync with, a conversation the
+ * project is supposed to hold but holds nowhere is missing, and a projection
+ * behind its canonical events needs rehydrating.
+ *
+ * "Holds nowhere" is asked of the conversation the mapping names, not of the
+ * project's session count: a project with fifty healthy sessions and one ghost
+ * mapping is not current. That ghost — a mapping whose native and portable
+ * copies are both gone — is precisely the state that makes the next resume
+ * answer "No conversation found with session ID".
  */
-function syncState({ initialized, launchGroup, projection, lastEventId, sessions }) {
+function syncState({ initialized, launchGroup, projection, projectionMissing, lastEventId, sessions }) {
   if (!initialized) return "none";
   if (launchGroup === "running") return "running";
   if (launchGroup === "interrupted") return "dirty";
   if (projection) {
     if (projection.lastCanonicalEventId && lastEventId && projection.lastCanonicalEventId !== lastEventId) return "stale";
-    if (sessions === 0) return "missing";
+    if (projectionMissing || sessions === 0) return "missing";
   }
   return "current";
+}
+
+// Whether the conversation the mapping names exists in any of the project's
+// stores. Adapters that cannot answer cheaply are left out and the aggregate
+// count decides, exactly as before.
+async function projectionSessionMissing(projectRoot, agentId, projection, context) {
+  if (!projection?.nativeSessionId) return false;
+  const adapter = getSessionAdapter(agentId);
+  if (typeof adapter.hasProjectCopy !== "function") return false;
+  try {
+    return !(await adapter.hasProjectCopy(projectRoot, projection.nativeSessionId, { environment: context.environment }));
+  } catch {
+    // A predicate that cannot answer must not become a health claim.
+    return false;
+  }
 }
 
 async function agentOverview(projectRoot, agentId, context) {
@@ -106,6 +127,7 @@ async function agentOverview(projectRoot, agentId, context) {
   const sessions = await adapter.status(projectRoot).then((status) => status.count).catch(() => null);
   const launchGroup = await launchGroupState(agentId, projectRoot);
   const projection = context.projections[agentId] ?? null;
+  const projectionMissing = await projectionSessionMissing(projectRoot, agentId, projection, context);
   return {
     id: agentId,
     displayName: agent.displayName,
@@ -122,7 +144,14 @@ async function agentOverview(projectRoot, agentId, context) {
       sessions: sessions ?? 0,
       launchGroup,
       projection,
-      sync: syncState({ initialized: Boolean(configured), launchGroup, projection, lastEventId: context.history.activeLastEventId, sessions: sessions ?? 0 }),
+      sync: syncState({
+        initialized: Boolean(configured),
+        launchGroup,
+        projection,
+        projectionMissing,
+        lastEventId: context.history.activeLastEventId,
+        sessions: sessions ?? 0,
+      }),
     },
   };
 }

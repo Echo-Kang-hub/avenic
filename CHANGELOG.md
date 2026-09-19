@@ -1,5 +1,85 @@
 # Changelog
 
+## 1.8.3 / 1.6.4 / 0.5.4 - 2026-09-19
+
+- **A plain launch is a new conversation — every time.** `avenic claude` used to
+  continue the project's active shared conversation whenever the history mode
+  was Shared, by prepending the agent's own resume arguments before spawning it.
+  That handed the official CLI a session nobody had chosen. Two failures came
+  out of the same line: a launch that was meant to start fresh silently forked
+  the shared thread, and any mapping whose native session had since gone
+  produced `claude --resume <gone-session>`, which dies with "No conversation
+  found with session ID …" before the TUI ever appears. Native storage is
+  reverted on every exit, so a mapping that was fine when it was written is
+  routinely stale by the next launch — the second failure was reachable on
+  ordinary use, and was reproduced on the published 1.8.2 against a real
+  project. The official CLI now receives exactly the arguments the user typed,
+  in every mode: Shared says what the project *can* do, never what one launch
+  must do. Three plain runs produce three conversations, each discoverable;
+  continuing one is explicit and unchanged — `avenic sessions continue <id>
+  --agent <agent>`, the sessions menu, or the agent's own `/resume`.
+- **Capture is additive: a native file's absence no longer deletes the
+  project's copy.** The capture pass copied native sessions into
+  `.agents/sessions/<agent>` and then removed every destination file whose
+  native source was gone — but native storage is a cache the run borrows and
+  gives back, empty of every earlier session most of the time. So the pass
+  deleted precisely the sessions the project had just saved: portable files
+  disappeared while the canonical history they had already been imported into
+  stayed, which is a project whose canonical side names conversations its
+  portable side cannot produce. Capture now only ever copies; the one caller
+  whose native store genuinely reflects deletions (opencode, whose store Avenic
+  neither snapshots nor reverts) asks for removal explicitly. This is the
+  defect that made a real project's `.agents/sessions/canonical/` hold many
+  `claude-*` sessions while `.agents/sessions/claude/` held far fewer.
+- **A conversation claimed by a pass that may not select still becomes the
+  active one.** A clean exit could fail to record which conversation had just
+  run: when the background durability watch imported the session's final bytes
+  first, the exit pass found the very stamp the watch recorded and skipped the
+  file — and marking the active conversation lives on the import path, so
+  nothing was ever marked. Imports made by a pass that may not select now leave
+  a pending claim that the next pass which may select resolves, by the rule an
+  import has always used: the conversation that moved last. The durability
+  watch also no longer starts before the native restore it would otherwise
+  photograph half-filled.
+- **A mapping whose conversation is held nowhere is dropped, not resumed.** The
+  projection still asks whether the session a mapping names exists in either
+  store; when it does not, the mapping is discarded and the conversation is
+  rebuilt from canonical history, which is the one path that always works.
+  `avenic status` reports the same state as `missing` — asked of the
+  conversation the mapping names, not of the project's session count, since a
+  project with fifty healthy sessions and one ghost mapping is not current.
+- **`avenic init` initializes the directory you are in.** It used to walk up to
+  the repository root, so running it in a subdirectory configured the whole
+  checkout. It now configures exactly `process.cwd()`; `--root <path>` names
+  another directory. A directory inside another Avenic project asks first —
+  "Current directory is inside another Avenic project: <parent>. Initialize this
+  directory as a separate project?" — and a non-interactive run refuses instead
+  of guessing. `avenic change` still edits the project the directory belongs to.
+- **The setup wizard is one rail.** Every question of `avenic init` and
+  `avenic change` now renders as a single continuous record: answered steps
+  collapse to a `◇` title with a dim summary under it, the active step is the
+  only expanded one (`◆`, in the brand's own orange), and the cursor, selection
+  and help line are the same in every prompt. Shift+Tab re-opens the previous
+  step with the answer it already has, keeping later answers in memory and
+  submitting only the agents still enabled; Esc and Ctrl+C cancel the whole
+  wizard, and nothing is written before the final Confirm. The two flows share
+  one state machine and one set of questions, which the VS Code extension
+  consumes as well, so a host decides how to draw a step and never what the
+  steps are.
+- **Esc is answered at once.** Node's key decoder holds a lone escape for its
+  sequence timeout (500 ms) waiting for the rest of an escape sequence, and
+  every prompt in the product runs through that one decoder — so dismissing a
+  prompt cost half a second of nothing. The timeout is now 50 ms, far longer
+  than the gap inside a real escape sequence and far shorter than anyone can
+  feel. Measured: 507 ms → 83 ms from keypress to the cancelled frame.
+- **The extension's Initialize and Configure are the same wizard.** The
+  project-configuration command walks the shared steps as QuickPicks: the
+  question in the title bar with its position, answered steps folded above it,
+  the current value highlighted, and VS Code's own Back button on every step
+  but the first. It configures the selected workspace folder exactly — a folder
+  inside a repository is never promoted to the repository root — and the
+  extension's per-agent Initialize keeps its single combined choice.
+
 ## 1.8.2 / 1.6.3 / 0.5.3 - 2026-09-19
 
 - **A launch always leaves its conversation active.** A clean exit could fail

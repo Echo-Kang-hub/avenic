@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.4
+
+- **Initialize and Configure are one progressive wizard.** The project
+  configuration command walks the same questions `avenic init` and
+  `avenic change` ask, in the same order, from core — the extension draws them:
+  the question and its position in the title bar, answered steps folded above
+  it as `◇ title — answer`, the current value highlighted, and VS Code's own
+  Back button on every step but the first. Escape leaves the project untouched;
+  nothing is written until the final Yes. A project that already has a
+  configuration opens in change mode ("Select enabled agents", each step
+  preselected), a directory nobody has configured opens in initialize mode.
+  The step list, the draft and the write are core's; the extension no longer
+  collects choices by hand, so the hosts cannot drift apart.
+- **Configure Project writes to the folder you selected.** A workspace folder
+  nested inside a repository is never promoted to the repository root, and a
+  multi-root workspace still asks which folder rather than guessing.
+- Ships core 1.6.4: a plain launch is a new conversation every time, capture no
+  longer deletes the project's durable copy of a session whose native file is
+  gone, and a mapping whose session is held nowhere is rebuilt from canonical
+  history instead of being resumed.
+
 ## 0.5.3
 
 - The Sessions page marks the conversation a run just ended as active again.

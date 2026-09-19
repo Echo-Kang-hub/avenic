@@ -13,15 +13,6 @@ function ancestors(startDirectory) {
   }
 }
 
-function findMarker(startDirectory, relativeMarker) {
-  for (const directory of ancestors(startDirectory)) {
-    if (existsSync(path.join(directory, relativeMarker))) {
-      return directory;
-    }
-  }
-  return null;
-}
-
 function findGitRoot(startDirectory) {
   const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: startDirectory,
@@ -58,13 +49,32 @@ function gitRoot(startDirectory) {
     : findGitRootFromAncestors(startDirectory);
 }
 
+function isProjectDirectory(directory) {
+  return (
+    existsSync(path.join(directory, ".agents", "runtime.json")) ||
+    existsSync(path.join(directory, PROJECT_CONFIG_FILE)) ||
+    existsSync(path.join(directory, LEGACY_PROJECT_CONFIG_FILE))
+  );
+}
+
+/**
+ * The nearest Avenic project at or above a directory, or null. Nearest is the
+ * answer because one repository can hold several projects, and the one a
+ * directory belongs to is the closest one that contains it.
+ */
+export function enclosingProjectRoot(startDirectory = process.cwd(), options = {}) {
+  const chain = ancestors(path.resolve(startDirectory));
+  for (const directory of options.includeStart === false ? chain.slice(1) : chain) {
+    if (isProjectDirectory(directory)) return directory;
+  }
+  return null;
+}
+
 export function locateProjectRoot(startDirectory = process.cwd()) {
   const start = path.resolve(startDirectory);
-  return (
-    gitRoot(start) ??
-    findMarker(start, path.join(".agents", "runtime.json")) ??
-    findMarker(start, PROJECT_CONFIG_FILE) ??
-    findMarker(start, LEGACY_PROJECT_CONFIG_FILE) ??
-    start
-  );
+  // The project a directory belongs to is the nearest one that contains it —
+  // not the repository root it happens to sit under, which is a different
+  // question that a nested project answers differently. The git root is only
+  // the fallback for a directory that is in no project yet.
+  return enclosingProjectRoot(start) ?? gitRoot(start) ?? start;
 }

@@ -1,9 +1,12 @@
 import * as vscode from "vscode";
-import { formatSessionDiagnostics } from "@avenic/core";
+import { applyProjectDraft, formatSessionDiagnostics, projectDraft, projectWizardSteps } from "@avenic/core";
+import type { ProjectDraft } from "@avenic/core";
 import * as agents from "../services/agents.ts";
 import { updateCommandForInstallation } from "../services/agent-versions.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { assertIdle, pickOne } from "../ui/flows.ts";
+import { runProjectWizard } from "../ui/project-wizard.ts";
+import { quickPickHost } from "../ui/quickpick-wizard.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
 
@@ -56,33 +59,31 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.initialize(target.root, target.id, mode.value.auth, mode.value.sessions).then(() => { report("完成"); })), () => deps.refresh());
   });
 
+  // Initialize 与 Configure 是同一场问答的两种模式：目录还没配过就是初始化（第一步标题
+  // "Select agents"），配过就是修改（"Select enabled agents"，各步预选当前值）。问题与
+  // 写盘都来自 core，VS Code 只负责画 —— 与 `avenic init` / `avenic change` 同一份步骤。
   register("avenic.agents.configureProject", async () => {
     if (busy()) return;
     const root = await deps.resolveRoot();
     if (root === null) return;
     const current = await agents.readProjectConfiguration(root);
-    const selected = await vscode.window.showQuickPick(
-      agents.listAgents().map((agent) => ({ label: agent.displayName, id: agent.id, picked: Object.hasOwn(current.agents, agent.id) })),
-      { canPickMany: true, title: "Avenic: Select agents" },
-    );
-    if (selected === undefined || selected.length === 0) return;
-    const draft: agents.ProjectAgentSettings = {};
-    for (const selectedAgent of selected) {
-      const previous = current.agents[selectedAgent.id] ?? { auth: "global", sessions: "project" };
-      const auth = await vscode.window.showQuickPick(["global", "project"], { title: `${selectedAgent.label}: Authentication (current: ${previous.auth})` });
-      if (auth === undefined) return;
-      const sessions = await vscode.window.showQuickPick(["global", "project"], { title: `${selectedAgent.label}: Session storage (current: ${previous.sessions})` });
-      if (sessions === undefined) return;
-      draft[selectedAgent.id] = { auth: auth as "global" | "project", sessions: sessions as "global" | "project" };
+    const editing = Object.keys(current.agents).length > 0;
+    const draft = projectDraft(current);
+    const host = quickPickHost<ProjectDraft>();
+    try {
+      // 整轮问答在队列外；只有提交那一刻的写入进队列（决议 1 / W2a）。
+      const outcome = await runProjectWizard(
+        draft,
+        (unfinished: ProjectDraft) => projectWizardSteps(unfinished, editing),
+        host,
+        (finished) => runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
+          applyProjectDraft(root, finished).then(() => { report("Completed"); }),
+        ), () => deps.refresh()),
+      );
+      if (outcome.applied) await vscode.window.showInformationMessage(`Avenic ${editing ? "配置已更新" : "初始化完成"} · ${root}`);
+    } finally {
+      host.dispose();
     }
-    const history = await vscode.window.showQuickPick([
-      { label: "Shared", value: "shared" as const, description: "Selected agents can continue the same Avenic history" },
-      { label: "Isolated", value: "isolated" as const, description: "Each agent keeps independent histories" },
-    ], { title: `Avenic: Session history (current: ${current.sessionInterop})` });
-    if (history === undefined) return;
-    await runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
-      agents.configureProjectRuntime(root, draft, history.value).then(() => { report("Completed"); }),
-    ), () => deps.refresh());
   });
 
   // 安装/升级官方 Agent CLI（npm @latest）：集成终端实时输出 npm 进度（无文字按钮，

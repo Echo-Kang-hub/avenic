@@ -84,6 +84,53 @@ export interface ProjectConfig {
 }
 export function projectConfig(state: RuntimeState): ProjectConfig;
 export function configureProject(projectRoot: string, draft?: Partial<ProjectConfig>): Promise<RuntimeState & { configChanged: boolean; gitignoreChanged: boolean; config: ProjectConfig }>;
+
+// ---- the project-setup questions, shared by every host UI ----
+//
+// `avenic init`, `avenic change` and the VS Code extension ask the same things
+// in the same order and must write the same configuration. The questions live
+// in core; a host only decides how to draw a step.
+export interface ProjectDraft {
+  selected: string[];
+  agents: Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
+  sessionInterop: "shared" | "isolated";
+}
+export interface ProjectWizardChoice<T = unknown> {
+  value: T;
+  label: string;
+}
+/**
+ * `D` is the draft a step reads and writes. Core's own steps draft a
+ * `ProjectDraft`; a host may declare steps over a smaller draft (the VS Code
+ * per-agent Initialize flow does) and walk them with the same driver.
+ */
+export interface ProjectWizardStep<D = ProjectDraft> {
+  id: string;
+  kind: "single" | "multi";
+  title: string;
+  description?: string;
+  options: ProjectWizardChoice[];
+  /** multi: the currently chosen values. */
+  values?: (draft: D) => string[];
+  minSelected?: number;
+  emptyMessage?: string;
+  /** single: the currently chosen value. */
+  value?: (draft: D) => unknown;
+  write?: (draft: D, value: unknown) => void;
+  /** One dim line: what this step's answer was, for an answered step. */
+  summary?: (draft: D) => string;
+  apply?: boolean;
+  appliedTitle?: string;
+}
+export function agentChoices(): ProjectWizardChoice<string>[];
+export function projectDraft(config: ProjectConfig): ProjectDraft;
+export function projectWizardSteps(draft: ProjectDraft, editing?: boolean): ProjectWizardStep<ProjectDraft>[];
+export function projectDraftSubmission(draft: ProjectDraft): Pick<ProjectConfig, "agents" | "sessionInterop">;
+export function applyProjectDraft(
+  projectRoot: string,
+  draft: ProjectDraft,
+  options?: { environmentForAgent?: (agentId: string) => Record<string, string | undefined> },
+): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
 export function runtimePaths(projectRoot: string): RuntimePaths;
 export function loadRuntime(projectRoot: string): Promise<RuntimeState>;
 export function getActiveCanonicalSessionId(projectRoot: string): Promise<string | null>;
@@ -141,6 +188,7 @@ export function sessionsGitIgnored(projectRoot: string): Promise<boolean>;
 export function setSessionsGitIgnored(projectRoot: string, ignored: boolean): Promise<boolean>;
 
 export function locateProjectRoot(startDirectory?: string): string;
+export function enclosingProjectRoot(startDirectory?: string, options?: { includeStart?: boolean }): string | null;
 export function spawnExecutableSync(
   executable: string,
   argumentsList: string[],

@@ -4,13 +4,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
+  agentChoices,
   agentLabel,
   applyProjectConfiguration,
+  applyProjectDraft,
   agentEnvironment,
   agentExecutableAvailable,
   clearLocalAuth,
   deinitializeAgent,
   effectiveAgentConfig,
+  enclosingProjectRoot,
   getAgent,
   getActiveCanonicalSessionId,
   getSessionAdapter,
@@ -29,6 +32,8 @@ import {
   projectCanonicalSession,
   readCanonicalSession,
   projectConfig,
+  projectDraft,
+  projectWizardSteps,
   sessionsGitIgnored,
   setLocalAuth,
   setSessionsGitIgnored,
@@ -42,7 +47,7 @@ import { dispatchModel } from "./model-cli.mjs";
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect } from "./prompts.mjs";
+import { collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect, warning, wizard } from "./prompts.mjs";
 import { fullLogo } from "./brand.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
 import { loadTranscript, printTranscript, transcriptPreview } from "./transcript-cli.mjs";
@@ -98,75 +103,84 @@ function printResult(title, projectRoot, groups, options = {}) {
   flush();
 }
 
-// The registry is keyed by agent id; a picker needs the id next to the name.
-function agentChoices() {
-  return Object.entries(AGENTS).map(([id, agent]) => ({ value: id, label: agent.displayName }));
+/**
+ * The project wizard, as one state machine: `null` when the user cancelled
+ * (nothing was written), otherwise the applied configuration. The questions
+ * themselves live in core (project-wizard.mjs) so this host and the VS Code
+ * extension ask the same things; this function only draws them and, on the
+ * Apply step, runs the one project-settings writer. Questions are answered in
+ * memory and nothing is written until then.
+ */
+async function interactiveProjectDraft(projectRoot, editing = false, prompts = {}) {
+  const draft = projectDraft(projectConfig(await loadRuntime(projectRoot)));
+  return wizard({
+    ...prompts,
+    draft,
+    stepsFor: (draft_) => projectWizardSteps(draft_, editing),
+    apply: async (draft_) => ({
+      result: await applyProjectDraft(projectRoot, draft_),
+      summary: `Avenic project ${editing ? "updated" : "initialized"} · ${projectRoot}`,
+    }),
+  });
 }
 
-async function interactiveProjectDraft(projectRoot, editing = false, prompts = {}) {
-  const state = await loadRuntime(projectRoot);
-  const current = projectConfig(state);
-  const selected = await multiSelect({
-    ...prompts,
-    title: editing ? "Select enabled agents" : "Select agents",
-    options: agentChoices(),
-    initial: Object.keys(current.agents),
-    minSelected: 1,
-  });
-  if (selected === null) return null;
-  if (selected.length === 0) throw new Error("Select at least one agent");
-  const agents = {};
-  for (const agentId of selected) {
-    const previous = current.agents[agentId] ?? { auth: "global", sessions: "project" };
-    const auth = await singleSelect({
-      ...prompts,
-      title: `${getAgent(agentId).displayName} authentication`,
-      options: [
-        { value: "global", label: "Global" },
-        { value: "project", label: "Project" },
-      ],
-      initial: previous.auth === "project" ? 1 : 0,
-    });
-    if (auth === null) return null;
-    const sessions = await singleSelect({
-      ...prompts,
-      title: `${getAgent(agentId).displayName} session storage`,
-      options: [
-        { value: "global", label: "Global" },
-        { value: "project", label: "Project" },
-      ],
-      initial: previous.sessions === "project" ? 1 : 0,
-    });
-    if (sessions === null) return null;
-    agents[agentId] = { auth, sessions };
-  }
-  const sessionInterop = await singleSelect({
-    ...prompts,
-    title: "Session history",
-    options: [
-      { value: "shared", label: "Shared — selected agents can continue the same Avenic history" },
-      { value: "isolated", label: "Isolated — each agent keeps independent histories" },
-    ],
-    initial: current.sessionInterop === "isolated" ? 1 : 0,
-  });
-  if (sessionInterop === null) return null;
-  return { agents, sessionInterop };
+/**
+ * The directory a `init`/`change` run is about.
+ *
+ * An explicit root wins: the flag the user typed, or the directory a host
+ * passed because the command was invoked on it (VS Code names the selected
+ * workspace folder). Otherwise `init` is about exactly the directory the
+ * command was run in — never the repository root it happens to live in, since
+ * one repository can hold several projects and the directory a user is
+ * standing in is the one they mean. `change` edits the project a directory
+ * belongs to, so it walks up the way every other command does.
+ */
+async function setupRoot(values, editing, options) {
+  const rootOption = takeOption(values, "--root");
+  const explicit = options.projectRootOverride ?? rootOption ?? null;
+  const start = path.resolve(explicit ?? options.cwd ?? process.cwd());
+  if (explicit || !editing) return { projectRoot: start, start, explicit: explicit !== null };
+  return { projectRoot: await locateProjectRoot(start), start, explicit: false };
 }
 
 async function dispatchProjectSetup(argumentsList, editing = false, options = {}) {
   const prompts = options.prompts ?? {};
-  const projectRoot = options.projectRootOverride ?? locateProjectRoot();
+  const values = [...argumentsList];
+  const { projectRoot, start, explicit } = await setupRoot(values, editing, options);
+  // A directory inside another Avenic project can become a project of its own,
+  // but only on purpose: `init` here is a separate project, and the enclosing
+  // one keeps its own configuration. Nothing is guessed and nothing is
+  // redirected upward — without a terminal to ask, the command says so.
+  if (!editing && !explicit) {
+    const enclosing = enclosingProjectRoot(start, { includeStart: false });
+    if (enclosing) {
+      if (!isInteractive(prompts)) {
+        throw new Error(`This directory is inside another Avenic project (${enclosing}). Run \`avenic init\` on a terminal to confirm a separate project, or pass --root <path>.`);
+      }
+      warning(prompts.stdout, `Current directory is inside another Avenic project: ${enclosing}`);
+      const separate = await confirm({
+        ...prompts,
+        title: "Initialize this directory as a separate project?",
+      });
+      if (separate !== true) return 0;
+    }
+  }
   let draft;
-  if (argumentsList.length === 0 && isInteractive(prompts)) {
+  if (values.length === 0 && isInteractive(prompts)) {
     await fullLogo(prompts.stdout);
-    draft = await interactiveProjectDraft(projectRoot, editing, prompts);
-    if (!draft) return 0;
-    console.log();
-    printResult("Avenic project configuration", projectRoot, configurationRows(draft), { labelWidth: 13 });
-    console.log();
-    if (await confirm({ ...prompts, title: "Apply configuration?" }) !== true) return 0;
+    // The wizard is its own result page: every answer appears once, on the rail
+    // it was given on, and the frame it settles with ends in the outcome. There
+    // is no second summary to print.
+    const applied = await interactiveProjectDraft(projectRoot, editing, prompts);
+    if (!applied) return 0;
+    const { config, imported } = applied;
+    if (imported.length) console.log(`Imported native histories from ${imported.length} agent(s) into the shared workspace.`);
+    if (config.sessionInterop === "shared" && imported.length === 0) {
+      const { imported: reconciled } = await reconcileSharedHistory(projectRoot, await loadRuntime(projectRoot));
+      if (reconciled > 0) console.log(`Imported ${reconciled} session(s) into the shared workspace.`);
+    }
+    return 0;
   } else {
-    const values = [...argumentsList];
     const replaceAgentsIndex = values.indexOf("--replace-agents");
     const replaceAgents = replaceAgentsIndex !== -1;
     if (replaceAgents) values.splice(replaceAgentsIndex, 1);
@@ -211,7 +225,7 @@ export function printHelp(io = console) {
 CLI: avenic (shorthand: ave)
 
 Everyday use:
-  avenic init                         Set up this project (interactive on a terminal)
+  avenic init                         Set up this directory as a project (interactive)
   avenic claude | codex | opencode    Start an agent's own TUI
   avenic status                       What this project is, and what state it is in
   avenic skills                       Manage Skills (interactive menu on a terminal)
@@ -221,12 +235,15 @@ Everyday use:
   avenic --version                    Print the installed version
 
 Options for init/change:
+  --root <path>                     Set up this directory instead of the current one
   --agents <claude,codex,opencode>  --replace-agents  Replace the enabled set
   --auth global|project             Credentials from your machine, or from this project
   --sessions global|project         Keep sessions in the agent's own storage, or in the project
   --history shared|isolated         One shared history across agents, or separate histories
 Shared history starts empty and is imported from whatever the agents already
 have; isolated histories are imported on request with \`avenic sessions sync\`.
+A shared project shares a history; a plain launch still opens a new
+conversation every time — \`avenic sessions continue\` is what resumes one.
 
 Sessions:
   avenic sessions list|status          Show shared history and per-agent cursors
@@ -652,7 +669,11 @@ async function sessionActions(projectRoot, sessionId, options = {}) {
       { value: "view", label: "View history", hint: `${transcript.summary.events} events` },
       ...(interop === "shared" ? [
         { value: "continue", label: "Continue with an agent", hint: "the shared conversation, handed over natively" },
-        { value: "active", label: "Set as active session", hint: "new launches join this one" },
+        // "Active" is the conversation `avenic status` reports this project is
+        // on — it is not what a plain launch resumes. Saying "new launches join
+        // this one" promised the auto-resume that used to make `avenic claude`
+        // open an old conversation instead of a new one.
+        { value: "active", label: "Set as active session", hint: "the one avenic status calls Active" },
       ] : []),
     ],
   });
@@ -867,7 +888,7 @@ async function dispatchSkillsCommand(argumentsList) {
 // caller's root. Production passes neither; a test drives the real prompts
 // with a fake TTY this way instead of re-implementing them.
 function terminalOptions(options) {
-  return { prompts: options.prompts, projectRootOverride: options.projectRootOverride };
+  return { prompts: options.prompts, projectRootOverride: options.projectRootOverride, cwd: options.cwd };
 }
 
 export async function runCli(options = {}) {

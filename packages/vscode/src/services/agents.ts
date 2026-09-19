@@ -4,7 +4,6 @@ import {
   agentEnvironment,
   classifyAgentExecutable,
   clearLocalAuth,
-  applyProjectConfiguration,
   detectAgentInstallationAsync,
   deinitializeAgent,
   effectiveAgentConfig,
@@ -90,18 +89,8 @@ export function initialize(projectRoot: string, agentId: string, authMode: "glob
   return initializeAgent(projectRoot, agentId, authMode, sessionsMode).finally(invalidateAgentStatusCache);
 }
 
-export type ProjectAgentSettings = Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
-
 export async function readProjectConfiguration(projectRoot: string) {
   return projectConfig(await loadRuntime(projectRoot));
-}
-
-// The extension only collects choices. Core validates, commits, and imports
-// isolated native histories when switching into Shared mode.
-export async function configureProjectRuntime(projectRoot: string, agents: ProjectAgentSettings, sessionInterop: "shared" | "isolated") {
-  const result = await applyProjectConfiguration(projectRoot, { agents, sessionInterop });
-  invalidateAgentStatusCache();
-  return result;
 }
 
 export function deinitialize(projectRoot: string, agentId: string, purge?: boolean) {

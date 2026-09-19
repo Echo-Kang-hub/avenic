@@ -1,6 +1,6 @@
 {
   "name": "avenic",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "private": false,
   "license": "MIT",
   "description": "Portable Skills, runtime configuration, and sessions for coding agents",

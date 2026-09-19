@@ -30,6 +30,18 @@ const event = (id, role, value) => ({
   content: [{ type: "text", text: value }],
 });
 
+// A mapping names a conversation, and the projection layer refuses to resume
+// one that exists in no store — that ghost is exactly what answers "No
+// conversation found with session ID". These tests stub the materializer, so
+// the rollout a real capture would have written has to be written by hand:
+// otherwise the mapping they set up names a conversation that does not exist,
+// and the guard correctly ignores it.
+async function holdCodexThread(projectRoot, id) {
+  const rollout = path.join(projectRoot, ".agents", "sessions", "codex", "sessions", "2026", "09", "16", `rollout-${id}.jsonl`);
+  await mkdir(path.dirname(rollout), { recursive: true });
+  await writeFile(rollout, `${JSON.stringify({ type: "session_meta", payload: { id, cwd: projectRoot } })}\n`);
+}
+
 test("a projection is launched by the agent that prepared it, and one that is already current costs no projection", async () => {
   await withProject(async (projectRoot) => {
     await createCanonicalSession(projectRoot, { id: "shared" });
@@ -43,6 +55,10 @@ test("a projection is launched by the agent that prepared it, and one that is al
         return { nativeSessionId: "thread-1", materialized: true, projection: { lastEventId: "a", hash: "h1" }, launch: { argumentsList: ["resume", "thread-1"] } };
       },
     });
+    // The first projection created thread-1; the run's capture is what puts it
+    // in the project's own store, and a mapping is only current while the
+    // conversation it names is held somewhere real.
+    await holdCodexThread(projectRoot, "thread-1");
     const second = await ensureNativeProjection({
       projectRoot, canonicalId: "shared", targetAgent: "codex", intent: "resume-catalog",
       materialize: async () => { calls += 1; return { nativeSessionId: "thread-2" }; },
@@ -164,6 +180,9 @@ test("prepare and complete continuation maintain an agent cursor without changin
     // A projection carries the turns themselves; the compatibility prompt is not
     // written when one exists.
     assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "canonical", "shared", "handoff.md")), false);
+    // What the run's capture would have stored: thread-1 now lives in the
+    // project, so the mapping it wrote still names a resumable conversation.
+    await holdCodexThread(projectRoot, "thread-1");
 
     await completeCanonicalContinuation(projectRoot, "shared", "codex", {
       nativeSessionId: "thread-1",

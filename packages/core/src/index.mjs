@@ -42,7 +42,7 @@ export {
   sessionsGitIgnored,
   setSessionsGitIgnored,
 } from "./runtime/gitignore.mjs";
-export { locateProjectRoot } from "./runtime/project-root.mjs";
+export { enclosingProjectRoot, locateProjectRoot } from "./runtime/project-root.mjs";
 export {
   agentCursors,
   cachedHead,
@@ -76,9 +76,15 @@ export {
   recoverSharedNativeSessions,
   continuationLaunchArguments,
   prepareCanonicalContinuation,
-  prepareSharedLaunch,
   projectCanonicalSession,
 } from "./runtime/session-interop.mjs";
+export {
+  agentChoices,
+  applyProjectDraft,
+  projectDraft,
+  projectDraftSubmission,
+  projectWizardSteps,
+} from "./runtime/project-wizard.mjs";
 export { buildHandoff, HANDOFF_SCHEMA_VERSION } from "./runtime/handoff.mjs";
 export {
   PROJECT_ROOT_TOKEN,

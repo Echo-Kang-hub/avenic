@@ -73,6 +73,26 @@ test("escape resolves null and prints the cancel line", async () => {
   assert.match(stdout.text(), /✖  cancel/);
 });
 
+test("escape is answered at once, not after the decoder's sequence timeout", async () => {
+  // A lone Esc is ambiguous — it may be the first byte of an arrow key — so
+  // node's keypress decoder holds it for 500ms waiting to see whether the rest
+  // arrives. A terminal writes a whole escape sequence in one go, so that wait
+  // is dead time between the user pressing Escape and the prompt leaving, and
+  // it is paid by every prompt in the product because they share this decoder.
+  const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({
+    stdin: s,
+    stdout: o,
+    title: "Choose a catalog",
+    options: [{ value: "a", label: "Alpha" }],
+  }));
+  const started = performance.now();
+  keys(stdin, "\x1b");
+  assert.equal(await promise, null);
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 250, `escape was answered after ${elapsed.toFixed(0)}ms — the decoder is still waiting out its sequence timeout`);
+  assert.match(stdout.text(), /✖  cancel/);
+});
+
 test("cancelling is Escape, not a row in the list", async () => {
   // 列表里只列可以选的东西：取消不是其中之一。
   const { stdin, stdout, promise } = await runPrompt((s, o) => singleSelect({

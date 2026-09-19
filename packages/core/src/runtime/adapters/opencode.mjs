@@ -353,6 +353,10 @@ export async function capture(projectRoot, options = {}) {
     null,
     cursors,
     agentId,
+    // OpenCode's store is the user's own and Avenic never snapshots or reverts
+    // it, so a session missing from the list was deleted there: the project's
+    // copy goes with it rather than being imported back on the next launch.
+    { remove: true },
   );
   if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
   return { count: sessions.length, changed: result.added + result.updated + result.removed > 0, diagnostics: [] };

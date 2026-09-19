@@ -39,26 +39,35 @@ test("appending to one native session updates only that portable file", async ()
   });
 });
 
-test("a deleted native session disappears from the portable directory", async () => {
+// A project-scoped launch ends by reverting native storage, so the portable
+// copies under `.agents/sessions/claude` are the project's durable record —
+// committed to git, and after a revert the only copy. Native storage is a
+// cache the run borrows and gives back, so a session being absent from it is
+// the *normal* state of everything a previous run produced. Capture is
+// therefore additive: native absence is never a deletion. A removal pass keyed
+// on "native does not hold it" deleted exactly the sessions the project had
+// just saved, which is how canonical history ends up with a missing portable
+// half — and how the next `--resume` answers "No conversation found with
+// session ID".
+test("a native file that is gone never deletes the project's durable copy", async () => {
   await withClaudeProject(async ({ projectRoot, environment, sessionIds, portableFile, nativeFile }) => {
     const adapter = getSessionAdapter("claude");
     await adapter.capture(projectRoot, { environment });
     assert.ok((await stat(portableFile(sessionIds[0]))).size > 0);
     await rm(nativeFile(sessionIds[0]), { force: true });
     const result = await adapter.capture(projectRoot, { environment });
-    assert.equal(result.changed, true);
-    await assert.rejects(readFile(portableFile(sessionIds[0]), "utf8"));
+    assert.equal(result.changed, false, "a native file that is gone is not a change to the project's copy");
+    assert.ok(
+      (await stat(portableFile(sessionIds[0]))).size > 0,
+      "the project keeps the session native storage no longer holds",
+    );
     assert.ok((await stat(portableFile(sessionIds[1]))).size > 0, "the surviving session stays");
-  });
+  }, { sessions: 2, records: 4 });
 });
 
-// A project-scoped launch ends by reverting native storage, so the portable
-// copies under `.agents/sessions/claude` are the only record of what was said
-// in it. The next capture then finds no native root at all, and that has to
-// read as "nothing new to copy" — never as "every session was deleted". The
-// rule that drops a portable file whose source is gone is what keeps the two
-// storages in step, and with no sources at all it would delete the project's
-// entire history.
+// The same rule at the whole-root level: no native root at all is the state a
+// reverted project and a freshly cloned project share, and it must read as
+// "nothing new to copy" — never as "every session was deleted".
 test("a capture that finds no native root keeps the portable history", async () => {
   await withClaudeProject(async ({ projectRoot, environment, sessionIds, portableFile, nativeRoot }) => {
     const adapter = getSessionAdapter("claude");

@@ -11,9 +11,14 @@ import { keepingHostProject } from "./helpers/host-project.mjs";
 
 // `avenic init` and `avenic change` on a terminal are the wizard a user meets
 // first: pick the agents, then each agent's auth and session storage, then the
-// history mode, then confirm. The prompted values must be exactly what gets
+// history mode, then Apply. The prompted values must be exactly what gets
 // written, so the wizard is driven here key by key, in a project whose agent
 // storage is an empty temp home (never the machine running the tests).
+//
+// The frame contract these tests hold the wizard to is the one a user reads:
+// answered steps collapse to ◇ + a dim summary on one continuous rail, only the
+// active step is expanded under a ◆, Shift+Tab re-opens the previous step with
+// the answer it already has, and nothing at all is written until Apply.
 
 async function waitFor(condition, description, timeout = 8000) {
   const started = Date.now();
@@ -23,6 +28,12 @@ async function waitFor(condition, description, timeout = 8000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+/** The frame the user is looking at: everything after the last repaint. */
+function frame(stdout) {
+  const parts = stdout.text().split("\x1b[u\x1b[J");
+  return visible(parts[parts.length - 1]);
 }
 
 async function withWizardProject(run) {
@@ -68,17 +79,22 @@ async function withWizardProject(run) {
   }
 }
 
+const DOWN = "\x1b[B";
+const UP = "\x1b[A";
+const BACK = "\x1b[Z";
+const ENTER = "\r";
+
 test("avenic init writes exactly what the wizard asked for", async () => {
   await withWizardProject(async ({ projectRoot, logged, wizard, config }) => {
     const { stdin, stdout, promise } = wizard("init");
-    await waitFor(() => /◆ {2}Select agents/.test(visible(stdout.text())), "the agent picker");
-    keys(stdin, " ", "\x1b[B", " ", "\r"); // Claude Code, then Codex
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", DOWN, " ", ENTER); // Claude Code, then Codex
     for (const title of ["Claude Code authentication", "Claude Code session storage", "Codex authentication", "Codex session storage", "Session history"]) {
-      await waitFor(() => new RegExp(`◆ {2}${title}`).test(visible(stdout.text())), title);
-      keys(stdin, "\r"); // the offered default: Global auth, project sessions, shared history
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
+      keys(stdin, ENTER); // the offered default: Global auth, project sessions, shared history
     }
-    await waitFor(() => /◆ {2}Apply configuration\?/.test(visible(stdout.text())), "the confirmation");
-    keys(stdin, "y");
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER); // Yes is the offered answer
     assert.equal(await promise, 0);
 
     const written = await config();
@@ -86,12 +102,147 @@ test("avenic init writes exactly what the wizard asked for", async () => {
     assert.deepEqual(written.agents.claude, { auth: "global", sessions: "project" });
     assert.deepEqual(written.agents.codex, { auth: "global", sessions: "project" });
     assert.equal(written.sessionInterop, "shared");
-    // The result is a page of the same terminal layer the wizard drew: a ◇
-    // History section with the mode under it, not a hand-written summary line.
-    assert.ok(logged.some((line) => /◇ {2}History/.test(line)), `the result must have a History section: ${JSON.stringify(logged)}`);
-    assert.ok(logged.some((line) => /│ {2}Mode\s+shared/.test(line)), `the summary must state the mode: ${JSON.stringify(logged)}`);
-    assert.ok(logged.some((line) => line.includes("Avenic project initialized")), `the run must say what it did: ${JSON.stringify(logged)}`);
+    // The wizard is its own result page: the rail carries every answer once,
+    // and the settled frame ends with the outcome instead of a second summary.
+    const settled = frame(stdout);
+    assert.match(settled, /◇ {2}Configuration applied/);
+    assert.match(settled, /◇ {2}Select agents\n│ {2}Claude Code, Codex/);
+    assert.match(settled, /◇ {2}Session history\n│ {2}Shared/);
+    assert.match(settled, /└ {2}Avenic project initialized/);
     assert.ok(existsSync(path.join(projectRoot, ".agents", "runtime.json")), "the project config is on disk");
+  });
+});
+
+test("answered steps collapse to one rail line and only the active step is expanded", async () => {
+  await withWizardProject(async ({ wizard }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", DOWN, " ", ENTER);
+
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the second step");
+    const current = frame(stdout);
+    // The answered step is a ◇ heading with its own compact summary — the agent
+    // labels, not "2 selected", and not the long option text the frame used to
+    // print a second time.
+    assert.match(current, /◇ {2}Select agents\n│ {2}Claude Code, Codex/);
+    // Only one step is open, and its options are on screen; the others' are not.
+    assert.equal(current.match(/◆/g).length, 1, `exactly one active step:\n${current}`);
+    assert.equal(current.match(/◇/g).length, 1, `only the answered step is on the rail:\n${current}`);
+    assert.ok(!current.includes("Session history"), "a step that has not been asked yet is not on the rail");
+    assert.ok(!current.includes("OpenCode"), "the previous step's option rows are gone");
+    assert.ok(!current.includes("Shared — "), "an option's long description is not repeated as a summary");
+    keys(stdin, "\x1b"); // leave without writing
+    assert.equal(await promise, 0);
+  });
+});
+
+test("Shift+Tab re-opens the previous step with its previous answer, and does nothing on the first step", async () => {
+  await withWizardProject(async ({ wizard }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, BACK); // first step: no previous step
+    assert.match(frame(stdout), /◆ {2}Select agents/);
+    assert.ok(!/◇ {2}Select agents/.test(frame(stdout)), `nothing was answered, so nothing is collapsed:\n${frame(stdout)}`);
+
+    keys(stdin, " ", ENTER); // Claude Code
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
+    keys(stdin, DOWN, ENTER); // Project
+    await waitFor(() => /◆ {2}Claude Code session storage/.test(frame(stdout)), "session storage");
+
+    keys(stdin, BACK);
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the previous step re-opened");
+    assert.match(frame(stdout), /▸ ◉ {2}Project/, `the answer it already has is selected:\n${frame(stdout)}`);
+    assert.match(frame(stdout), /↑↓ move · enter confirm · shift\+tab back · esc cancel/, "the frame says how to go back");
+
+    keys(stdin, BACK);
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the first step again");
+    assert.match(frame(stdout), /▸ ◉ {2}Claude Code/, "and it still holds its answer");
+    keys(stdin, "\x1b");
+    assert.equal(await promise, 0);
+  });
+});
+
+test("modifying an answer and moving forward submits the new one", async () => {
+  await withWizardProject(async ({ wizard, config }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", DOWN, " ", ENTER); // Claude Code + Codex
+    keys(stdin, ENTER); // Claude Code authentication: Global
+    keys(stdin, ENTER); // Claude Code session storage: Project is the offered default
+    await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
+    keys(stdin, DOWN, ENTER); // Project
+    await waitFor(() => /◆ {2}Codex session storage/.test(frame(stdout)), "Codex session storage");
+
+    // Back into Codex authentication and change the answer.
+    keys(stdin, BACK);
+    await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication again");
+    assert.match(frame(stdout), /▸ ◉ {2}Project/);
+    keys(stdin, UP, ENTER); // back to Global
+    await waitFor(() => /◆ {2}Codex session storage/.test(frame(stdout)), "forward again");
+    keys(stdin, ENTER); // Codex session storage: Project
+    keys(stdin, ENTER); // Session history: Shared
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER);
+    assert.equal(await promise, 0);
+
+    const written = await config();
+    assert.deepEqual(written.agents.codex, { auth: "global", sessions: "project" }, "the changed answer is the one written");
+    assert.deepEqual(written.agents.claude, { auth: "global", sessions: "project" }, `and the untouched answers are intact: ${JSON.stringify(written.agents)}`);
+  });
+});
+
+test("a deselected agent's answers stay in memory but are not submitted, and come back with it", async () => {
+  await withWizardProject(async ({ wizard, config }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", DOWN, " ", ENTER); // Claude Code + Codex
+    keys(stdin, ENTER); // Claude Code authentication: Global
+    keys(stdin, ENTER); // Claude Code session storage: Project
+    await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
+    keys(stdin, DOWN, ENTER); // Project — this answer has to survive the detour
+
+    // Back to the agent list and drop Codex.
+    keys(stdin, BACK, BACK, BACK, BACK); // Codex sessions → auth → Claude sessions → auth → agents
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker again");
+    assert.match(frame(stdout), /▸ ◉ {2}Codex/, "the cursor is on Codex, where it was left");
+    keys(stdin, " "); // uncheck Codex
+    keys(stdin, ENTER);
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the steps that remain");
+    keys(stdin, ENTER, ENTER); // Claude Code's two answers
+    await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "history, with no Codex step in between");
+    assert.ok(!frame(stdout).includes("Codex authentication"), "a disabled agent is no longer asked about");
+
+    // Back in, enable Codex again: its earlier answer is still there.
+    keys(stdin, BACK, BACK, BACK); // history → sessions → auth → agents
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker once more");
+    keys(stdin, " "); // check Codex again
+    keys(stdin, ENTER);
+    keys(stdin, ENTER, ENTER); // Claude Code's two answers
+    await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
+    assert.match(frame(stdout), /▸ ◉ {2}Project/, "the answer it had before is still selected");
+    keys(stdin, ENTER, ENTER, ENTER); // Codex sessions, history, Apply
+    await waitFor(() => /Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER);
+    assert.equal(await promise, 0);
+
+    const written = await config();
+    assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex"]);
+    assert.deepEqual(written.agents.codex, { auth: "project", sessions: "project" });
+  });
+});
+
+test("enter with nothing selected is a prompt, not an answer", async () => {
+  await withWizardProject(async ({ projectRoot, wizard }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, ENTER);
+    await waitFor(() => /Select at least one agent/.test(frame(stdout)), "the validation message");
+    assert.match(frame(stdout), /◆ {2}Select agents/, "the wizard stayed on the question");
+    keys(stdin, " ", ENTER);
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the next step, once one is selected");
+    keys(stdin, "\x1b");
+    assert.equal(await promise, 0);
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "runtime.json")), false);
   });
 });
 
@@ -100,28 +251,41 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
     const configPath = path.join(projectRoot, ".agents", "runtime.json");
     // Esc while choosing agents.
     const escaped = wizard("init");
-    await waitFor(() => /◆ {2}Select agents/.test(visible(escaped.stdout.text())), "the agent picker");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(escaped.stdout)), "the agent picker");
     keys(escaped.stdin, " ", "\x1b");
     assert.equal(await escaped.promise, 0);
     assert.ok(!existsSync(configPath), "cancelling mid-wizard writes nothing");
 
-    // Esc at the confirmation, after every question was answered.
-    const declined = wizard("init");
-    await waitFor(() => /◆ {2}Select agents/.test(visible(declined.stdout.text())), "the agent picker");
-    keys(declined.stdin, " ", "\r");
+    // Ctrl+C at the confirmation, after every question was answered.
+    const interrupted = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(interrupted.stdout)), "the agent picker");
+    keys(interrupted.stdin, " ", ENTER);
     for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
-      await waitFor(() => new RegExp(`◆ {2}${title}`).test(visible(declined.stdout.text())), title);
-      keys(declined.stdin, "\r");
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(interrupted.stdout)), title);
+      keys(interrupted.stdin, ENTER);
     }
-    await waitFor(() => /◆ {2}Apply configuration\?/.test(visible(declined.stdout.text())), "the confirmation");
-    keys(declined.stdin, "n");
-    assert.equal(await declined.promise, 0);
-    assert.ok(!existsSync(configPath), "declining the confirmation writes nothing");
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(interrupted.stdout)), "the confirmation");
+    keys(interrupted.stdin, "\x03");
+    assert.equal(await interrupted.promise, 0);
+    assert.ok(!existsSync(configPath), "cancelling at the end writes nothing either");
+
+    // Esc at the confirmation, the other way out of the last step.
+    const escapedAtEnd = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(escapedAtEnd.stdout)), "the agent picker");
+    keys(escapedAtEnd.stdin, " ", ENTER);
+    for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(escapedAtEnd.stdout)), title);
+      keys(escapedAtEnd.stdin, ENTER);
+    }
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(escapedAtEnd.stdout)), "the confirmation");
+    keys(escapedAtEnd.stdin, DOWN, ENTER); // No is the second answer: declining applies nothing
+    assert.equal(await escapedAtEnd.promise, 0);
+    assert.ok(!existsSync(configPath), "answering No writes nothing");
   });
 });
 
 test("avenic change adds an agent and switches history mode from the wizard", async () => {
-  await withWizardProject(async ({ projectRoot, logged, wizard, config }) => {
+  await withWizardProject(async ({ projectRoot, wizard, config }) => {
     const initialized = await runCli({
       argumentsList: ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "shared"],
       projectRootOverride: projectRoot,
@@ -129,22 +293,24 @@ test("avenic change adds an agent and switches history mode from the wizard", as
     assert.equal(initialized, 0);
 
     const { stdin, stdout, promise } = wizard("change");
-    await waitFor(() => /◆ {2}Select enabled agents/.test(visible(stdout.text())), "the enabled-agent picker");
-    keys(stdin, "\x1b[B", "\x1b[B", " ", "\r"); // cursor starts on the two enabled agents, add OpenCode
+    await waitFor(() => /◆ {2}Select enabled agents/.test(frame(stdout)), "the enabled-agent picker");
+    // The enabled agents are already selected: two steps down is OpenCode.
+    keys(stdin, DOWN, DOWN, " ", ENTER);
     for (const title of ["Claude Code authentication", "Claude Code session storage", "Codex authentication", "Codex session storage", "OpenCode authentication", "OpenCode session storage"]) {
-      await waitFor(() => new RegExp(`◆ {2}${title}`).test(visible(stdout.text())), title);
-      keys(stdin, "\r");
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
+      keys(stdin, ENTER);
     }
-    await waitFor(() => /◆ {2}Session history/.test(visible(stdout.text())), "the history mode");
-    keys(stdin, "\x1b[B", "\r"); // Shared → Isolated
-    await waitFor(() => /◆ {2}Apply configuration\?/.test(visible(stdout.text())), "the confirmation");
-    keys(stdin, "y");
+    await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "the history mode");
+    keys(stdin, DOWN, ENTER); // Shared → Isolated
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER); // Yes
     assert.equal(await promise, 0);
 
     const written = await config();
     assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex", "opencode"]);
     assert.equal(written.sessionInterop, "isolated");
-    assert.ok(logged.some((line) => /│ {2}Mode\s+isolated/.test(line)), JSON.stringify(logged));
-    assert.ok(logged.some((line) => line.includes("Avenic project updated")), JSON.stringify(logged));
+    const settled = frame(stdout);
+    assert.match(settled, /◇ {2}Configuration updated/);
+    assert.match(settled, /◇ {2}Session history\n│ {2}Isolated/, "the settled rail carries the new mode once");
   });
 });

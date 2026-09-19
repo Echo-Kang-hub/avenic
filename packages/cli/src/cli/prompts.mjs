@@ -185,7 +185,11 @@ const keypressAttached = new WeakSet();
 function startFrame(stdin, stdout, paint) {
   stdin.setRawMode?.(true);
   if (!keypressAttached.has(stdin)) {
-    readline.emitKeypressEvents(stdin);
+    // Esc 要立刻算作 Esc。node 的按键解码器会把它扣住 escapeCodeTimeout（默认
+    // 500ms）等一个转义序列的后半截；而终端是把整串一次性写出来的，于是这 500ms
+    // 全成了用户按下 Esc 到界面离场之间的死时间 —— 本产品的每个提示都走这一个解码器。
+    // 50ms 远大于真实序列内部两段之间的间隔，又短到人感觉不出。
+    readline.emitKeypressEvents(stdin, { escapeCodeTimeout: 50 });
     keypressAttached.add(stdin);
   }
   stdin.resume?.();
@@ -225,6 +229,8 @@ function keyIntent({ value, key = {} }) {
   if (key.ctrl && (name === "c" || name === "d")) return "cancel";
   if (key.ctrl && name === "a") return "all"; // 搜索框里也能全选：字母键让给过滤词
   if (name === "escape") return "cancel";
+  // Shift+Tab 是「上一步」：向导里唯一的回退键，也是终端里通行的那个。
+  if (name === "tab" && key.shift) return "back";
   if (name === "up") return "up";
   if (name === "down") return "down";
   if (name === "return" || name === "enter") return "accept";
@@ -285,14 +291,15 @@ const moreDown = (count, colors) => colors.muted(`│  ↓ ${count} more`);
 /**
  * `model.paint()` 返回当前帧的行，`model.reduce(intent)` 返回 true（重画）、
  * "accept"（立即确认）或什么都不返回，`model.accept()` 返回 `{ result, lines,
- * summary }`、`{ cancel: true }` 或什么都不返回（保持这一帧 —— 空选择是提示，
- * 不是取消）。
+ * summary }`、`{ cancel: true }`、`{ repaint: true }`（状态变了，重画同一帧 ——
+ * 向导就是这样推进到下一步的），一个 Promise（异步确认，落定由它决定），或什么
+ * 都不返回（保持这一帧 —— 空选择是提示，不是取消）。
  */
 function prompt(options, model) {
   const { stdin = process.stdin, stdout = process.stdout } = options;
   const colors = colorsFor(options, stdout);
   const cancelLabel = options.cancelLabel ?? CANCEL_LABEL;
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let stop = () => {};
     const session = startFrame(stdin, stdout, () => model.paint());
     const settle = (result, lines, summary) => {
@@ -307,10 +314,9 @@ function prompt(options, model) {
       settleFrame(stdout, colors, model.heading(), lines, summary);
       resolve(result);
     };
-    const accept = () => {
-      const outcome = model.accept();
-      if (!outcome) {
-        session.refresh(); // 还没有可确认的东西：重画，让提示可见
+    const settleOutcome = (outcome) => {
+      if (!outcome || outcome.repaint) {
+        session.refresh(); // 还没有可确认的东西，或者状态刚变了：重画
         return;
       }
       if (outcome.cancel) {
@@ -318,6 +324,19 @@ function prompt(options, model) {
         return;
       }
       settle(outcome.result, outcome.lines, outcome.summary);
+    };
+    const accept = () => {
+      const outcome = model.accept();
+      if (outcome && typeof outcome.then === "function") {
+        // 异步确认（向导的 Apply 要写盘）：先重画，落定或失败由它决定。
+        outcome.then(settleOutcome, (failure) => {
+          session.close();
+          stop();
+          reject(failure);
+        });
+        return;
+      }
+      settleOutcome(outcome);
     };
     stop = listenKeys(stdin, (intent) => {
       if (intent === "cancel") {
@@ -353,30 +372,34 @@ function frameFoot({ colors, footer, message, width }) {
   return rows;
 }
 
-/** 单选项选择（catalog select / 手动流中的任一单选）。 */
-export function singleSelect(options = {}) {
+// ---- 列表模型 ----
+// 一个列表提示的「状态 + 按键 → 新状态」在这里，帧骨架（head/foot）和落定在
+// prompt() 里。向导要把同一套条目画进自己的轨道，所以两者分开：向导复用这两个
+// 模型，而不是再写一遍光标、窗口和校验。
+
+/** 单选项的状态机。`rows()` 只画条目，`settleRows()` 画落定帧里的完整清单。 */
+function singleSelectModel(options, view) {
+  const { width, colors } = view;
   const entries = options.options; // [{ value, label, hint }]
   const height = Math.max(1, options.height ?? 12);
   const values = entries.map((entry) => entry.value);
   const count = entries.length;
   let cursor = Math.max(0, Math.min(options.initial ?? 0, Math.max(0, count - 1)));
-  const width = columns(options.stdout ?? process.stdout);
-  const colors = colorsFor(options, options.stdout ?? process.stdout);
-  const footer = options.footer ?? "↑↓ move · enter select · esc cancel";
   const row = (index, flagged) => entryRow({
     colors, width, label: entries[index].label, hint: entries[index].hint, checked: flagged, cursor: index === cursor,
   });
-  return prompt({ ...options, footer }, {
+  return {
     heading: () => options.title,
-    paint() {
+    message: () => (count === 0 ? "Nothing to choose from" : ""),
+    rows() {
       const { from, to } = windowFor(count, cursor, height);
-      const rows = frameHead({ colors, title: options.title, description: options.description, width });
+      const rows = [];
       if (from > 0) rows.push(moreUp(from, colors));
       for (let index = from; index < to; index += 1) rows.push(row(index, index === cursor));
       if (to < count) rows.push(moreDown(count - to, colors));
-      rows.push(...frameFoot({ colors, footer, message: count === 0 ? "Nothing to choose from" : "", width }));
       return rows;
     },
+    settleRows: () => entries.map((_, index) => row(index, index === cursor)),
     reduce(intent) {
       if (count === 0) return false;
       if (movesUp(intent, true) || movesDown(intent, true)) {
@@ -387,22 +410,19 @@ export function singleSelect(options = {}) {
     },
     accept() {
       if (count === 0) return null; // 没有可选项：回车留在原地，不是取消
-      return {
-        result: values[cursor],
-        lines: entries.map((_, index) => row(index, index === cursor)),
-        summary: entries[cursor].label,
-      };
+      return { value: values[cursor], summary: entries[cursor].label };
     },
-  });
+  };
 }
 
 /**
- * 多选项选择（space 逐项切换，Ctrl+A 全选，a/n 清空/全选）。可搜索时
+ * 多选项的状态机（space 逐项切换，Ctrl+A 全选，a/n 清空/全选）。可搜索时
  * （`searchable: true`）单字符一律进入过滤词，列表随输入缩小，空格仍然切换
  * 当前项。回车只有在选中数达到 minSelected 时才落定 —— 一个都没选时回车是
  * 提示，不是「就这样吧」，也不是取消。
  */
-export function multiSelect(options = {}) {
+function multiSelectModel(options, view) {
+  const { width, colors } = view;
   const entries = options.options; // [{ value, label, hint }]
   const title = options.title;
   const searchable = options.searchable === true;
@@ -411,11 +431,6 @@ export function multiSelect(options = {}) {
   const minSelected = Math.max(0, options.minSelected ?? 0);
   const emptyMessage = options.emptyMessage ?? "Select at least one item";
   const height = Math.max(1, options.height ?? 12);
-  const width = columns(options.stdout ?? process.stdout);
-  const colors = colorsFor(options, options.stdout ?? process.stdout);
-  const footer = options.footer ?? (searchable
-    ? "type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel"
-    : "↑↓ move · space toggle · ^a all · enter confirm · esc cancel");
   let query = "";
   let cursor = 0;
   let validationMessage = "";
@@ -425,13 +440,14 @@ export function multiSelect(options = {}) {
   const row = (entry, marked) => entryRow({
     colors, width, label: entry.label, hint: entry.hint, checked: checked.has(entry.value), cursor: marked,
   });
-  return prompt({ ...options, footer }, {
+  return {
     heading,
-    paint() {
+    message: () => validationMessage,
+    rows() {
       shown = filterEntries(entries, query);
       cursor = Math.min(cursor, shown.length);
       const { from, to } = windowFor(shown.length, Math.min(cursor, Math.max(0, shown.length - 1)), height);
-      const rows = frameHead({ colors, title: heading(), description: options.description, width });
+      const rows = [];
       if (from > 0) rows.push(moreUp(from, colors));
       for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
       if (to < shown.length) rows.push(moreDown(shown.length - to, colors));
@@ -439,9 +455,9 @@ export function multiSelect(options = {}) {
         const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
         rows.push(truncate(`${colors.muted("│")}  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.muted("type to filter")}${colors.muted(counter)}`, width));
       }
-      rows.push(...frameFoot({ colors, footer, message: validationMessage, width }));
       return rows;
     },
+    settleRows: () => entries.filter((entry) => checked.has(entry.value)).map((entry) => row(entry, false)),
     reduce(intent) {
       if (movesUp(intent, !searchable) || movesDown(intent, !searchable)) {
         if (shown.length === 0) return false;
@@ -487,12 +503,179 @@ export function multiSelect(options = {}) {
       }
       const values = [...checked];
       return {
-        result: values,
-        lines: entries.filter((entry) => checked.has(entry.value)).map((entry) => row(entry, false)),
+        value: values,
         summary: values.length === 1
           ? (entries.find((entry) => entry.value === values[0])?.label ?? String(values[0]))
           : `${values.length} selected`,
       };
+    },
+  };
+}
+
+/** 单选项选择（catalog select / 手动流中的任一单选）。 */
+export function singleSelect(options = {}) {
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
+  const footer = options.footer ?? "↑↓ move · enter select · esc cancel";
+  const model = singleSelectModel(options, { width, colors });
+  return prompt({ ...options, footer }, {
+    heading: model.heading,
+    paint() {
+      return [
+        ...frameHead({ colors, title: options.title, description: options.description, width }),
+        ...model.rows(),
+        ...frameFoot({ colors, footer, message: model.message(), width }),
+      ];
+    },
+    reduce: model.reduce,
+    accept() {
+      const answer = model.accept();
+      if (!answer) return null; // 没有可选项：回车留在原地，不是取消
+      return { result: answer.value, lines: model.settleRows(), summary: answer.summary };
+    },
+  });
+}
+
+/** 多选项选择。同 singleSelect，模型见 multiSelectModel。 */
+export function multiSelect(options = {}) {
+  const searchable = options.searchable === true;
+  const width = columns(options.stdout ?? process.stdout);
+  const colors = colorsFor(options, options.stdout ?? process.stdout);
+  const footer = options.footer ?? (searchable
+    ? "type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel"
+    : "↑↓ move · space toggle · ^a all · enter confirm · esc cancel");
+  const model = multiSelectModel(options, { width, colors });
+  return prompt({ ...options, footer }, {
+    heading: model.heading,
+    paint() {
+      return [
+        ...frameHead({ colors, title: model.heading(), description: options.description, width }),
+        ...model.rows(),
+        ...frameFoot({ colors, footer, message: model.message(), width }),
+      ];
+    },
+    reduce: model.reduce,
+    accept() {
+      const answer = model.accept();
+      if (!answer) return null; // 留在这一帧，提示已经画在帧里
+      return { result: answer.value, lines: model.settleRows(), summary: answer.summary };
+    },
+  });
+}
+
+// 向导的帧尾：一步之内只有移动和确认，回退键在每一帧里都写着。
+const WIZARD_FOOTERS = {
+  multi: "↑↓ move · space select · enter confirm · shift+tab back · esc cancel",
+  single: "↑↓ move · enter confirm · shift+tab back · esc cancel",
+};
+
+/**
+ * 向导：一串问题，一屏答完。
+ *
+ * 已经答过的步骤折叠成一行 ◇ 标题加一行灰色摘要，连续的轨道把整场问答画成
+ * 一份可以回看的记录；当前步骤是唯一的展开项（◆ 标题 + 选项 + 帧尾）。Shift+Tab
+ * 回到上一步并带着原来的答案重新打开，Esc / Ctrl+C 取消整场 —— 在按下 Apply
+ * 里的 Yes 之前，什么都不写盘。
+ *
+ * 步骤由 `stepsFor(draft)` 现算：答完「哪些 agent」之后，后面的步骤就是这些
+ * agent 的认证和存储。每条步骤：
+ *   { id, kind: "multi"|"single", title, description, options,
+ *     value(draft) / values(draft) —— 上一次的答案（回来时预选中）
+ *     write(draft, value) —— 把答案记进草稿（只改内存）
+ *     summary(draft) —— 折叠时那一行摘要
+ *     footer, minSelected, emptyMessage, searchable, apply: true }
+ * 被标了 `apply: true` 的那一步是终点：Yes 调用 `apply(draft)` 并落定，
+ * No 取消（什么都不写）。它的答案不画成轨道条目，而是由落定帧的标题和 └ 行
+ * 表示：标题 `appliedTitle`，└ 行是 `apply()` 返回的 `summary`。
+ */
+export function wizard(options = {}) {
+  const { stdout = process.stdout } = options;
+  const width = columns(stdout);
+  const colors = colorsFor(options, stdout);
+  const draft = options.draft ?? {};
+  const stepsFor = options.stepsFor ?? (() => options.steps ?? []);
+  const apply = options.apply ?? (async () => ({}));
+  let steps = stepsFor(draft);
+  let index = 0;
+  let applied = false;
+  const editors = new Map();
+  const activeStep = () => steps[Math.min(index, Math.max(0, steps.length - 1))];
+  const editorFor = (step) => {
+    let model = editors.get(step.id);
+    if (!model) {
+      if (step.kind === "multi") {
+        model = multiSelectModel(
+          { ...step, initial: step.values?.(draft) ?? [] },
+          { width, colors },
+        );
+      } else {
+        const previous = step.value?.(draft);
+        model = singleSelectModel(
+          { ...step, initial: Math.max(0, step.options.findIndex((entry) => entry.value === previous)) },
+          { width, colors },
+        );
+      }
+      editors.set(step.id, model);
+    }
+    return model;
+  };
+  // 已答过的步骤：◇ 标题 + 一行摘要。传进来的是「已经答完的那一段」——画当前帧
+  // 时是 steps[index] 之前的，落定时是全部（Apply 那一步由落定帧自己的标题和
+  // └ 行表示，不重复成条目）。
+  const completedRows = (list) => {
+    const rows = [];
+    for (const step of list) {
+      if (step.apply) continue;
+      rows.push(`${colors.brandSoft("◇")}  ${colors.strong(truncate(step.title, width - 4))}`);
+      const summary = step.summary?.(draft);
+      if (summary) rows.push(`${colors.muted("│")}  ${colors.muted(truncate(summary, width - 4))}`);
+    }
+    return rows;
+  };
+  return prompt({ ...options }, {
+    heading: () => (applied ? (activeStep().appliedTitle ?? "Configuration applied") : activeStep().title),
+    paint() {
+      const active = activeStep();
+      const model = editorFor(active);
+      return [
+        ...completedRows(steps.slice(0, index)),
+        ...frameHead({ colors, title: active.title, description: active.description, width }),
+        ...model.rows(),
+        ...frameFoot({
+          colors,
+          footer: active.footer ?? WIZARD_FOOTERS[active.kind] ?? WIZARD_FOOTERS.single,
+          message: model.message(),
+          width,
+        }),
+      ];
+    },
+    reduce(intent) {
+      if (intent === "back") {
+        if (index === 0) return false; // 第一步没有上一步：不重画，也不动状态
+        index -= 1;
+        return true;
+      }
+      return editorFor(activeStep()).reduce(intent);
+    },
+    accept() {
+      const active = activeStep();
+      const model = editorFor(active);
+      const answer = model.accept();
+      if (!answer) return undefined; // 校验提示已经画在帧里：留在原地
+      if (!active.apply) {
+        active.write?.(draft, answer.value);
+        steps = stepsFor(draft);
+        const position = steps.findIndex((step) => step.id === active.id);
+        index = Math.min(position + 1, Math.max(0, steps.length - 1));
+        return { repaint: true };
+      }
+      if (answer.value !== true) return { cancel: true };
+      applied = true;
+      return apply(draft).then((outcome) => ({
+        result: outcome?.result ?? draft,
+        lines: completedRows(steps),
+        summary: outcome?.summary,
+      }));
     },
   });
 }
