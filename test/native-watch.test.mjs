@@ -156,7 +156,15 @@ test("a running agent's session becomes durable before the agent exits", async (
     const probe = await run.probe();
     assert.ok(probe?.wroteAt, "the agent must have started writing");
     assert.equal(run.child.exitCode, null, "the agent must still be running");
-    assert.ok(events >= 3, `the live session must be durable while the agent runs (saw ${events} events)`);
+    // Observed once in six full-suite runs: this window is the shortest one in
+    // the suite and the whole file runs alongside 600 other tests, so a loaded
+    // machine can reach the deadline before the launch has even spawned. The
+    // message carries the launch's own output so the next occurrence says
+    // which half was late instead of only how many events were seen.
+    assert.ok(
+      events >= 3,
+      `the live session must be durable while the agent runs (saw ${events} events, probe ${JSON.stringify(probe)})\n${run.output()}`,
+    );
     assert.equal(await readFile(liveFile, "utf8").then((text) => text.includes("live message 1")), true);
 
     const finished = await run.completion;
