@@ -9,9 +9,13 @@ import { createHash } from "node:crypto";
 //   1. append to the target's own native history (Codex can do this officially)
 //   2. a structured briefing the target reads as context (Claude Code)
 //   3. a one-shot handoff prompt (only when neither of the above is possible)
-// The projection is always a *delta*: events already living in the native
-// session being resumed are left out, so a switch costs one delta, not a
-// replay of the whole conversation.
+// The projection is always a *delta*, and the delta has two edges: events
+// already living in the native session being resumed are left out (the target
+// wrote them itself), and so is everything the mapping already carried into it
+// (a resumed thread holds what it was sent last time). A switch therefore costs
+// one delta rather than a replay of the whole conversation — which is a
+// correctness rule as much as a cheap one, since a replay appends a second copy
+// of the conversation to a transcript that already has it.
 
 export const PROJECTION_SCHEMA_VERSION = 1;
 export const PROJECTION_KIND = {
@@ -24,7 +28,11 @@ export const PROJECTION_KIND = {
 // travels; it is never a per-turn limit. Handing over a clipped answer is
 // handing over a different answer, which is the failure Shared mode exists to
 // remove, so a turn is delivered whole unless it alone would blow the budget.
-export const BRIEFING_BUDGET = 6_000;
+//
+// It is also the default, because the alternative — a caller that forgets to
+// name one — would be a silently tighter bound than any transport needs. The
+// brief a project can hand over is no longer limited by the command line it
+// used to travel on: every transport Avenic uses now carries a file or a pipe.
 export const NATIVE_BUDGET = 400_000;
 const TURN_TEXT_LIMIT = 2_000;
 const CHECKPOINT_REQUESTS = 5;
@@ -34,6 +42,31 @@ const AGENT_LABELS = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 export function agentLabel(agentId) {
   return AGENT_LABELS[agentId] ?? (agentId ? agentId[0].toUpperCase() + agentId.slice(1) : "Unknown");
+}
+
+const TOOL_BLOCKS = new Set(["tool_use", "tool_result", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"]);
+
+// A record's role says which side of the request it sat on, and that is not
+// always who spoke: the Anthropic API files a tool's answer under role "user",
+// because that is where it goes back into the conversation. A turn whose only
+// content is tool traffic is therefore the agent's own machinery, and every
+// surface that names a speaker reads it that way — otherwise one agent's tool
+// output is handed to the next one in the user's mouth.
+function userSpoke(event) {
+  const blocks = Array.isArray(event?.content) ? event.content : [];
+  if (!blocks.some((block) => TOOL_BLOCKS.has(block?.type))) return true;
+  return blocks.some((block) => typeof block?.text === "string" && block.text.trim());
+}
+
+/**
+ * The speaker of a canonical turn: `user` for the person at the keyboard,
+ * `agent` for the agent that answered, `tool` for its own tool traffic.
+ */
+export function turnKind(event) {
+  const role = event?.role;
+  if (role === "tool") return "tool";
+  if (role !== "user") return "agent";
+  return userSpoke(event) ? "user" : "tool";
 }
 
 // Provenance used to live only inside the event id. New events carry it as a
@@ -100,10 +133,19 @@ function clamp(value, limit) {
 // transcript. `nativeSessionId` identifies that transcript — or, when a mapping
 // resolves to more than one native session (a Codex sub-agent thread is resumed
 // through its parent), the set of transcripts the target already has.
-export function projectableEvents(events, { targetAgent, nativeSessionId = null } = {}) {
+//
+// `sinceEventId` is the other half of the same rule: it names the last canonical
+// event the target was already given, so a target that holds a conversation
+// gets what came after it rather than the conversation again. An id no longer in
+// the history is ignored instead of guessed at — re-sending too much costs
+// tokens, sending too little loses the conversation.
+export function projectableEvents(events, { targetAgent, nativeSessionId = null, sinceEventId = null } = {}) {
+  const all = Array.isArray(events) ? events : [];
+  const cut = sinceEventId ? all.findIndex((event) => event?.id === sinceEventId) : -1;
+  const delta = cut >= 0 ? all.slice(cut + 1) : all;
   const owned = new Set([].concat(nativeSessionId ?? []).filter(Boolean));
-  if (owned.size === 0) return events;
-  return events.filter((event) => !(eventAgent(event) === targetAgent && owned.has(eventNativeSession(event, targetAgent))));
+  if (owned.size === 0) return delta;
+  return delta.filter((event) => !(eventAgent(event) === targetAgent && owned.has(eventNativeSession(event, targetAgent))));
 }
 
 function checkpointFor(events) {
@@ -128,8 +170,8 @@ function checkpointFor(events) {
  * always produces the same projection (which is what makes the mapping hash
  * meaningful).
  */
-export function buildProjection({ session, events, targetAgent, nativeSessionId = null, budget = BRIEFING_BUDGET } = {}) {
-  const projectable = projectableEvents(events ?? [], { targetAgent, nativeSessionId });
+export function buildProjection({ session, events, targetAgent, nativeSessionId = null, sinceEventId = null, budget = NATIVE_BUDGET } = {}) {
+  const projectable = projectableEvents(events ?? [], { targetAgent, nativeSessionId, sinceEventId });
   const turns = [];
   let used = 0;
   let index = projectable.length - 1;
@@ -145,6 +187,7 @@ export function buildProjection({ session, events, targetAgent, nativeSessionId 
     turns.unshift({
       eventId: event.id,
       role: event.role,
+      kind: turnKind(event),
       agent: eventAgent(event),
       text: clipped,
       createdAt: event.createdAt ?? null,
@@ -194,7 +237,9 @@ export function renderBriefing(projection, { heading = "Avenic shared session" }
     lines.push("");
   }
   for (const turn of projection.turns) {
-    const speaker = turn.role === "user" ? "User" : `${agentLabel(turn.agent)} (${turn.role})`;
+    const speaker = turn.kind === "user"
+      ? "User"
+      : `${agentLabel(turn.agent)} (${turn.kind === "tool" ? "tool" : turn.role})`;
     lines.push(`${speaker}: ${turn.text}`);
     lines.push("");
   }
@@ -204,21 +249,26 @@ export function renderBriefing(projection, { heading = "Avenic shared session" }
 
 /**
  * The same projection as model-visible Responses API items, in the order they
- * happened. Only user/assistant turns become messages: a tool call the target
+ * happened. Only user/assistant records become messages: a tool call the target
  * cannot answer would be worse than the summary of it that is already inside
  * the assistant turn.
+ *
+ * An item's role follows the *speaker*, not the record: only the user's own
+ * words become user messages, and another agent's turn — including the tool
+ * traffic its transcript files under role "user" — arrives attributed to it.
  */
 export function projectionItems(projection, { idPrefix = "avenic_evt_" } = {}) {
   return projection.turns
     .filter((turn) => turn.role === "user" || turn.role === "assistant")
     .map((turn, position) => {
-      const foreign = turn.role !== "user" && turn.agent !== projection.targetAgent;
+      const asUser = turn.kind === "user";
+      const foreign = !asUser && turn.agent !== projection.targetAgent;
       const text = foreign ? `${agentLabel(turn.agent)}: ${turn.text}` : turn.text;
       return {
         type: "message",
         id: `${idPrefix}${position}_${createHash("sha1").update(turn.eventId).digest("hex").slice(0, 12)}`,
-        role: turn.role === "assistant" ? "assistant" : "user",
-        content: [{ type: turn.role === "assistant" ? "output_text" : "input_text", text }],
+        role: asUser ? "user" : "assistant",
+        content: [{ type: asUser ? "input_text" : "output_text", text }],
       };
     });
 }

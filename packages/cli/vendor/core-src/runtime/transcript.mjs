@@ -1,5 +1,5 @@
 import { readCanonicalSession } from "./canonical-sessions.mjs";
-import { agentLabel, blockText, eventAgent } from "./projection.mjs";
+import { agentLabel, blockText, eventAgent, turnKind } from "./projection.mjs";
 
 // The canonical store is the one transcript a shared project has, so the one
 // place that knows how to read it as a conversation lives here — not in a
@@ -77,14 +77,18 @@ export function transcriptTurns(events, { limit = 0 } = {}) {
     const tools = blocks.filter((block) => TOOL_BLOCKS.has(block?.type)).map(toolFromBlock);
     const text = blocks.filter((block) => !TOOL_BLOCKS.has(block?.type)).map(blockText).filter(Boolean).join("\n").trim();
     if (!text && tools.length === 0) continue;
+    // A tool result is filed by the API under role "user"; only the person's
+    // own words are read as the person's, so an agent's tool traffic is never
+    // shown as something the user ran.
+    const kind = turnKind(event) === "user" ? "user" : "agent";
     turns.push({
       id: event.id,
-      kind: role === "user" ? "user" : "agent",
+      kind,
       agent,
       role,
       // "You" is the person at the keyboard; every other speaker is named for
       // the agent that produced the words.
-      speaker: role === "user" ? "You" : agentLabel(agent),
+      speaker: kind === "user" ? "You" : agentLabel(agent),
       at: event.createdAt ?? null,
       text,
       tools,

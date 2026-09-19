@@ -83,9 +83,11 @@ export function resumeArguments(nativeSessionId) {
  * instead of reading a summary of it. `codex resume <id>` then opens it as an
  * ordinary session.
  *
- * The delta rule is the whole point of the mapping: turns that already live in
- * the thread being resumed are left out, so the tenth switch costs the tenth
- * delta, not the whole conversation.
+ * The delta rule is the whole point of the mapping, and it has two halves:
+ * turns the target authored in the thread it is resuming are left out, and so
+ * is every turn the mapping already carried into it. So the tenth switch costs
+ * the tenth delta, not the whole conversation — and, just as important, the
+ * thread is not handed a second copy of what it has already read.
  */
 export async function projectCanonical(projectRoot, { session, events, mapping = null, intent = "resume" }, options = {}) {
   const stored = mapping?.nativeSessionId ?? null;
@@ -95,15 +97,22 @@ export async function projectCanonical(projectRoot, { session, events, mapping =
   // turns either way.
   const mapped = stored ? await resolveResumableSession(projectRoot, stored, options) : null;
   const owned = [...new Set([stored, mapped].filter(Boolean))];
-  const project = (nativeSessionIds) => buildProjection({
+  // What the thread being resumed already holds. The mapping records the last
+  // canonical event it was given, so everything up to it — the turns Avenic
+  // injected and the turns the thread wrote itself — is already in its
+  // model-visible history. A resume therefore starts after it; sending the
+  // conversation again would append a second copy of it to the thread.
+  const since = mapping?.lastCanonicalEventId ?? null;
+  const project = (nativeSessionIds, sinceEventId = null) => buildProjection({
     session,
     events,
     targetAgent: agentId,
     nativeSessionId: nativeSessionIds,
+    sinceEventId,
     budget: NATIVE_BUDGET,
   });
   if (mapped) {
-    const current = project(owned);
+    const current = project(owned, since);
     if (current.turns.length === 0) {
       // Nothing new since the last switch: the thread is already up to date and
       // no server has to be started at all.
@@ -136,7 +145,7 @@ export async function projectCanonical(projectRoot, { session, events, mapping =
     }
     // A thread that was just created holds nothing, so its projection is the
     // whole conversation; a resumed one only receives what it is missing.
-    const projection = materialized ? project(null) : project(owned);
+    const projection = materialized ? project(null) : project(owned, since);
     const injected = projection.turns.length
       ? await injectCodexItems(client, threadId, projectionItems(projection))
       : 0;

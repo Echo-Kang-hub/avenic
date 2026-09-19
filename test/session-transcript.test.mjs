@@ -87,6 +87,26 @@ test("turns keep who said what, and tool traffic belongs to the turn that ran it
   });
 });
 
+test("a tool result filed under the API's user role is the agent's, not the person's", async () => {
+  await withProject(async (projectRoot) => {
+    // Claude's own transcript files a tool result under role "user" — that is
+    // the request shape it came back in, not a claim that the user ran it. A
+    // viewer that reads the role as the speaker shows the user running Claude's
+    // tools, which is the one reading this page exists to get right.
+    await createCanonicalSession(projectRoot, { id: "api-shape", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "api-shape", [
+      event("claude:native-9:u1", "user", "why is the parser slow?"),
+      event("claude:native-9:t1", "user", "", { content: [{ type: "tool_result", content: "export function parse() {}" }] }),
+      event("claude:native-9:a1", "assistant", "It rescans the file per token."),
+    ]);
+    const { summary, turns } = await readTranscript(projectRoot, "api-shape");
+    assert.deepEqual(turns.map((turn) => turn.speaker), ["You", "Claude", "Claude"]);
+    assert.deepEqual(turns.map((turn) => turn.kind), ["user", "agent", "agent"]);
+    assert.equal(summary.userTurns, 1, "only the person's own turn counts as theirs");
+    assert.equal(turns[1].tools[0].detail, "export function parse() {}", "the tool traffic is still shown, under its own agent");
+  });
+});
+
 test("a mapping's cursor state is described, not guessed", async () => {
   await withProject(async (projectRoot) => {
     const id = await seedShared(projectRoot);

@@ -136,13 +136,29 @@ test("one shared conversation survives Claude → Codex → Claude → Codex", a
 
     // 6. Continuation 4 — Codex again. It now has its own thread, so this is a
     //    resume with a delta, not a rebuild: the tenth switch costs the tenth
-    //    delta, never the whole conversation.
+    //    delta, never the whole conversation. Two turns arrive first, so the
+    //    delta is not empty — a resume that has nothing to send would prove
+    //    nothing about what a resume with something to send actually sends.
+    await appendCanonicalEvents(projectRoot, canonicalId, [
+      ["later-1", "user", "one more request"],
+      ["later-2", "assistant", "one more answer"],
+    ].map(([suffix, role, text]) => ({
+      id: `claude:native-later:${suffix}`,
+      agent: "claude",
+      role,
+      createdAt: "2026-09-19T00:00:06.000Z",
+      content: [{ type: "text", text }],
+    })));
     const codexSecond = continueWith("codex");
     assert.equal(codexSecond.status, 0, codexSecond.stderr);
     const all = await codexInjections(env);
-    const resumed = all.slice(materialized.length);
-    const secondInjected = resumed.reduce((total, entry) => total + (entry.items?.length ?? 0), 0);
-    assert.ok(secondInjected < 10, `a resumed thread receives only the delta, not ${HISTORY + 8} events (got ${secondInjected})`);
+    const resumedTexts = injectedTexts(all.slice(materialized.length));
+    assert.deepEqual(
+      resumedTexts,
+      ["one more request", "Claude: one more answer"],
+      `a resumed thread receives the turns that arrived since it was built, and nothing it already holds (${resumedTexts.length} items)`,
+    );
+    assert.ok(!resumedTexts.includes("message 0"), "the thread is not handed its own conversation a second time");
 
     // 7. The transcript is one conversation, in order, with every turn
     //    attributed to the agent that produced it.
@@ -153,7 +169,9 @@ test("one shared conversation survives Claude → Codex → Claude → Codex", a
     assert.equal(new Set(ids).size, ids.length, "no turn appears twice");
     const agents = new Set(model.turns.filter((turn) => turn.kind === "agent").map((turn) => turn.agent));
     assert.deepEqual([...agents].sort(), ["claude", "codex"], "both agents' turns are in the one transcript");
-    assert.equal(model.session.events, HISTORY + codexTurns.length + 1);
+    // Claude's own history, Codex's four turns, the two turns added before the
+    // second Codex switch, and one answer from each of the two Codex launches.
+    assert.equal(model.session.events, HISTORY + codexTurns.length + 2 + 2);
     assert.ok(model.turns.at(-1).agent === "codex", "the newest turn is the one Codex just gave");
 
     const report = { claudeResumeMs: claudeMs, codexMaterializeMs: codexMs, events: model.session.events, turns: model.turns.length };
