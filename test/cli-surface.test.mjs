@@ -192,10 +192,23 @@ test("runtime overview and doctor cover all three agents", async () => {
   await withTempDirectory("avenic-overview-", async (projectRoot) => {
     const status = runAgent(projectRoot, ["status"]);
     assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /Avenic Status/);
+    assert.match(status.stdout, /Project\s+\S+/);
+    assert.match(status.stdout, /History\s+(shared|isolated)/);
     assert.match(status.stdout, /Claude Code/);
     assert.match(status.stdout, /Codex/);
     assert.match(status.stdout, /OpenCode/);
-    assert.match(status.stdout, /Not initialized/);
+    assert.match(status.stdout, /not initialized/);
+    assert.match(status.stdout, /Skills/);
+    // The same model, unrendered, for hosts that draw it themselves.
+    const json = runAgent(projectRoot, ["status", "--json"]);
+    assert.equal(json.status, 0, json.stderr);
+    const model = JSON.parse(json.stdout);
+    assert.equal(model.schemaVersion, 1);
+    assert.equal(model.project.root.replace(/\\/g, "/").toLowerCase(), projectRoot.replace(/\\/g, "/").toLowerCase());
+    assert.deepEqual(model.agents.map((agent) => agent.id), ["claude", "codex", "opencode"]);
+    assert.equal(model.agents[0].history.sync, "none");
+    assert.equal(model.skills.project.state, "none");
 
     const doctor = runAgent(projectRoot, ["doctor"]);
     assert.equal(doctor.status, 0, doctor.stderr);
@@ -203,6 +216,14 @@ test("runtime overview and doctor cover all three agents", async () => {
     assert.match(doctor.stdout, /Claude Code\s+(OK|NOT FOUND)/);
     assert.match(doctor.stdout, /Codex\s+(OK|NOT FOUND)/);
     assert.match(doctor.stdout, /OpenCode\s+(OK|NOT FOUND)/);
+  });
+});
+
+test("status refuses arguments it does not have", async () => {
+  await withTempDirectory("avenic-status-usage-", async (projectRoot) => {
+    const result = runAgent(projectRoot, ["status", "--verbose"]);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /Usage: avenic status \[--json\]/);
   });
 });
 

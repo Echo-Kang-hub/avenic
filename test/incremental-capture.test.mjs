@@ -76,8 +76,12 @@ test("capture never rewrites the native session", async () => {
 // turn this project's bookkeeping into a per-session filesystem walk. The
 // precise contract — a repeated comparison never revisits the filesystem — is
 // asserted in session-adapter-contract.test.mjs; this ceiling only catches a
-// catastrophic regression (re-reading whole foreign transcripts, say), so it
-// is deliberately loose enough to survive a loaded machine.
+// catastrophic regression (re-reading whole foreign transcripts, say).
+//
+// The ceiling is on the work the pass does, not on the clock it took: the test
+// runner runs several files at once, and a pass that waits for the processor
+// has not discovered more. The wall clock is still reported, because a pass
+// that takes seconds of it is worth seeing.
 const FOREIGN_DISCOVERY_BUDGET_MS = 1000;
 
 test("discovery stays bounded when the machine holds a long foreign history", async () => {
@@ -86,13 +90,16 @@ test("discovery stays bounded when the machine holds a long foreign history", as
     const adapter = getSessionAdapter("claude");
     await adapter.capture(projectRoot, { environment });
     const started = process.hrtime.bigint();
+    const cpuBefore = process.cpuUsage();
     const second = await adapter.capture(projectRoot, { environment });
-    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    const cpu = process.cpuUsage(cpuBefore);
+    const ms = (cpu.user + cpu.system) / 1000;
+    const wall = Number(process.hrtime.bigint() - started) / 1e6;
     assert.equal(second.changed, false);
     assert.equal(second.count, sessionIds.length);
     assert.ok(
       ms < FOREIGN_DISCOVERY_BUDGET_MS,
-      `re-discovery took ${ms.toFixed(0)} ms over ${foreignSessions} foreign sessions (budget ${FOREIGN_DISCOVERY_BUDGET_MS} ms)`,
+      `re-discovery spent ${ms.toFixed(0)} ms of processor time (${wall.toFixed(0)} ms wall) over ${foreignSessions} foreign sessions (budget ${FOREIGN_DISCOVERY_BUDGET_MS} ms)`,
     );
   }, { sessions: 2, records: 4, otherWorkspaces: { projects: 60, sessions: 25 } });
 });

@@ -177,7 +177,7 @@ async function main() {
   assert.equal(runtime.agents.claude.sessions, "project");
 
   const status = avenic(["status"], environment).stdout;
-  assert.match(status, /History {2}shared/);
+  assert.match(status, /^History\s+shared$/m);
   assert.match(status, /Claude/);
   assert.match(status, /Codex/);
 
@@ -255,6 +255,19 @@ async function verifyHub(environment) {
   assert.match(synced.stdout, /Syncing /);
   assert.match(synced.stdout, /Synced · [0-9a-f]{7} · \d{4}-\d{2}-\d{2} \d{2}:\d{2}/);
   assert.match(avenic(["hub", "list"], environment).stdout, /Registered Hubs/);
+
+  // `avenic status` is the one place a user looks to see all of it at once, so
+  // the artifact is checked while the Hub is really cached: the block has to
+  // name the revision it just fetched, and the same model has to come back as
+  // JSON for hosts that draw it themselves.
+  const status = avenic(["status"], environment).stdout;
+  assert.match(status, /Skills/);
+  assert.match(status, /Hub\s+\S+ · current · [0-9a-f]{7}/, `status must report the cached Hub revision:\n${status}`);
+  const model = JSON.parse(avenic(["status", "--json"], environment).stdout);
+  assert.equal(model.schemaVersion, 1);
+  assert.equal(model.skills.hub.cache, "current");
+  assert.match(model.skills.hub.revision, /^[0-9a-f]{40}$/);
+  assert.deepEqual(model.agents.map((agent) => agent.id), ["claude", "codex", "opencode"]);
 
   // A Hub that is not there must name the missing repository. "Check your
   // authentication" is the advice that sends users down the wrong path.

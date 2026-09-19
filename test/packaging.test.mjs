@@ -43,7 +43,9 @@ test("core manifest is configured for public publishing", async () => {
   assert.equal(manifest.name, "@avenic/core");
   assert.equal(manifest.private, undefined);
   assert.equal(manifest.license, "MIT");
-  assert.equal(manifest.version, "1.4.2");
+  // 版本号只校验形状：把具体版本写进测试，等于让每次发版都顺手改一次断言，
+  // 而真正要守的不变量是「发布用的 manifest 带着一个正常的 semver」。
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.deepEqual(manifest.files, ["src/", "index.d.ts", "LICENSE"]);
   assert.equal(manifest.exports["."].types, "./index.d.ts");
   assert.equal(manifest.exports["."].import, "./src/index.mjs");

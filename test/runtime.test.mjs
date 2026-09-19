@@ -525,7 +525,9 @@ test("session leases allow concurrent launches and revert on the last exit", asy
     assert.deepEqual(events, ["first:false", "claude-first", "claude-last"], "not the last codex launch");
     await leaveSecond();
     assert.deepEqual(events, ["first:false", "claude-first", "claude-last", "last"]);
-    assert.equal(existsSync(sessionLeasePath("codex", projectRoot)), false, "group state is removed with the last exit");
+    const stateDir = sessionLeasePath("codex", projectRoot);
+    assert.equal(existsSync(path.join(stateDir, "pids")), false, "the last exit leaves no launch in the group");
+    assert.equal(existsSync(path.join(stateDir, "snapshot.clean")), true, "and leaves a snapshot the next launch can trust");
   });
 });
 
@@ -547,7 +549,8 @@ test("session leases salvage the sessions of a crashed launch group", async () =
     assert.deepEqual(events, ["first:true"], "the next launch must see the crashed group");
     await leave();
     assert.deepEqual(events, ["first:true", "last"]);
-    assert.equal(existsSync(stateDir), false);
+    assert.equal(existsSync(path.join(stateDir, "pids")), false, "the salvaged group leaves no live launch behind");
+    assert.equal(existsSync(path.join(stateDir, "snapshot.clean")), true, "and leaves the salvageable snapshot current");
   });
 });
 
@@ -603,7 +606,7 @@ process.exit(0);
     // project, restores native storage, and removes the group state.
     const leaseState = sessionLeasePath("codex", projectRoot);
     const deadline = Date.now() + 20000;
-    while ((existsSync(path.join(codexHome, "sessions", "fake")) || existsSync(leaseState)) && Date.now() < deadline) {
+    while ((existsSync(path.join(codexHome, "sessions", "fake")) || existsSync(path.join(leaseState, "pids"))) && Date.now() < deadline) {
       await delay(100);
     }
     const captured = path.join(projectRoot, ".agents", "sessions", "codex", "sessions", "fake", "session.jsonl");
@@ -611,7 +614,8 @@ process.exit(0);
     const canonical = path.join(projectRoot, ".agents", "sessions", "canonical", "codex-sess-new", "session.json");
     assert.equal(existsSync(canonical), true, "watchdog must commit an unmapped interrupted native session into canonical history");
     assert.equal(existsSync(path.join(codexHome, "sessions", "fake")), false, "watchdog must revert native storage");
-    assert.equal(existsSync(leaseState), false, "watchdog must remove the launch group state");
+    assert.equal(existsSync(path.join(leaseState, "pids")), false, "watchdog must leave no launch in the group");
+    assert.equal(existsSync(path.join(leaseState, "snapshot.clean")), true, "watchdog must leave the reverted snapshot current");
   });
 });
 
@@ -661,7 +665,7 @@ test("Claude native snapshot and revert restore the pre-launch state", async () 
   });
 });
 
-test("Codex native snapshot and revert cover sessions and the index", async () => {
+test("Codex native snapshot and revert cover the project's sessions and the index", async () => {
   await withTempProject(async (projectRoot) => {
     const codexHome = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-codex-snap-"));
     try {
@@ -669,19 +673,35 @@ test("Codex native snapshot and revert cover sessions and the index", async () =
       const snapshotRoot = path.join(projectRoot, "snapshot");
       const sessionDir = path.join(codexHome, "sessions", "2026", "09", "06");
       const sessionFile = path.join(sessionDir, "rollout-1.jsonl");
+      // Codex stores every workspace in one directory. This project owns the
+      // rollout the launch hands the agent; the other one belongs to a
+      // workspace that may be running right now, so this launch must not hold
+      // its content, and must not write over it on the way out.
+      const foreignFile = path.join(codexHome, "sessions", "2026", "09", "05", "rollout-other.jsonl");
       const indexFile = path.join(codexHome, "session_index.jsonl");
+      const portableDir = path.join(projectRoot, ".agents", "sessions", "codex", "sessions", "2026", "09", "06");
       await mkdir(sessionDir, { recursive: true });
+      await mkdir(path.dirname(foreignFile), { recursive: true });
+      await mkdir(portableDir, { recursive: true });
+      await writeFile(path.join(portableDir, "rollout-1.jsonl"), "project copy\n");
       await writeFile(sessionFile, "global\n");
+      await writeFile(foreignFile, "other workspace\n");
       await writeFile(indexFile, `${JSON.stringify({ id: "sess-1" })}\n`);
 
       await codexSessions.snapshotNative(projectRoot, snapshotRoot, { environment });
       await writeFile(sessionFile, "project\n");
       await writeFile(path.join(sessionDir, "new.jsonl"), "new\n");
+      await writeFile(foreignFile, "other workspace, still running\n");
       await writeFile(indexFile, `${JSON.stringify({ id: "sess-1" })}\n${JSON.stringify({ id: "sess-new" })}\n`);
       await codexSessions.revertNative(snapshotRoot, projectRoot, { environment });
 
-      assert.equal(await readFile(sessionFile, "utf8"), "global\n");
-      assert.equal(existsSync(path.join(sessionDir, "new.jsonl")), false);
+      assert.equal(await readFile(sessionFile, "utf8"), "global\n", "the project's own rollout is back to its pre-launch content");
+      assert.equal(existsSync(path.join(sessionDir, "new.jsonl")), false, "a rollout the run created is removed");
+      assert.equal(
+        await readFile(foreignFile, "utf8"),
+        "other workspace, still running\n",
+        "another workspace's rollout is neither reverted nor removed",
+      );
       assert.equal(await readFile(indexFile, "utf8"), `${JSON.stringify({ id: "sess-1" })}\n`);
 
       // Absent storage at snapshot time stays absent after revert.
