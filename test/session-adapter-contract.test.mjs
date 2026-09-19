@@ -52,6 +52,24 @@ test("Codex JSONL normalizes response items and keeps native payload extensions"
   assert.equal(result.events[1].extensions.codex.payload.future, true);
 });
 
+// Codex's own client writes the plugin list, the environment and the
+// instruction files into a thread as `role: "user"` records, ahead of anything
+// the user typed. They arrive with `internal_chat_message_metadata_passthrough`
+// describing what they are; the user's own text is the only thing marked
+// `user.text` (older builds) or `unknown` (0.154.0). Reading one as a turn puts
+// words in the user's mouth and hands them to the next agent through the
+// projection, so capture keeps only the user's own text.
+test("Codex client context messages are not captured as user turns", () => {
+  const context = { timestamp: "2026-09-14T00:00:00.000Z", type: "response_item", payload: { type: "message", id: "msg-context", role: "user", content: [{ type: "input_text", text: "<recommended_plugins>\n- Ledger (ledger@sample-registry)\n</recommended_plugins>" }, { type: "input_text", text: "<environment_context><cwd>/project</cwd></environment_context>" }], internal_chat_message_metadata_passthrough: { turn_id: "auto-compact-1", content_item_kinds: ["plugins.recommendations", "environments.environment_context"] } } };
+  const prompt = { timestamp: "2026-09-14T00:00:00.100Z", type: "response_item", payload: { type: "message", id: "msg-prompt", role: "user", content: [{ type: "input_text", text: "A" }], internal_chat_message_metadata_passthrough: { content_item_kinds: ["unknown"] } } };
+  const legacy = { timestamp: "2026-09-14T00:00:00.200Z", type: "response_item", payload: { type: "message", id: "msg-legacy", role: "user", content: [{ type: "input_text", text: "C" }], internal_chat_message_metadata_passthrough: { content_item_kinds: ["user.text"] } } };
+  const answer = { timestamp: "2026-09-14T00:00:01.000Z", type: "response_item", payload: { type: "message", id: "msg-answer", role: "assistant", content: [{ type: "output_text", text: "B" }], internal_chat_message_metadata_passthrough: { content_item_kinds: ["unknown"] } } };
+  const input = `${JSON.stringify({ type: "session_meta", payload: { id: "codex-1", cwd: "/project" } })}\n${[context, prompt, legacy, answer].map((record) => JSON.stringify(record)).join("\n")}\n`;
+  const result = getSessionAdapter("codex").toCanonical(input, { nativeSessionId: "codex-1" });
+  assert.deepEqual(result.events.map((event) => event.content[0].text), ["A", "C", "B"]);
+  assert.deepEqual(result.events.map((event) => event.role), ["user", "user", "assistant"]);
+});
+
 test("Claude and Codex native readers select the mapped session without scanning credentials", async () => {
   const root = await (await import("node:fs/promises")).mkdtemp(path.join(os.tmpdir(), "avenic-native-reader-"));
   try {

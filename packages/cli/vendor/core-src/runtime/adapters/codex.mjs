@@ -32,6 +32,21 @@ export const agentId = "codex";
 // user had, so neither belongs in the shared history.
 const TOOL_RECORDS = new Set(["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"]);
 
+// Codex's own client writes the plugin list, the environment and the
+// instruction files into a thread as `role: "user"` records, ahead of anything
+// the user typed. `internal_chat_message_metadata_passthrough` says what each
+// item is, and the user's own text is the only thing marked `user.text` (older
+// builds) or `unknown` (0.154.0). A record that carries kinds and none of them
+// is the user's text is the client talking to the model, not the user talking
+// to the agent: capturing it would put words in the user's mouth, show them in
+// the viewer as "You", and hand them to the next agent through the projection.
+const USER_TEXT_KINDS = new Set(["user.text", "unknown"]);
+
+function isClientContextRecord(record) {
+  const kinds = record?.payload?.internal_chat_message_metadata_passthrough?.content_item_kinds;
+  return Array.isArray(kinds) && kinds.length > 0 && !kinds.some((kind) => USER_TEXT_KINDS.has(kind));
+}
+
 export function toCanonical(content, options = {}) {
   const records = parseJsonLines(content, agentId);
   const meta = records.find((record) => record.type === "session_meta");
@@ -40,8 +55,9 @@ export function toCanonical(content, options = {}) {
     if (record.type !== "response_item") return [];
     const payload = record.payload;
     // Avenic's own projection is written into the rollout by Codex itself; a
-    // capture must not read it back as work the agent did.
-    if (isInjectedRecord(record)) return [];
+    // capture must not read it back as work the agent did. Codex's own client
+    // context is the same kind of thing: it is not something the user said.
+    if (isInjectedRecord(record) || isClientContextRecord(record)) return [];
     const isTool = TOOL_RECORDS.has(payload?.type);
     if (payload?.type !== "message" && !isTool) return [];
     const role = isTool ? "tool" : payload.role;
