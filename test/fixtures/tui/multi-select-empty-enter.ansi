@@ -1,0 +1,15 @@
+{save}{repaint}{brand}◆{/}  {strong}Select agents{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Claude Code{/}   {muted}~/.claude · shared link{/}
+{muted}│{/}    {muted}○{/}  Codex   {muted}~/.codex · shared link{/}
+{muted}│{/}    {muted}○{/}  OpenCode   {muted}~/.local/share/opencode{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select agents{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Claude Code{/}   {muted}~/.claude · shared link{/}
+{muted}│{/}    {muted}○{/}  Codex   {muted}~/.codex · shared link{/}
+{muted}│{/}    {muted}○{/}  OpenCode   {muted}~/.local/share/opencode{/}
+{muted}│{/}  {warning}Select at least one agent{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
+{error}✖{/}  {muted}cancel{/}

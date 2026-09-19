@@ -1,0 +1,23 @@
+{save}{repaint}{brand}◆{/}  {strong}Select Packs (1 selected){/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Common{/}   {muted}3 Skills{/}
+{muted}│{/}    {muted}○{/}  Development   {muted}5 Skills{/}
+{muted}│{/}    {muted}○{/}  Research   {muted}4 Skills{/}
+{muted}│{/}  {brand}⌕{/} {muted}type to filter{/}{muted}{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select Packs (1 selected){/}
+{muted}│{/}
+{muted}│{/}    {brand}◉{/}  {brand}Common{/}   {muted}3 Skills{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Development{/}   {muted}5 Skills{/}
+{muted}│{/}    {muted}○{/}  Research   {muted}4 Skills{/}
+{muted}│{/}  {brand}⌕{/} {muted}type to filter{/}{muted}{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select Packs (2 selected){/}
+{muted}│{/}
+{muted}│{/}    {brand}◉{/}  {brand}Common{/}   {muted}3 Skills{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Development{/}   {muted}5 Skills{/}
+{muted}│{/}    {muted}○{/}  Research   {muted}4 Skills{/}
+{muted}│{/}  {brand}⌕{/} {muted}type to filter{/}{muted}{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select Packs (2 selected){/}
+{error}✖{/}  {muted}cancel{/}

@@ -1,0 +1,8 @@
+{save}{repaint}{brand}◆{/}  {strong}Set active session{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Common{/}   {muted}3 Skills{/}
+{muted}│{/}    {muted}○{/}  Development   {muted}5 Skills{/}
+{muted}│{/}    {muted}○{/}  Research   {muted}4 Skills{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Set active session{/}
+{error}✖{/}  {muted}Nothing changed{/}

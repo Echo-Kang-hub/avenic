@@ -1,0 +1,11 @@
+{brand}◆{/}  {strong}Install Skills{/}
+{muted}│{/}  {muted}from the SkillsHub{/}
+{brandSoft}◇{/}  {strong}Ready to install{/}
+{muted}│{/}  {muted}Skills    {/}3 · alpha, beta, gamma
+{muted}│{/}  {muted}Scope     {/}Project
+{muted}│{/}  {muted}·{/}  Hub revision 9122e3a is cached
+{muted}│{/}  {warning}!{/}  12 records could not be read
+{muted}│{/}  {muted}Pack         Skills{/}
+{muted}│{/}  Common       1
+{muted}│{/}  Development  3
+{error}✖{/}  {muted}Nothing installed{/}

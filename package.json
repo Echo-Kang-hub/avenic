@@ -14,6 +14,8 @@
     "test": "node --test test/*.test.mjs",
     "perf": "node scripts/perf/profile.mjs",
     "perf:tui": "node scripts/perf/tui-render.mjs --runs 200",
+  "tui:visual": "node scripts/tui-visual.mjs",
+  "tui:capture": "node scripts/tui-visual.mjs --pty --out dist/tui-captures",
     "test:vscode": "npm --prefix packages/vscode test",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "test:release": "npm run sync-core && node integration/release-smoke.mjs",

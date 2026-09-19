@@ -1,0 +1,22 @@
+{save}{repaint}{brand}◆{/}  {strong}Skills{/}
+{muted}│{/}  {muted}Add, update, or remove Skills in the project scope{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Add skills{/}   {muted}SkillsHub Packs or a Git repository{/}
+{muted}│{/}    {muted}○{/}  Installed skills   {muted}what this scope holds now{/}
+{muted}│{/}    {muted}○{/}  Update skills   {muted}re-install from the latest Hub revision{/}
+{muted}│{/}    {muted}○{/}  Remove skills   {muted}Packs, direct Skills, or everything{/}
+{muted}│{/}    {muted}○{/}  Sync SkillsHub   {muted}fetch the Hub with your git credentials{/}
+{muted}│{/}    {muted}○{/}  Import from repository   {muted}clone, then pick Skills{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brand}◆{/}  {strong}Skills{/}
+{muted}│{/}  {muted}Add, update, or remove Skills in the project scope{/}
+{muted}│{/}
+{muted}│{/}    {muted}○{/}  Add skills   {muted}SkillsHub Packs or a Git repository{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Installed skills{/}   {muted}what this scope holds now{/}
+{muted}│{/}    {muted}○{/}  Update skills   {muted}re-install from the latest Hub revision{/}
+{muted}│{/}    {muted}○{/}  Remove skills   {muted}Packs, direct Skills, or everything{/}
+{muted}│{/}    {muted}○{/}  Sync SkillsHub   {muted}fetch the Hub with your git credentials{/}
+{muted}│{/}    {muted}○{/}  Import from repository   {muted}clone, then pick Skills{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Skills{/}
+{error}✖{/}  {muted}cancel{/}

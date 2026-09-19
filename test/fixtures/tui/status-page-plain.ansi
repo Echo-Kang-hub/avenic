@@ -1,0 +1,26 @@
+AVENIC · Status
+│  D:\FileDownload\Projects\agenthome-cli
+
+◇  Project
+│  Name      agenthome-cli
+│  Agents    claude, codex
+
+◇  History
+│  Mode      shared
+│  Sessions  24
+│  Active    claude-bee6f9b7-0000-0000-0000-000000000000  claude bee6f9b7
+│  Events    5939
+│  Updated   2026-09-19 17:51
+
+◇  Agents
+│  Agent        CLI    Auth             Sessions     History  Sync
+│  Claude Code  found  global auth      10 sessions  10       current
+│  Codex        found  global auth      10 sessions  10       stale
+│  OpenCode     found  not initialized  —            0        —
+│  !  Codex: stale — run: avenic sessions continue <id> --agent <agent> to extend it
+│  ·  OpenCode: run: avenic opencode init
+
+◇  Skills
+│  Project   15 installed · optimized · current
+│  Global    nothing installed
+│  Hub       Echo-Kang-hub/SkillsHub · current · 9122e3a

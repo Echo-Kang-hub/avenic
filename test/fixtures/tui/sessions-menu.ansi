@@ -1,0 +1,26 @@
+{save}{repaint}{brand}◆{/}  {strong}Sessions (shared){/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Continue shared session{/}   {muted}claude bee6f9b7 · 5939 events{/}
+{muted}│{/}    {muted}○{/}  List sessions   {muted}24 sessions{/}
+{muted}│{/}    {muted}○{/}  Import histories   {muted}from the agents' own stores{/}
+{muted}│{/}    {muted}○{/}  Set active session   {muted}what a new launch joins{/}
+{muted}│{/}    {muted}○{/}  Status   {muted}the same page as `avenic status`{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brand}◆{/}  {strong}Sessions (shared){/}
+{muted}│{/}
+{muted}│{/}    {muted}○{/}  Continue shared session   {muted}claude bee6f9b7 · 5939 events{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}List sessions{/}   {muted}24 sessions{/}
+{muted}│{/}    {muted}○{/}  Import histories   {muted}from the agents' own stores{/}
+{muted}│{/}    {muted}○{/}  Set active session   {muted}what a new launch joins{/}
+{muted}│{/}    {muted}○{/}  Status   {muted}the same page as `avenic status`{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brand}◆{/}  {strong}Sessions (shared){/}
+{muted}│{/}
+{muted}│{/}    {muted}○{/}  Continue shared session   {muted}claude bee6f9b7 · 5939 events{/}
+{muted}│{/}    {muted}○{/}  List sessions   {muted}24 sessions{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Import histories{/}   {muted}from the agents' own stores{/}
+{muted}│{/}    {muted}○{/}  Set active session   {muted}what a new launch joins{/}
+{muted}│{/}    {muted}○{/}  Status   {muted}the same page as `avenic status`{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter select · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Sessions (shared){/}
+{error}✖{/}  {muted}cancel{/}

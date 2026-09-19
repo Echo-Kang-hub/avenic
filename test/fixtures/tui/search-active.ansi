@@ -1,0 +1,19 @@
+{save}{repaint}{brand}◆{/}  {strong}Select Skills{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Alpha{/}   {muted}tools{/}
+{muted}│{/}    {muted}○{/}  Beta   {muted}docs{/}
+{muted}│{/}    {muted}○{/}  Gamma   {muted}tools{/}
+{muted}│{/}  {brand}⌕{/} {muted}type to filter{/}{muted}{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select Skills{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Gamma{/}   {muted}tools{/}
+{muted}│{/}  {brand}⌕{/} g{muted}  (1/3){/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select Skills{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Gamma{/}   {muted}tools{/}
+{muted}│{/}  {brand}⌕{/} ga{muted}  (1/3){/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type to filter · ↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select Skills{/}
+{error}✖{/}  {muted}cancel{/}

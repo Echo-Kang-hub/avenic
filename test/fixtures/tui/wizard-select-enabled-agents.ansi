@@ -1,0 +1,20 @@
+{save}{repaint}{brand}◆{/}  {strong}Select enabled agents (2 selected){/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Claude Code{/}   {muted}~/.claude · shared link{/}
+{muted}│{/}    {brand}◉{/}  {brand}Codex{/}   {muted}~/.codex · shared link{/}
+{muted}│{/}    {muted}○{/}  OpenCode   {muted}~/.local/share/opencode{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select enabled agents (2 selected){/}
+{muted}│{/}
+{muted}│{/}    {brand}◉{/}  {brand}Claude Code{/}   {muted}~/.claude · shared link{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Codex{/}   {muted}~/.codex · shared link{/}
+{muted}│{/}    {muted}○{/}  OpenCode   {muted}~/.local/share/opencode{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brand}◆{/}  {strong}Select enabled agents (1 selected){/}
+{muted}│{/}
+{muted}│{/}    {brand}◉{/}  {brand}Claude Code{/}   {muted}~/.claude · shared link{/}
+{muted}│{/}  {brandStrong}▸{/} {muted}○{/}  {strong}Codex{/}   {muted}~/.codex · shared link{/}
+{muted}│{/}    {muted}○{/}  OpenCode   {muted}~/.local/share/opencode{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space toggle · ^a all · enter confirm · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select enabled agents (1 selected){/}
+{error}✖{/}  {muted}cancel{/}

@@ -1,0 +1,26 @@
+{brandStrong}AVENIC{/}{muted} · {/}{strong}Status{/}
+{muted}│{/}  {muted}D:\FileDownload\Projects\agenthome-cli{/}
+
+{brandSoft}◇{/}  {strong}Project{/}
+{muted}│{/}  {muted}Name      {/}agenthome-cli
+{muted}│{/}  {muted}Agents    {/}claude, codex
+
+{brandSoft}◇{/}  {strong}History{/}
+{muted}│{/}  {muted}Mode      {/}shared
+{muted}│{/}  {muted}Sessions  {/}24
+{muted}│{/}  {muted}Active    {/}claude-bee6f9b7-0000-0000-0000-000000000000  claude bee6f9b7
+{muted}│{/}  {muted}Events    {/}5939
+{muted}│{/}  {muted}Updated   {/}2026-09-19 17:51
+
+{brandSoft}◇{/}  {strong}Agents{/}
+{muted}│{/}  {muted}Agent        CLI    Auth             Sessions     History  Sync{/}
+{muted}│{/}  Claude Code  found  global auth      10 sessions  10       current
+{muted}│{/}  Codex        found  global auth      10 sessions  10       stale
+{muted}│{/}  OpenCode     found  not initialized  —            0        —
+{muted}│{/}  {warning}!{/}  Codex: stale — run: avenic sessions continue <id> --agent <agent> to extend it
+{muted}│{/}  {muted}·{/}  OpenCode: run: avenic opencode init
+
+{brandSoft}◇{/}  {strong}Skills{/}
+{muted}│{/}  {muted}Project   {/}15 installed · optimized · current
+{muted}│{/}  {muted}Global    {/}nothing installed
+{muted}│{/}  {muted}Hub       {/}Echo-Kang-hub/SkillsHub · current · 9122e3a
