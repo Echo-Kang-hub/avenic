@@ -91,6 +91,18 @@ test("a terminal too narrow for the mark gets the one-line brand instead", async
   assert.equal(narrow.text(), "AVENIC\n");
 });
 
+test("the README shows the same mark the terminal prints", async () => {
+  // The wordmark in the README is the asset, copied — not a second drawing of
+  // it. A redesign that updates one and not the other is a documentation bug
+  // nobody would notice by reading either alone.
+  const readme = await readFile(path.join(here, "..", "packages", "cli", "README.md"), "utf8");
+  const block = readme.match(/## 终端外观[\s\S]*?```\n([\s\S]*?)```/);
+  assert.ok(block, "README 的终端外观一节要有品牌图形");
+  const shown = block[1].replace(/\n$/, "");
+  const lines = (await fixtureLines()).map((line) => line.replace(ANSI, "").replace(/[ \t]+$/, ""));
+  assert.equal(shown, lines.join("\n"), "README 里的图形必须与终端一致");
+});
+
 test("the compact brand names the product and the page, and fits the terminal", () => {
   const stdout = fakeStdout({ columns: 40 });
   compactBrand(stdout, { environment: { NO_COLOR: "1" }, title: "Status", description: "/some/really/long/project/root/that/will/not/fit/in/forty/columns" });
