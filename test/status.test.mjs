@@ -11,6 +11,7 @@ import {
   syncNativeMapping,
 } from "../packages/core/src/index.mjs";
 import { sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
+import { fakeStdout } from "./helpers/fake-tty.mjs";
 import { withClaudeProject } from "./helpers/session-fixture.mjs";
 
 const event = (id, role = "assistant") => ({
@@ -157,4 +158,45 @@ test("status reads no Hub and runs no git when this machine has no cache", async
     assert.equal(status.skills.hub.revision, null);
     await assert.rejects(readFile(calls, "utf8"), "status must not shell out to git");
   });
+});
+
+test("the missing remedy is a command the project's mode can actually run", async () => {
+  // `avenic sessions continue` 会拒绝 isolated 项目（它按定义要用共享历史），而
+  // `missing` 在 isolated 项目里同样会出现。状态行给的是「下一步跑什么」，那就
+  // 不能把用户指向一个当场就报错的命令。
+  const { renderStatus } = await import("../packages/cli/src/cli/status-cli.mjs");
+  const render = (mode) => {
+    const lines = [];
+    const status = {
+      project: { root: "/tmp/avenic-status", name: "avenic-status", agents: ["claude"] },
+      history: { mode, sessions: 1, active: null, updatedAt: null },
+      agents: [{
+        id: "claude",
+        displayName: "Claude Code",
+        command: "claude",
+        available: true,
+        initialized: true,
+        auth: "subscription",
+        sessions: 2,
+        history: { sync: "missing" },
+      }],
+      skills: { project: { state: "none" }, global: { state: "none" }, hub: { configured: false } },
+    };
+    renderStatus(status, { log: (line) => lines.push(line) }, {
+      stdout: fakeStdout({ columns: 120, isTTY: false }),
+      environment: { NO_COLOR: "1" },
+    });
+    return lines.join("\n");
+  };
+
+  const isolated = render("isolated");
+  const shared = render("shared");
+  assert.match(isolated, /Claude Code: missing —/, "the note is the one under test");
+  assert.doesNotMatch(
+    isolated,
+    /missing — run: avenic sessions continue/,
+    "an isolated project is told to run a command that refuses there",
+  );
+  assert.match(isolated, /run: avenic sessions sync/, "the mode-independent import still leads");
+  assert.match(shared, /run: avenic sessions continue <id> --agent <agent>/, "shared mode can rebuild it");
 });

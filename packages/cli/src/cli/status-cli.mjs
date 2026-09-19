@@ -18,14 +18,22 @@ const SYNC_LABELS = {
 
 const SYNC_REMEDIES = {
   stale: "run: avenic sessions continue <id> --agent <agent> to extend it",
-  // 有两种「missing」：这个 agent 还没有任何副本（sync 就能导入 native 历史），
-  // 以及映射指向的会话哪个存储里都没有了（只有 continue 能从共享历史里重建）。
-  // 先写那个总是有效的动作 —— 让人去 sync 一个已经无处可寻的会话，正是这条
-  // 状态行过去会给出的错误方向。
-  missing: "run: avenic sessions continue <id> --agent <agent> to rebuild it, or avenic sessions sync",
   dirty: "a launch was interrupted — run: avenic sessions sync to finish it",
   running: "a launch is running in this project right now",
 };
+
+/**
+ * `missing` 有两种：这个 agent 还没有任何副本（sync 就能导入 native 历史），以及
+ * 映射指向的会话哪个存储里都没有了 —— 只有 continue 能从共享历史里重建它。而
+ * continue 在 isolated 项目里会直接拒绝（它按定义要用共享历史），`missing` 却
+ * 同样出现在那里。所以这条建议必须看着模式写：状态行给的是「下一步跑什么」，
+ * 就不能把用户指向一个当场报错的命令。
+ */
+function missingRemedy(mode) {
+  return mode === "shared"
+    ? "run: avenic sessions continue <id> --agent <agent> to rebuild it, or avenic sessions sync"
+    : "run: avenic sessions sync, or avenic change --history shared to rebuild it";
+}
 
 function scopeSummary(scope) {
   if (scope.state === "none") return "nothing installed";
@@ -89,7 +97,9 @@ export function renderStatus(status, io = console, options = {}) {
   section(sink, "Agents", at);
   table(sink, ["Agent", "CLI", "Auth", "Sessions", "History", "Sync"], agents.map(agentRow), { colors });
   for (const agent of agents) {
-    const remedy = SYNC_REMEDIES[agent.history.sync];
+    const remedy = agent.history.sync === "missing"
+      ? missingRemedy(history.mode)
+      : SYNC_REMEDIES[agent.history.sync];
     if (remedy) note(sink, `${agent.displayName}: ${SYNC_LABELS[agent.history.sync]} — ${remedy}`, { ...at, mark: "!" });
     else if (!agent.available) note(sink, `${agent.displayName}: the ${agent.command} CLI is not on PATH — Avenic still manages its history`, at);
     else if (!agent.initialized) note(sink, `${agent.displayName}: run: avenic ${agent.id} init`, at);
