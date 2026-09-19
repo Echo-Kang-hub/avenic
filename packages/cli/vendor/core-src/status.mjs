@@ -83,9 +83,9 @@ async function projectionsOf(projectRoot, activeSessionId) {
 /**
  * The sync word for one agent, in the order the words stop being true: a live
  * launch owns this agent's history right now, a dead one left it incomplete,
- * an uninitialized agent has nothing to be in sync with, a conversation the
- * project is supposed to hold but holds nowhere is missing, and a projection
- * behind its canonical events needs rehydrating.
+ * an uninitialized agent has nothing to be in sync with, a projection behind
+ * its canonical events needs rehydrating, and a conversation the project is
+ * supposed to hold but holds nowhere is missing.
  *
  * "Holds nowhere" is asked of the conversation the mapping names, not of the
  * project's session count: a project with fifty healthy sessions and one ghost
