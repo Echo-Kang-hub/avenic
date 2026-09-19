@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.8.2 / 1.6.3 / 0.5.3 - 2026-09-19
+
+- **A launch always leaves its conversation active.** A clean exit could fail
+  to record which conversation had just run: when the background durability
+  pass happened to import the session's final bytes first, the exit pass found
+  nothing left to import — and marking the active conversation lives on the
+  import path, so nothing was ever marked. The next launch saw no active
+  conversation, started a fresh one, and said nothing; the shared thread was
+  silently forked. Found and reproduced four times on the published 1.8.1
+  during post-publish acceptance, most visibly in the VS Code Sessions page,
+  which correctly showed that no conversation was active after a run that had
+  clearly just happened. Imports made by a pass that may not select — the
+  durability watch, startup recovery, `sessions sync` — now leave a pending
+  claim, and the next pass that may select resolves it: the conversation
+  written last, for a launch's exit pass, the run that just ended — whatever
+  the watch imported first.
+- **Codex's own client context is not the user's words.** Codex writes its
+  plugin list, environment and instruction files into a thread as `role:
+  "user"` records ahead of anything the user typed. Captured, entries like
+  `<recommended_plugins>` appeared in the shared conversation under `You`, and
+  were handed to the next agent as a user turn. The record itself says what
+  each item is; a user-role record that carries item kinds and none of them is
+  the user's own text is the client talking to the model, and is now skipped —
+  the same way Avenic's own injected projection already was.
+
 ## 1.8.1 / 1.6.2 / 0.5.2 - 2026-09-19
 
 - **A resumed Codex thread is handed the delta, not the conversation.**

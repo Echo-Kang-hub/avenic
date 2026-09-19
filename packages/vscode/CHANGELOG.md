@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.3
+
+- The Sessions page marks the conversation a run just ended as active again.
+  A clean exit could fail to record it — the thread existed, the page showed
+  it, but nothing was marked active — and Codex client context no longer shows
+  under `You`. Ships the corrected core; the page code itself is unchanged.
+
 ## 0.5.1
 
 - The Sessions and dashboard pages now wear the product's own brand: the
