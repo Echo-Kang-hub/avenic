@@ -143,7 +143,19 @@ export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
   await writeAtomic(path.join(directory, "events.jsonl"), `${allEvents.map((event) => JSON.stringify(event)).join("\n")}\n`);
   const state = deriveState(allEvents);
   await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-  const session = { ...stored.session, state, updatedAt: now(), revision: canonicalSessionRevision(allEvents) };
+  const session = {
+    ...stored.session,
+    state,
+    updatedAt: now(),
+    revision: canonicalSessionRevision(allEvents),
+    // Written next to the events for the readers that only need to say how
+    // much history there is and where it ends. Sizing a canonical session by
+    // reading its event log is what made a status on a real project open tens
+    // of megabytes; the log is the only place these two numbers can be known
+    // exactly, and this is the write that just had them in hand.
+    eventCount: allEvents.length,
+    lastEventId: allEvents.at(-1)?.id ?? null,
+  };
   await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
   return { added: additions.length, duplicate };
 }
@@ -176,4 +188,40 @@ export async function listCanonicalSessions(projectRoot) {
     try { sessions.push((await readCanonicalSession(projectRoot, entry.name)).session); } catch { /* ignore incomplete untrusted entries */ }
   }
   return sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+/**
+ * The canonical session records without their event logs. A host that has to
+ * list or summarise shared history reads this: the records are small, while an
+ * event log is the whole conversation and can be tens of megabytes.
+ */
+export async function listCanonicalSessionRecords(projectRoot) {
+  const root = canonicalRoot(projectRoot);
+  if (!existsSync(root)) return [];
+  const { readdir } = await import("node:fs/promises");
+  const entries = await readdir(root, { withFileTypes: true });
+  const sessions = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
+    const session = await readJson(path.join(root, entry.name, "session.json"), null);
+    if (!session || session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) continue;
+    sessions.push(session);
+  }
+  return sessions.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
+}
+
+/**
+ * How many events a canonical session holds, for a record written before the
+ * count was stored beside them. One pass, no parse; the next append replaces
+ * this with the stored number.
+ */
+export async function countCanonicalEvents(projectRoot, id) {
+  const file = path.join(sessionDirectory(projectRoot, id), "events.jsonl");
+  if (!existsSync(file)) return 0;
+  const content = await readFile(file, "utf8");
+  let lines = content.length > 0 ? 1 : 0;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content.charCodeAt(index) === 10) lines += content.charCodeAt(index + 1) === undefined ? 0 : 1;
+  }
+  return lines;
 }

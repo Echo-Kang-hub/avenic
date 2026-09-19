@@ -254,14 +254,24 @@ export async function status(projectRoot) {
 // Save the native sessions directory and session index into the shared launch
 // state so the last exit can restore them: sessions created by `avenic
 // codex` must live only in the project, never in the global native storage.
+//
+// Codex keeps every workspace's rollouts in one directory, so the files this
+// launch can change are the ones it hands the agent — the project's own
+// history — and the ones the agent writes, which did not exist yet. Copying
+// the rest would copy every other workspace on the machine, twice per launch,
+// and reverting over them would discard a session running in another project
+// at the same time. The snapshot still records the whole tree, so what the run
+// adds is still removed; only the content of another workspace's rollout is
+// left where it was.
 export async function snapshotNative(projectRoot, snapshotRoot, options = {}) {
-  const { codexHome, nativeSessions } = locations(projectRoot, options.environment);
-  await snapshotInto(nativeSessions, path.join(snapshotRoot, "sessions"));
+  const { codexHome, nativeSessions, portable } = locations(projectRoot, options.environment);
+  const mine = await listFiles(path.join(portable, "sessions"));
+  await snapshotInto(nativeSessions, path.join(snapshotRoot, "sessions"), { only: new Set(mine) });
   await snapshotInto(path.join(codexHome, "session_index.jsonl"), path.join(snapshotRoot, "index.jsonl"));
 }
 
 export async function revertNative(snapshotRoot, projectRoot, options = {}) {
   const { codexHome, nativeSessions } = locations(projectRoot, options.environment);
   await revertFrom(path.join(snapshotRoot, "index.jsonl"), path.join(codexHome, "session_index.jsonl"));
-  await revertFrom(path.join(snapshotRoot, "sessions"), nativeSessions);
+  await revertFrom(path.join(snapshotRoot, "sessions"), nativeSessions, { partial: true });
 }

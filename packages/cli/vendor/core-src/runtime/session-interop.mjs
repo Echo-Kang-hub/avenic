@@ -21,6 +21,7 @@ import {
   acquireSessionLease,
   isConversationFile,
   listFiles,
+  markLaunchFinished,
   releaseSessionLease,
   sessionLeasePath,
 } from "./sessions.mjs";
@@ -128,6 +129,12 @@ export async function finishLaunch(projectRoot, agentId, options = {}) {
   } finally {
     if (options.member) {
       await releaseSessionLease(agentId, projectRoot, options.member, launchGroup(projectRoot, agentId, environment)?.hooks ?? {});
+      // The exit sequence reached its end. A watch that outlives this process
+      // reads that as "nothing left to finish" instead of recovering a launch
+      // that already finished recovering itself.
+      try {
+        markLaunchFinished(agentId, projectRoot, options.member);
+      } catch {}
     } else {
       // A host with no launch group still owns the watch state the launch
       // created, and nothing else removes it.

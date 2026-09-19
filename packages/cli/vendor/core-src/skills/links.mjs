@@ -5,6 +5,7 @@ import process from "node:process";
 import { hashContent, samePath } from "../runtime/sessions.mjs";
 import { fail } from "../util/fail.mjs";
 import { isInside } from "../util/fs.mjs";
+import { readJson } from "../util/json.mjs";
 import { assertSafeSkillName } from "./ids.mjs";
 
 // Windows 的 junction 经 readlink 返回带 \\?\ 前缀的绝对路径；比较前必须剥掉。
@@ -16,6 +17,21 @@ export function canonicalTargets(context) {
 
 export function shareTargets(context) {
   return context.targets.filter((target) => Boolean(target.shareFrom));
+}
+
+/**
+ * The share targets this scope last chose, as the lock records them. Every
+ * later command that re-places Skills — uninstall, update, adopt — reuses the
+ * answer, so a target the user deliberately left unchecked is not re-linked by
+ * the next command. `null` means the scope has no preference yet and every
+ * target applies.
+ */
+export async function linkTargetPreference(context) {
+  if (!context.lockFile || !existsSync(context.lockFile)) {
+    return null;
+  }
+  const lock = await readJson(context.lockFile).catch(() => null);
+  return Array.isArray(lock?.targets) ? lock.targets : null;
 }
 
 export function normalizeLinkTarget(linkPath, rawTarget) {
@@ -233,11 +249,17 @@ export async function ensureSkillLinks(context, names, options = {}) {
   // restoreCopy === false：调用方在 canonical 更新前跑时用它推迟拷贝，避免把旧版本落成
   // fallback 副本；建链失败就让条目保持缺席，交给 canonical 更新后的下一趟（默认值）处置。
   const restoreCopy = options.restoreCopy !== false;
+  // targets === undefined：所有 share target（默认）。给出 id 列表时只动这些——用户在
+  // 「Install to」里没勾的目标，这次安装不该碰。
+  const only = options.targets ? new Set(options.targets) : null;
   const requested = [...new Set(names)].sort();
   const counts = emptyCounts();
   const conflicts = [];
   const perTarget = {};
   for (const targetConfig of shareTargets(context)) {
+    if (only && !only.has(targetConfig.id)) {
+      continue;
+    }
     const canonicalRoot = targetConfig.shareDestination;
     const targetCounts = emptyCounts();
     perTarget[targetConfig.id] = targetCounts;

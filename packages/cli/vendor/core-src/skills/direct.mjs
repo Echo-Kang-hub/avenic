@@ -11,6 +11,7 @@ import {
   canonicalTargets,
   ensureSkillLinks,
   formatLinkSummary,
+  linkTargetPreference,
   logConflicts,
   shareTargets,
 } from "./links.mjs";
@@ -40,7 +41,13 @@ export async function readDirectState(context) {
 export async function writeDirectState(context, state) {
   await mkdir(path.dirname(context.lockFile), { recursive: true });
   const previousLock = existsSync(context.lockFile) ? await readJson(context.lockFile) : {};
-  const lock = { ...previousLock, schemaVersion: 3, directSources: state.directSources };
+  const lock = {
+    ...previousLock,
+    schemaVersion: 3,
+    directSources: state.directSources,
+    // 与 Pack 安装共用同一个「落链目标」记忆（见 links.mjs）。
+    ...(Array.isArray(state.targets) ? { targets: state.targets } : {}),
+  };
   await writeJson(context.lockFile, lock);
   const previousConfig = existsSync(context.configFile) ? await readJson(context.configFile) : {};
   const config = {
@@ -62,6 +69,35 @@ async function ensureDirectClone(repository, directory) {
     await cloneHead({ repository }, directory);
   }
   return git(["-C", directory, "rev-parse", "HEAD"]);
+}
+
+/**
+ * Clone a direct source and list the Skills it publishes, installing nothing.
+ * The Add flow needs the names before it can ask which ones to take; the clone
+ * lands in the same state directory `addDirectSkills` uses, so the install that
+ * follows reuses it (a fetch on an existing checkout) rather than cloning twice.
+ */
+export async function discoverDirectSkills(context, sourceReference) {
+  if (sourceReference.includes("#")) {
+    fail(
+      `Refs are not supported for direct sources: ${sourceReference}. Add the source to the catalog to pin a revision.`,
+    );
+  }
+  const repository = normalizeRepositoryInput(sourceReference);
+  const sourceId = deriveSourceId(repository);
+  const directory = path.join(directRoot(context), sourceId);
+  const revision = await ensureDirectClone(repository, directory);
+  const state = await readDirectState(context);
+  const existing = state.directSources.find((source) => source.id === sourceId);
+  const source = {
+    id: sourceId,
+    name: sourceReference.replace(/\.git$/i, ""),
+    repository,
+    revision,
+    skillRoot: existing?.skillRoot ?? await detectSkillRoot(directory),
+  };
+  const discovered = await discoverSourceSkills(source, directory);
+  return { sourceId, revision, skillRoot: source.skillRoot, names: [...discovered.names].sort() };
 }
 
 async function findLicenseFile(cloneDirectory) {
@@ -131,10 +167,13 @@ export async function addDirectSkills(context, sourceReference, skillNames, opti
     return { names: requestedNames, sourceId, revision, alreadyInstalled: true };
   }
 
+  // 落链目标：显式给的优先，否则沿用这个 scope 上次记录的偏好（见 links.mjs）。
+  const targets = options.targets ?? await linkTargetPreference(context);
+
   // 与 Pack 安装同序：先预检（上次的 fallback 副本要拿旧 canonical 比较），再写真身，最后补链。
   // restoreCopy: false —— 预检趟建链失败不得落拷贝：此刻 canonical 还是旧版本，落了就会把
   // 旧内容钉成 fallback 副本，补链趟会把它误判成用户手改的冲突。
-  await ensureSkillLinks(context, requestedNames, { io, silent: true, restoreCopy: false, createLink });
+  await ensureSkillLinks(context, requestedNames, { io, silent: true, restoreCopy: false, createLink, targets });
 
   for (const targetConfig of canonicalTargets(context)) {
     const destination = targetConfig.destination;
@@ -153,8 +192,11 @@ export async function addDirectSkills(context, sourceReference, skillNames, opti
     io.log(`  Added ${requestedNames.length} direct Skill${requestedNames.length === 1 ? "" : "s"}`);
   }
 
-  const linkResult = await ensureSkillLinks(context, requestedNames, { io, silent: true, createLink });
+  const linkResult = await ensureSkillLinks(context, requestedNames, { io, silent: true, createLink, targets });
   for (const targetConfig of shareTargets(context)) {
+    if (targets && !targets.includes(targetConfig.id)) {
+      continue;
+    }
     io.log(`✓ ${targetConfig.label} (shared from ${targetConfig.shareFrom})`);
     io.log(`  Path: ${targetConfig.destination}`);
     io.log(`  ${formatLinkSummary(linkResult.targets[targetConfig.id] ?? linkResult.counts)}`);
@@ -177,7 +219,7 @@ export async function addDirectSkills(context, sourceReference, skillNames, opti
     combined.skillPaths = source.skillPaths;
   }
   const directSources = [...state.directSources.filter((item) => item.id !== sourceId), combined];
-  await writeDirectState(context, { directSources });
+  await writeDirectState(context, { directSources, targets });
   return { names: requestedNames, sourceId, revision };
 }
 

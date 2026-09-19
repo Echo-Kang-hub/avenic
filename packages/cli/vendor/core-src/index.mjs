@@ -8,6 +8,7 @@ export {
   compareCliVersions,
   detectAgentInstallation,
   getAgent,
+  isAgentId,
   parseCliVersion,
 } from "./runtime/agents.mjs";
 export {
@@ -80,7 +81,12 @@ export {
   PROJECT_ROOT_TOKEN,
   acquireSessionLease,
   hashContent,
+  launchFinished,
+  launchGroupState,
+  launchMarkerPath,
   listFiles,
+  markLaunchClosing,
+  markLaunchFinished,
   mergeFiles,
   normalizeProjectIdentity,
   processAlive,
@@ -99,15 +105,19 @@ export {
   CANONICAL_SESSION_SCHEMA_VERSION,
   appendCanonicalEvents,
   canonicalSessionRevision,
+  countCanonicalEvents,
   createCanonicalSession,
+  listCanonicalSessionRecords,
   listCanonicalSessions,
   readCanonicalSession,
   syncNativeMapping,
 } from "./runtime/canonical-sessions.mjs";
+export { STATUS_SCHEMA_VERSION, collectStatus } from "./status.mjs";
 
 export { fail } from "./util/fail.mjs";
 export { isInside, removeEmptyDirectory } from "./util/fs.mjs";
 export { readJson, writeJson } from "./util/json.mjs";
+export { shortTimestamp } from "./util/stamp.mjs";
 export {
   assertSafeId,
   assertSafeSkillName,
@@ -160,6 +170,7 @@ export {
   addDirectSkills,
   directLicensesRoot,
   directRoot,
+  discoverDirectSkills,
   readDirectState,
   removeDirectSkills,
   removeExternalSkills,
@@ -224,6 +235,7 @@ export {
   ensureSkillLinks,
   formatLinkSummary,
   linkSummaryChanged,
+  linkTargetPreference,
   logConflicts,
   normalizeLinkTarget,
   readLinkTarget,

@@ -179,6 +179,10 @@ export interface SessionLeaseCallbacks {
 export function acquireSessionLease(agentId: string, projectRoot: string, callbacks?: SessionLeaseCallbacks): Promise<SessionLease>;
 export function releaseSessionLease(agentId: string, projectRoot: string, member: string, callbacks?: SessionLeaseCallbacks): Promise<unknown>;
 export function sessionLeasePath(agentId: string, projectRoot: string): string;
+// Whether a launch of this agent owns the project right now: "running" means a
+// live process holds the lease, "interrupted" means one died without finishing
+// its exit sequence, "idle" means nothing to recover from.
+export function launchGroupState(agentId: string, projectRoot: string): Promise<"idle" | "running" | "interrupted">;
 export function processAlive(pid: number): boolean;
 export function samePath(left: string, right: string): boolean;
 export function normalizeProjectIdentity(value: string): string | null;
@@ -219,6 +223,21 @@ export interface ContinuationResult {
 }
 export function createCanonicalSession(projectRoot: string, input?: Record<string, unknown>): Promise<{ id: string; created: boolean }>;
 export function listCanonicalSessions(projectRoot: string): Promise<Array<{ id: string; title?: string; updatedAt?: string }>>;
+// The session records themselves, newest first, without reading any event log:
+// same directories as listCanonicalSessions, but carrying the counts a status
+// view needs (eventCount and lastEventId are absent on records written before
+// they were stored; countCanonicalEvents fills that in for one session).
+export interface CanonicalSessionRecord {
+  id: string;
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  eventCount?: number;
+  lastEventId?: string | null;
+  [key: string]: unknown;
+}
+export function listCanonicalSessionRecords(projectRoot: string): Promise<CanonicalSessionRecord[]>;
+export function countCanonicalEvents(projectRoot: string, id: string): Promise<number>;
 export function observeSharedNativeSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
 export function formatSessionDiagnostics(diagnostics?: unknown[]): { warnings: string[]; notes: string[] };
 export interface LaunchGroup {
@@ -283,6 +302,10 @@ export function isInside(directory: string, target: string): boolean;
 export function removeEmptyDirectory(directory: string): Promise<unknown>;
 export function readJson(file: string): Promise<any>;
 export function writeJson(file: string, value: unknown): Promise<unknown>;
+// The one way Avenic renders a moment — "2026-09-19 14:03" in the reader's own
+// time zone, or null when the value cannot be read as a date. Shared so no host
+// invents a second format for the same timestamp.
+export function shortTimestamp(value?: Date | string | number): string | null;
 
 // ---- skills: ids ----
 
@@ -451,9 +474,11 @@ export interface InstallContext {
   targets: InstallTarget[];
 }
 export function isCatalogDirectory(directory: string): boolean;
-export function createInstallContext(global: boolean, options?: { cwd?: string; environment?: ProcessEnvLike }): InstallContext;
+export function createInstallContext(global: boolean, options?: { cwd?: string; environment?: ProcessEnvLike; migrate?: boolean }): InstallContext;
 export function canonicalTargets(context: InstallContext): InstallTarget[];
 export function shareTargets(context: InstallContext): InstallTarget[];
+// 这个 scope 上次选定的落链目标（锁文件记的）；null = 还没选过，全部适用。
+export function linkTargetPreference(context: InstallContext): Promise<string[] | null>;
 export function normalizeLinkTarget(linkPath: string, rawTarget: string): string;
 export function readLinkTarget(linkPath: string): Promise<string | null>;
 export function createSkillLink(canonicalPath: string, linkPath: string): Promise<void>;
@@ -484,7 +509,14 @@ export function ensureSkillLinks(
   context: InstallContext,
   names: Iterable<string>,
   // restoreCopy: false 用于 canonical 更新前的预检趟——建链失败时不落拷贝（默认 true）。
-  options?: { io?: Io; silent?: boolean; restoreCopy?: boolean; createLink?: (canonicalPath: string, linkPath: string) => Promise<void> },
+  // targets：只处理这些 share target id（省略 = 全部）。
+  options?: {
+    io?: Io;
+    silent?: boolean;
+    restoreCopy?: boolean;
+    targets?: string[];
+    createLink?: (canonicalPath: string, linkPath: string) => Promise<void>;
+  },
 ): Promise<{ counts: LinkCounts; conflicts: LinkConflict[]; targets: Record<string, LinkCounts> }>;
 export function formatLinkSummary(counts: LinkCounts): string;
 export function linkSummaryChanged(counts: LinkCounts): boolean;
@@ -493,15 +525,15 @@ export function resolveInstallPacks(context: InstallContext, explicitPacks: stri
 export function previousManagedState(context: InstallContext): Promise<Map<string, { sourceId: string; revision: string }>>;
 export function managedSkillNames(context: InstallContext): Promise<Set<string>>;
 export function installedPackIds(context: InstallContext): Promise<string[] | null>;
-export function installCopies(context: InstallContext, resolvedPacks: ResolvedPacks, io?: Io): Promise<unknown>;
-export function writeInstallMetadata(context: InstallContext, resolvedPacks: ResolvedPacks, catalogInfo?: Partial<CatalogInfo> & { packageMetadata?: unknown }): Promise<unknown>;
+export function installCopies(context: InstallContext, resolvedPacks: ResolvedPacks, io?: Io, options?: { targets?: string[] | null }): Promise<unknown>;
+export function writeInstallMetadata(context: InstallContext, resolvedPacks: ResolvedPacks, catalogInfo?: Partial<CatalogInfo> & { packageMetadata?: unknown }, options?: { targets?: string[] | null }): Promise<unknown>;
 export function removeAllManagedSkills(context: InstallContext, managed: Map<string, unknown>, io?: Io): Promise<number>;
 export function removeSkillDirectories(context: InstallContext, skillNames: string[], io?: Io): Promise<number>;
 export function removeInstallationFiles(context: InstallContext): Promise<unknown>;
 export function directSkillNames(context: InstallContext): Promise<string[]>;
 export function removeAllInstalledSkills(context: InstallContext, io?: Io): Promise<{ direct: number; managed: number }>;
 export function resolveInstallSource(options: { global?: boolean; cwd?: string; environment?: ProcessEnvLike; io?: Io }, opts?: { refresh?: boolean }): Promise<CatalogInfo & { packageMetadata: unknown }>;
-export function installPacks(context: InstallContext, explicitPacks?: string[], options?: { io?: Io; onPlan?: (resolvedPacks: ResolvedPacks) => void }): Promise<{ catalogInfo: CatalogInfo; packIds: string[]; resolvedPacks: ResolvedPacks }>;
+export function installPacks(context: InstallContext, explicitPacks?: string[], options?: { io?: Io; onPlan?: (resolvedPacks: ResolvedPacks) => void; targets?: string[]; refresh?: boolean }): Promise<{ catalogInfo: CatalogInfo; packIds: string[]; resolvedPacks: ResolvedPacks; targets: string[] | null }>;
 export function uninstallPacks(context: InstallContext, packArguments?: string[], options?: { io?: Io; onPlan?: (resolvedPacks: ResolvedPacks, removed: string[]) => void }): Promise<{ changed: boolean; removed: string[]; absent: string[]; skippedCommon: boolean; current: string[] | null; resolvedPacks?: ResolvedPacks }>;
 export interface InstallTargetStatus extends InstallTarget {
   present: number;
@@ -560,12 +592,16 @@ export function adoptPackedSkills(
 
 export interface DirectSourceState {
   directSources: Array<Source & { skills: string[] }>;
+  // 与 Pack 安装共用同一个「落链目标」记忆（见 linkTargetPreference）。
+  targets?: string[];
 }
 export function directRoot(context: InstallContext): string;
 export function directLicensesRoot(context: InstallContext): string;
 export function readDirectState(context: InstallContext): Promise<DirectSourceState>;
 export function writeDirectState(context: InstallContext, state: DirectSourceState): Promise<unknown>;
-export function addDirectSkills(context: InstallContext, sourceReference: string, skillNames: string[], options?: { io?: Io }): Promise<{ names: string[]; sourceId: string; revision: string; alreadyInstalled?: boolean }>;
+export function addDirectSkills(context: InstallContext, sourceReference: string, skillNames: string[], options?: { io?: Io; targets?: string[]; createLink?: (canonicalPath: string, linkPath: string) => Promise<void> }): Promise<{ names: string[]; sourceId: string; revision: string; alreadyInstalled?: boolean }>;
+// 克隆并列出直装源发布的 Skill，不安装任何东西（Add 流程的发现步骤）。
+export function discoverDirectSkills(context: InstallContext, sourceReference: string): Promise<{ sourceId: string; revision: string; skillRoot: string | undefined; names: string[] }>;
 export function removeDirectSkills(context: InstallContext, skillNames: string[]): Promise<string[]>;
 export function removeExternalSkills(context: InstallContext, skillNames: string[], options?: { io?: Io }): Promise<{ directRemoved: string[]; removedDirectories: number }>;
 
@@ -738,3 +774,86 @@ export function testConnection(
 // 预览用它，而不是在 media/main.js 里再写一遍 —— 设计 §9.7 禁止插件侧第二份业务逻辑。
 // 无效 Base URL 会抛（与 probe 同一条校验路径），调用方负责转成界面提示。
 export function probeUrl(baseUrl: string, api: ApiType): string;
+
+// ---- status: one project, one description ----
+// Every host renders this same object: the terminal as text, `status --json`
+// unchanged, the extension as a tree. Read-only and local — no network, no git
+// fetch, no launch reconciliation, no agent CLI started — so it is safe to call
+// from a render pass or a file watch.
+export const STATUS_SCHEMA_VERSION: number;
+
+/** The six words that describe one agent's shared history, in the order they stop being true. */
+export type AgentSyncState = "none" | "running" | "dirty" | "stale" | "missing" | "current";
+
+export interface StatusAgent {
+  id: string;
+  displayName: string;
+  command: string;
+  executable: string | null;
+  available: boolean;
+  installMethod: AgentInstallMethod;
+  /** Whether this project's config lists the agent at all. */
+  initialized: boolean;
+  auth: string | null;
+  sessions: string | null;
+  history: {
+    /** The agent's native session directory for this project. */
+    directory: string;
+    sessions: number;
+    launchGroup: "idle" | "running" | "interrupted";
+    projection: { nativeSessionId: string; lastSyncedAt: string | null; lastCanonicalEventId: string | null } | null;
+    sync: AgentSyncState;
+  };
+}
+
+export interface StatusSkillsScope {
+  scope: "project" | "global";
+  /** "none" and "unreadable" are different answers, and only one is actionable. */
+  state: string;
+  installed: number | null;
+  packs: Array<{ id: string; name: string }>;
+  targets: Array<{
+    id: string;
+    label: string;
+    /** The agents that read this directory, so a renderer can split by agent or column by target. */
+    agents: string[];
+    state: string;
+    complete: boolean;
+    present: number;
+    total: number;
+  }>;
+}
+
+export interface StatusModel {
+  schemaVersion: number;
+  project: { root: string; name: string; configured: boolean; agents: string[]; historyMode: "shared" | "isolated" };
+  history: {
+    mode: "shared" | "isolated";
+    sessions: number;
+    active: string | null;
+    activeTitle: string | null;
+    activeEvents: number | null;
+    activeLastEventId: string | null;
+    activeUpdatedAt: string | null;
+    updatedAt: string | null;
+    projections: Record<string, { nativeSessionId: string; lastSyncedAt: string | null; lastCanonicalEventId: string | null }>;
+  };
+  agents: StatusAgent[];
+  skills: {
+    project: StatusSkillsScope;
+    global: StatusSkillsScope;
+    hub: {
+      configured: boolean;
+      spec: string;
+      name: string;
+      repository: string;
+      ref: string | null;
+      directory: string;
+      revision: string | null;
+      pinned: string | null;
+      /** "missing" is no checkout on this machine; "stale" is one that is not the revision the lock file pinned. */
+      cache: "missing" | "stale" | "current";
+    };
+  };
+}
+export function collectStatus(projectRoot: string, options?: { environment?: ProcessEnvLike }): Promise<StatusModel>;

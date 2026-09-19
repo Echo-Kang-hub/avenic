@@ -6,6 +6,7 @@ import { fail } from "../util/fail.mjs";
 import { readJson } from "../util/json.mjs";
 import { git, gitFailure, normalizeRepositoryInput, repositoryIdentity } from "./git.mjs";
 import { loadPacks } from "./packs.mjs";
+import { shortTimestamp } from "../util/stamp.mjs";
 import { catalogCacheRoot, defaultCatalogFile, deprecatedEnvironmentValue, knownCatalogsFile } from "./paths.mjs";
 
 const DEFAULT_CATALOG_SPEC = "Echo-Kang-hub/SkillsHub#main";
@@ -97,10 +98,8 @@ export function shortRevision(revision) {
 
 // One line, the same in both front ends: "Synced · a1b2c3d · 2026-09-19 14:03".
 export function hubSyncSummary(info, date = new Date()) {
-  const when = Number.isNaN(date.getTime()) ? new Date() : date;
-  const pad = (value) => String(value).padStart(2, "0");
-  const stamp = `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
-  return `Synced · ${shortRevision(info.revision)} · ${stamp}`;
+  const when = date instanceof Date && !Number.isNaN(date.getTime()) ? date : new Date();
+  return `Synced · ${shortRevision(info.revision)} · ${shortTimestamp(when)}`;
 }
 
 // Filesystem trouble is about this machine, never about the Hub, so it must not

@@ -13,6 +13,7 @@ import {
   classifyShareEntry,
   ensureSkillLinks,
   formatLinkSummary,
+  linkTargetPreference,
   logConflicts,
   removeLinkSafely,
   shareTargets,
@@ -68,7 +69,10 @@ export function createInstallContext(global, options = {}) {
       targets: withShareDestinations(GLOBAL_TARGETS, "Global"),
     };
   }
-  migrateLegacyProjectFiles(cwd);
+  // Hosts that only read the install state pass migrate: false. Renaming a
+  // legacy file is a repair the user asked for by running a command that
+  // changes the project, not a side effect of looking at one.
+  if (options.migrate !== false) migrateLegacyProjectFiles(cwd);
   const projectTargets = PROJECT_TARGETS.map((target) => ({
     ...target,
     destination: path.join(cwd, ...target.relativePath),
@@ -149,7 +153,7 @@ export async function installedPackIds(context) {
   return null;
 }
 
-export async function writeInstallMetadata(context, resolvedPacks, catalogInfo = {}) {
+export async function writeInstallMetadata(context, resolvedPacks, catalogInfo = {}, options = {}) {
   const packageMetadata = catalogInfo.packageMetadata ?? null;
   const packageSpec = catalogInfo.spec ?? packageMetadata?.agentSkills?.packageSpec ?? packageMetadata?.repository?.url;
   const previousConfig = existsSync(context.configFile) ? await readJson(context.configFile) : {};
@@ -174,6 +178,9 @@ export async function writeInstallMetadata(context, resolvedPacks, catalogInfo =
     },
     ...(previousLock.directSources ? { directSources: previousLock.directSources } : {}),
     ...(previousLock.adopted ? { adopted: previousLock.adopted } : {}),
+    // 用户勾过的落链目标（「Install to」）。记下来，卸载/更新才不会把技能重新
+    // 链到一个他明确没勾的目标上。
+    ...(Array.isArray(options.targets) ? { targets: options.targets } : {}),
     agents: [...MANAGED_AGENT_ORDER],
     sources: resolvedPacks.groups.map((group) => ({
       id: group.source.id,
@@ -219,6 +226,9 @@ export async function installCopies(context, resolvedPacks, io = console, option
   const preflightNames = new Set([...previousState.keys(), ...selectedNames]);
   // createLink 透传（测试用于模拟 link-hostile 文件系统）；未提供时按 ensureSkillLinks 的默认建链。
   const createLink = options.createLink;
+  // targets：这次安装要落链的 share target id（undefined = 全部）。真身始终写在
+  // canonical target 上——那是唯一的存储，别的目标都是它的链接。
+  const targets = options.targets ?? null;
 
   // 1) 预检 + 迁移：必须在 canonical 被改动之前。上次安装留下的 fallback 副本此刻与
   //    旧 canonical 内容一致 → 安全的迁移（删副本 + 建链）；先改 canonical 会把它误判成冲突。
@@ -229,6 +239,7 @@ export async function installCopies(context, resolvedPacks, io = console, option
     silent: true,
     restoreCopy: false,
     createLink,
+    targets,
   });
 
   // 2) canonical 安装：只有非 shareFrom 的 target 落真身。
@@ -273,10 +284,13 @@ export async function installCopies(context, resolvedPacks, io = console, option
 
   // 3) 补链：为第 1 步时尚不存在的 canonical 建链（首次安装走这条）；建链失败在此降级拷贝，
   //    内容取自刚更新过的 canonical。
-  const linkResult = await ensureSkillLinks(context, selectedNames, { io, silent: true, createLink });
+  const linkResult = await ensureSkillLinks(context, selectedNames, { io, silent: true, createLink, targets });
 
   // 4) shareFrom 陈旧清理：只解链，真身已在第 2 步删除。
   for (const targetConfig of shareTargets(context)) {
+    if (targets && !targets.includes(targetConfig.id)) {
+      continue;
+    }
     await mkdir(targetConfig.destination, { recursive: true });
     let removed = 0;
     for (const staleName of staleNames) {
@@ -772,16 +786,22 @@ export async function installPacks(context, explicitPacks = [], options = {}) {
     cwd: context.root,
     environment: context.environment,
     io,
-  }, { refresh: explicitPacks.length === 0 });
+  }, {
+    // 无参安装＝从最新 Hub 刷新；显式点名 Pack 时沿用锁定的修订（可复现）。更新
+    // 命令显式点名 Pack 却要最新修订，所以多一个 refresh 开关。
+    refresh: options.refresh ?? explicitPacks.length === 0,
+  });
   const sourceConfig = await loadSources(catalogInfo.catalogRoot);
   const catalog = await buildCatalog(sourceConfig, catalogLayout(catalogInfo.catalogRoot).skills);
   const packs = await loadPacks(catalogInfo.catalogRoot);
   const packIds = await resolveInstallPacks(context, explicitPacks);
   const resolvedPacks = resolvePacks(catalog, sourceConfig, packs, packIds);
+  // 本次落链目标：显式给的优先，否则沿用这个 scope 上次记录的偏好。
+  const targets = options.targets ?? await linkTargetPreference(context);
   await options.onPlan?.(resolvedPacks);
-  await installCopies(context, resolvedPacks, io);
-  await writeInstallMetadata(context, resolvedPacks, catalogInfo);
-  return { catalogInfo, packIds, resolvedPacks };
+  await installCopies(context, resolvedPacks, io, { targets });
+  await writeInstallMetadata(context, resolvedPacks, catalogInfo, { targets });
+  return { catalogInfo, packIds, resolvedPacks, targets };
 }
 
 // Uninstall Packs from a scope: validate the request, reinstall the
@@ -814,8 +834,10 @@ export async function uninstallPacks(context, packArguments = [], options = {}) 
   const packs = await loadPacks(catalogInfo.catalogRoot);
   const remaining = current.filter((packId) => !removable.has(packId));
   const resolvedPacks = resolvePacks(catalog, sourceConfig, packs, remaining);
+  // 卸载重装剩余 Pack 时沿用已记录的落链目标：卸载不是重新选择的机会。
+  const targets = await linkTargetPreference(context);
   await options.onPlan?.(resolvedPacks, removed);
-  await installCopies(context, resolvedPacks, io);
-  await writeInstallMetadata(context, resolvedPacks, catalogInfo);
+  await installCopies(context, resolvedPacks, io, { targets });
+  await writeInstallMetadata(context, resolvedPacks, catalogInfo, { targets });
   return { changed: true, removed, absent, skippedCommon, current, resolvedPacks };
 }

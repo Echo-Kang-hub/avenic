@@ -18,6 +18,15 @@ export const AGENTS = {
   },
 };
 
+/**
+ * Whether a command word names an Agent. The registry is the only list of
+ * Agent ids, so a caller that has to tell an Agent launch from another command
+ * before it has loaded anything else asks here rather than keeping a copy.
+ */
+export function isAgentId(value) {
+  return typeof value === "string" && Object.hasOwn(AGENTS, value);
+}
+
 export function getAgent(agentId) {
   const agent = AGENTS[agentId];
   if (!agent) {
