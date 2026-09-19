@@ -113,10 +113,12 @@ test("the page uses the product's colour roles, and refuses to scroll sideways",
   assert.match(style, /--vscode-/);
   assert.equal(style.includes(ESCAPE), false);
   assert.equal(/https?:\/\//.test(style), false);
-  // 与 CLI 调色板同一套角色：品牌青、成功绿、警告黄、错误红、次要灰（descriptionForeground）。
-  for (const role of ["--vscode-terminal-ansiCyan", "--vscode-terminal-ansiGreen", "--vscode-terminal-ansiYellow", "--vscode-terminal-ansiRed", "--vscode-descriptionForeground"]) {
+  // 与 CLI 调色板同一套角色：品牌红橙（--avenic-brand*）、成功绿、警告黄、错误红、
+  // 次要灰（descriptionForeground）。绿色只表示「成功/当前」，不参与品牌。
+  for (const role of ["--avenic-brand", "--avenic-brand-strong", "--vscode-terminal-ansiGreen", "--vscode-terminal-ansiYellow", "--vscode-terminal-ansiRed", "--vscode-descriptionForeground"]) {
     assert.ok(style.includes(role), `缺少配色角色 ${role}`);
   }
+  assert.equal(style.includes("--vscode-terminal-ansiCyan"), false, "品牌不再是青色");
   // 长对话只能竖着读：横向裁掉，正文换行（overflow-wrap:anywhere 处理长路径/长单词）。
   assert.match(style, /overflow-x:\s*hidden/);
   assert.match(style, /overflow-wrap:\s*anywhere/);
