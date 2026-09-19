@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.8.1 / 1.6.2 / 0.5.2 - 2026-09-19
+
+- **A resumed Codex thread is handed the delta, not the conversation.**
+  Switching to Codex a second time used to re-inject everything the thread did
+  not write itself: measured on a sixty-turn conversation, a resume that
+  carried two new turns injected sixty-two items, starting at the first turn of
+  the conversation. The thread then held the same exchange twice in its own
+  model-visible history, and every later switch cost the whole history rather
+  than its delta — the opposite of what the adapter documented and what these
+  notes claimed. The projection now also cuts at the canonical event the
+  mapping says the target was given, so a resume carries what arrived since;
+  a thread that has to be created still receives the conversation whole, and a
+  mapping whose recorded event is no longer in the history is read as "no cut"
+  rather than as a guess.
+- A tool result is filed by the Anthropic API under role `user` — the shape of
+  the request it came back in, not a claim about who spoke. Read by role, one
+  agent's tool output was handed to the next one as an unlabelled user message,
+  and the Sessions page showed it under `You`. One rule now decides the speaker
+  everywhere: only the person's own words are the person's, another agent's
+  turn — including its tool traffic — arrives in the assistant role and named
+  after the agent that produced it, and the viewer keeps tool traffic attached
+  to the agent that ran it.
+- `truncate` measured painted rows in raw bytes: a colour code counted as
+  columns, so a selected or searched row could cut twenty columns early, and a
+  cut could land inside a colour code and leave a half-written escape on the
+  terminal. Colour costs no columns now, and a row cut while still painted
+  closes itself instead of colouring what follows it.
+- The pseudoconsole test asks for the terminal it asserts about. It inherited
+  the machine's environment, so a developer with `NO_COLOR` set — or a bare
+  `TERM` — saw "the brand reaches a real terminal" fail on a product that was
+  degrading exactly as designed. The same assertion now holds under
+  `NO_COLOR=1 TERM=xterm` and under `FORCE_COLOR=3 TERM=dumb`.
+
 ## 1.8.0 / 1.6.1 - 2026-09-19
 
 - **The terminal has a face of its own.** Avenic's brand is red-orange, and it
