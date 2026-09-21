@@ -269,6 +269,17 @@ test("the registry line keeps core's three answers apart", async () => {
   assert.match(js, /data\.hub\.state === "current" \? "Sync again" : "Sync"/);
 });
 
+test("a skill's name is the card's own type, in the width the reference gives it", async () => {
+  const css = await read("style.css");
+  // 参考图里三行技能名的墨迹宽 75 / 56 / 60px（13 / 11 / 11 个字符）——同字数不同宽，
+  // 说明它不是等宽字；墨迹里只有 40% 的像素接近纯白，而加粗的同一句话是 72%，说明它
+  // 也不是粗体。此前我们用等宽粗体，13 个字符要 81px，84px 的列窗放不下 "code-reviewer"，
+  // 于是参考图里完整的那一行在我们这里被截成 "code-revie…"。
+  assert.match(css, /\.skill-name\s*\{[^}]*width:\s*84px/);
+  assert.ok(!/\.skill-name\s*\{[^}]*font-family:\s*var\(--av-font-mono\)/.test(css), "技能名是比例字体，不是等宽");
+  assert.ok(!/\.skill-name\s*\{[^}]*font-weight:\s*(700|bold)/.test(css), "技能名不加粗");
+});
+
 test("the state dots the payload can ask for all have a colour", async () => {
   const css = await read("style.css");
   const js = await read("main.js");
