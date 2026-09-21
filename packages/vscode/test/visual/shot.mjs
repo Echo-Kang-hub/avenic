@@ -57,6 +57,11 @@ const keyboardRun = args.has("keyboard");
 // destinations that are not the reference screenshot get rendered and checked
 // too. The click is the real handler; nothing here knows how a section draws.
 const sectionArg = args.get("section") ?? null;
+// --tab <label>: click that tab by the words on it before dumping, so a pane that
+// only exists behind a tab — the registry, where a cache that was never synced is
+// the whole content — is rendered and checked like any other. Same rule as
+// --section: the click is the real handler.
+const tabArg = args.get("tab") ?? null;
 
 const EDGE_CANDIDATES = [
   "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
@@ -206,8 +211,21 @@ function buildPage(payload, fixture) {
   const js = readFileSync(path.join(media, "main.js"), "utf8");
   const geometry = `
 (function () {
-  const api = { postMessage: (m) => { window.__posted = window.__posted || []; window.__posted.push(m); } };
+  // The same payload the page is about to be handed, kept where the structure
+  // dump can reach it: several of those measurements are comparisons against the
+  // data that produced the page ("the header prints the project this payload
+  // names"), which is what makes them gates on the renderer rather than on the
+  // fixture's own values.
+  const FIXTURE = ${JSON.stringify(payload)};
+  const api ={ postMessage: (m) => { window.__posted = window.__posted || []; window.__posted.push(m); } };
   window.acquireVsCodeApi = () => api;
+  // A tab is clicked by the words a reader sees on it, never by an index: an
+  // index would keep "working" after the tabs were reordered.
+  const clickTab = (label) => {
+    const tab = [...document.querySelectorAll('[role="tab"]')].find((node) => (node.textContent || "").trim() === label);
+    if (tab === undefined) throw new Error("no tab labelled " + label);
+    tab.click();
+  };
   window.addEventListener("load", () => {
     // What the panel actually costs, measured in the page. Both numbers are CPU
     // time inside a task (parsing, style, layout), which the virtual clock does
@@ -389,6 +407,55 @@ function buildPage(payload, fixture) {
           return false;
         };
         const loser = (node) => (node.className || node.tagName) + ' · "' + (node.textContent ?? "").trim().slice(0, 28) + '"';
+
+        // The other half of that defect, and the one nothing here could see: an
+        // element that overflows *everything* — wider than the window, with no
+        // ancestor clipping or scrolling it — is invisible to every check above.
+        // losesText asks whether a box loses its own text inside a clip that
+        // covers it, and the "overflowing" check only looks at leaves whose own
+        // overflow is hidden; the page-level scrollWidth test goes quiet the moment
+        // the page root hides the spill, which is exactly the layout that
+        // "overflow: hidden" on the body masks. So this one is geometry, walked up
+        // the ancestor chain instead of read off a declaration.
+        //
+        // Two rules keep it honest, and both of them are about refusing an
+        // explanation that does not explain anything:
+        //   * an ancestor explains a spill only if it really clips that element —
+        //     its overflow is not "visible" AND the element is inside the
+        //     ancestor's scroll box, not merely overlapped by its rectangle. An
+        //     ancestor the element has already escaped past clips nothing, so the
+        //     walk continues above it;
+        //   * the page root is never an explanation. overflow: hidden on the body
+        //     is the blanket this check exists to see through: content wider than
+        //     the section holding it is a real spill whether or not the page hides
+        //     it from the user and from scrollWidth.
+        // The bottom edge is deliberately not reported: content under the fold is
+        // what scrolling is for. What lands here is painted where only a sideways
+        // page scroll could reach it, which this dashboard must never need.
+        const spilledOut = (node) => {
+          const box = node.getBoundingClientRect();
+          if (box.width <= 0 || box.height <= 0) return null;
+          const right = document.documentElement.clientWidth;
+          const why = [];
+          if (box.right > right + 1) why.push("right +" + Math.round(box.right - right));
+          if (box.left < -1) why.push("left " + Math.round(box.left));
+          if (box.top < -1) why.push("top " + Math.round(box.top));
+          if (why.length === 0) return null;
+          for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
+            if (parent === document.body || parent === document.documentElement) break;
+            const style = getComputedStyle(parent);
+            if (style.overflowX === "visible" && style.overflowY === "visible") continue;
+            const clip = parent.getBoundingClientRect();
+            const inside = clip.left - 1 <= box.left && clip.right + 1 >= box.right && clip.top - 1 <= box.top && clip.bottom + 1 >= box.bottom;
+            if (inside) return null;
+          }
+          return why.join(" ");
+        };
+        // Every element in the page, once: a spill can be the container as easily
+        // as the words inside it, so this does not start from the leaves.
+        const spilled = [...document.querySelectorAll("body *")]
+          .map((node) => { const why = spilledOut(node); return why === null ? null : loser(node) + " · " + why; })
+          .filter((entry) => entry !== null);
         // Whole-page invariants, checked on every render whatever the payload,
         // size or theme. A screenshot shows that something looks wrong; these say
         // what, and they are the only checks the scenario payloads get — the
@@ -416,6 +483,10 @@ function buildPage(payload, fixture) {
           // which field lost its label on a real machine.
           clipped: [...document.querySelectorAll(".row-main, .skill-name, .field-value, .proj-title, .proj-path")].filter(losesText).map(loser).slice(0, 10),
           overflowing: [...document.querySelectorAll("body *")].filter((node) => node.children.length === 0 && (node.textContent ?? "").trim() !== "" && getComputedStyle(node).overflowX === "hidden").filter(losesText).map(loser).slice(0, 10),
+          // Painted outside the window with nothing clipping or scrolling it —
+          // the spill the two checks above cannot name, and the one a page-level
+          // overflow: hidden hides from noHorizontalScroll.
+          spilled: spilled.slice(0, 10),
           // Controls a keyboard user cannot reach or read.
           unlabelledControls: [...document.querySelectorAll("button")].filter((node) => (node.textContent ?? "").trim() === "" && (node.getAttribute("aria-label") ?? "") === "" && (node.title ?? "") === "").length,
           // A strip of chips that switches what is listed under it is a tab
@@ -517,8 +588,139 @@ function buildPage(payload, fixture) {
           // Which destination the sidebar says is showing, read back from the
           // markup rather than assumed from the flag that was passed in.
           section: document.querySelector(".nav-item.active")?.getAttribute("data-section") ?? null,
+          // The same question about the tab strips, for the runs that click one:
+          // a click that changed nothing would check the pane the page already
+          // showed and call that coverage of the pane it asked for.
+          tab: document.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim() ?? null,
           buttons: document.querySelectorAll("button").length,
           icons: document.querySelectorAll(".icon").length,
+        };
+
+        // What the page *is*, as opposed to where its edges are. An anchor
+        // comparison can be satisfied by a page that is not this dashboard: three
+        // agent cards in the wrong order, a two-column row that folded into one,
+        // a section that moved below another — all of them can keep every measured
+        // edge where the reference put it, or (worse) match the reference's boxes
+        // for reasons that have nothing to do with the reference. So the structure
+        // is dumped as its own table of named measurements, and compare.mjs gates
+        // the ones the reference settles.
+        //
+        // Two kinds of value live here and both are real: a measurement of the
+        // rendered page (a width, a count, a hue), and a comparison of the rendered
+        // page against the payload that produced it ("the header names the project
+        // this payload carries"). The second kind is what makes a gate fail when
+        // the renderer stops printing the data, without pinning the gate to one
+        // fixture's strings.
+        const textOf = (node) => (node === null || node === undefined) ? null : (node.textContent || "").trim();
+        const css = (selector) => { const node = document.querySelector(selector); return node === null ? null : getComputedStyle(node); };
+        // "251,110,39": a hue as three numbers, so a gate can allow a channel or
+        // two of rounding without allowing a different colour.
+        const rgbOf = (value) => {
+          const parts = (value || "").match(/[0-9.]+/g) || [];
+          return parts.length >= 3 ? [Math.round(+parts[0]), Math.round(+parts[1]), Math.round(+parts[2])].join(",") : null;
+        };
+        const distinctLefts = (nodes) => new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().left))).size;
+        const sameRow = (nodes) => {
+          if (nodes.length === 0) return 0;
+          const top = nodes[0].getBoundingClientRect().top;
+          return nodes.filter((node) => Math.abs(node.getBoundingClientRect().top - top) <= 2).length;
+        };
+        const rows = [...document.querySelectorAll(".cards-row")];
+        const agentCards = [...document.querySelectorAll(".agent-grid .agent-card")];
+        const agentHeights = agentCards.map((node) => node.getBoundingClientRect().height);
+        const navItems = [...document.querySelectorAll(".side-nav .nav-item[data-section]")];
+        const activeNav = [...document.querySelectorAll(".nav-item.active")];
+        const titles = [...document.querySelectorAll("#content .card-title")].map(textOf);
+        const keys = {
+          "sidebar": document.querySelector(".sidebar"),
+          "header": document.querySelector(".proj-header"),
+        };
+        const sidebar = keys.sidebar;
+        const mark = document.querySelector(".side-brand-mark");
+        const footer = textOf(document.querySelector(".side-version"));
+        const outer = [...document.querySelectorAll("#content > section, #content > .cards-row")]
+          .flatMap((node) => node.matches(".cards-row") ? [...node.children] : [node]);
+        // The cards a reader must be able to see at the size the window is: not
+        // "everything is on screen" (content below the fold is what scrolling is
+        // for) but "nothing is painted where only a sideways scroll could reach it".
+        const keyCards = [...document.querySelectorAll(".sidebar, .proj-header")].concat(outer)
+          .flatMap((node) => node.matches(".cards-row, .stack") ? [...node.children] : [node]);
+        const clientW = document.documentElement.clientWidth;
+        const pageBottom = document.documentElement.scrollHeight;
+        const outside = keyCards.filter((node) => {
+          const box = node.getBoundingClientRect();
+          return box.left < -1 || box.right > clientW + 1 || box.top < -1 || box.bottom > pageBottom + 1;
+        });
+        const agentOrder = agentCards.map((node) => (node.querySelector(".agent-mark")?.className || "").replace("agent-mark", "").trim());
+        rects.structure = {
+          "theme": document.body.className,
+          // Sidebar: the reference's own band is image x45..247, i.e. 202px of
+          // webview (compare.mjs subtracts the activity bar). Measured, not the
+          // CSS token: a token nothing applies is not a layout.
+          "sidebar.present": sidebar !== null,
+          "sidebar.width": sidebar === null ? null : +sidebar.getBoundingClientRect().width.toFixed(1),
+          "sidebar.nav.items": navItems.length,
+          "sidebar.nav.sections": navItems.map((node) => node.getAttribute("data-section")).join(","),
+          "sidebar.active.count": activeNav.length,
+          "sidebar.active.section": textOf(activeNav[0]) === null ? null : activeNav[0].getAttribute("data-section"),
+          // The brand mark is an <img>, so "present" means the file resolved: a
+          // broken src still has a box and would pass a rect test.
+          "sidebar.brand.mark": mark !== null && mark.complete && mark.naturalWidth > 0,
+          "sidebar.footer": footer,
+          "sidebar.footer.opensWithBrand": typeof footer === "string" && footer.startsWith("Avenic v"),
+          // The header: the four things a reader uses it for, and whether each one
+          // carries this payload's answer rather than the renderer's default.
+          "header.present": keys.header !== null
+            && document.getElementById("project-title") !== null
+            && document.getElementById("project-path") !== null
+            && document.getElementById("configured-pill") !== null
+            && document.getElementById("refresh-button") !== null
+            && document.getElementById("reconfigure-button") !== null,
+          "header.title": textOf(document.getElementById("project-title")),
+          "header.title.matchesPayload": textOf(document.getElementById("project-title")) === "Project: " + FIXTURE.project.name,
+          "header.root": textOf(document.getElementById("project-root")),
+          "header.root.matchesPayload": textOf(document.getElementById("project-root")) === String(FIXTURE.project.root),
+          "header.configured": textOf(document.getElementById("configured-label")),
+          "header.configured.matchesPayload": textOf(document.getElementById("configured-label")) === (FIXTURE.project.configured ? "Avenic Configured" : "Not Configured"),
+          "header.refresh": textOf(document.getElementById("refresh-button")),
+          "header.height": keys.header === null ? null : +keys.header.getBoundingClientRect().height.toFixed(1),
+          // Agent Configuration: three cards, in the payload's order, on one row at
+          // a window this wide. The order comes off each card's own mark, not off
+          // the payload, so a renderer that dropped or reordered a card shows here.
+          "agents.cards": agentCards.length,
+          "agents.order": agentOrder.join(","),
+          "agents.row": sameRow(agentCards),
+          "agents.names": agentCards.map((node) => textOf(node.querySelector(".agent-name"))).join(","),
+          "agents.heightSpread": agentHeights.length === 0 ? null : +(Math.max(...agentHeights) - Math.min(...agentHeights)).toFixed(1),
+          // Sessions: two cards side by side, and the pair the reference names.
+          "sessions.cards": rows[0] === undefined ? 0 : [...rows[0].querySelectorAll(":scope > .card")].length,
+          "sessions.columns": rows[0] === undefined ? 0 : distinctLefts([...rows[0].children]),
+          "sessions.titles": rows[0] === undefined ? null : [...rows[0].querySelectorAll(":scope > .card")].map((node) => textOf(node.querySelector(".card-title"))).join("|"),
+          // Skills and Quick Actions: the second two-column row, whose right-hand
+          // column is a stack of Quick Actions over Recent Activity.
+          "bottom.cards": rows[1] === undefined ? 0 : rows[1].querySelectorAll(".card").length,
+          "bottom.columns": rows[1] === undefined ? 0 : distinctLefts([...rows[1].children]),
+          "skills.present": document.querySelector("#content .card.skills") !== null,
+          "quick.present": titles.includes("Quick Actions"),
+          "quick.buttons": document.querySelectorAll(".quick-btn").length,
+          "quick.rows": new Set([...document.querySelectorAll(".quick-btn")].map((node) => Math.round(node.getBoundingClientRect().top))).size,
+          // The order the sections are stacked in, read off the rendered document:
+          // the reference puts Agent Configuration first, then the sessions pair,
+          // then Skills / Quick Actions / Recent Activity.
+          "sections.order": titles.join(" | "),
+          // The brand accent, as painted: the token, the active nav item's glyph
+          // and the primary button's fill. A palette change shows up here even when
+          // every box stays put.
+          "brand.token": (getComputedStyle(document.documentElement).getPropertyValue("--av-brand") || "").trim(),
+          "brand.navActive.rgb": rgbOf(css(".nav-item.active .icon")?.color),
+          "brand.primary.rgb": rgbOf(css(".btn-primary")?.backgroundColor),
+          // Nothing a reader must see may be painted off the reachable page.
+          "keyCards.count": keyCards.length,
+          "keyCards.outside": outside.length,
+          // The page-level overflow verdict and the element-level one, side by
+          // side: the first is the symptom, the second names what did it.
+          "overflow.page": document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
+          "overflow.spilled": spilled.length,
         };
         const script = document.createElement("script");
         script.type = "application/json";
@@ -540,6 +742,10 @@ function buildPage(payload, fixture) {
       const item = document.querySelector('[data-section="${sectionArg ?? ""}"]');
       if (item === null) throw new Error("no sidebar item for section ${sectionArg ?? ""}");
       item.click();
+      if (${tabArg === null ? "false" : "true"}) clickTab(${JSON.stringify(tabArg ?? "")});
+      setTimeout(collect, 120);
+    } else if (${tabArg === null ? "false" : "true"}) {
+      clickTab(${JSON.stringify(tabArg ?? "")});
       setTimeout(collect, 120);
     } else if (${keyboardRun}) {
       tabKeyboard = probeKeyboard();

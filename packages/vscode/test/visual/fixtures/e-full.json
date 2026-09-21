@@ -1,11 +1,15 @@
 {
-  "version": "0.5.5",
+  "version": "1.8.4",
+  "versionDetails": {
+    "cli": "1.8.4",
+    "extension": "0.6.0"
+  },
   "detail": false,
   "project": {
     "name": "atlas",
     "root": "atlas",
     "configured": true,
-    "lastUpdated": "2026-09-21 01:36"
+    "lastUpdated": "2026-09-21 09:27"
   },
   "agents": [
     {
@@ -162,7 +166,7 @@
         "agents": [
           "claude"
         ],
-        "updated": "2026-09-20T17:36:29.840Z",
+        "updated": "2026-09-21T01:27:12.354Z",
         "relative": "just now",
         "active": true
       },
@@ -172,7 +176,7 @@
         "agents": [
           "claude"
         ],
-        "updated": "2026-09-20T17:36:29.795Z",
+        "updated": "2026-09-21T01:27:12.312Z",
         "relative": "just now",
         "active": false
       },
@@ -182,7 +186,7 @@
         "agents": [
           "claude"
         ],
-        "updated": "2026-09-20T17:36:29.756Z",
+        "updated": "2026-09-21T01:27:12.272Z",
         "relative": "just now",
         "active": false
       },
@@ -192,7 +196,7 @@
         "agents": [
           "claude"
         ],
-        "updated": "2026-09-20T17:36:29.708Z",
+        "updated": "2026-09-21T01:27:12.226Z",
         "relative": "just now",
         "active": false
       },
@@ -202,7 +206,7 @@
         "agents": [
           "claude"
         ],
-        "updated": "2026-09-20T17:36:29.663Z",
+        "updated": "2026-09-21T01:27:12.184Z",
         "relative": "just now",
         "active": false
       }
@@ -216,7 +220,7 @@
           "id": "claude-session-0006",
           "title": "summarise this week's changes",
           "agents": [],
-          "updated": "2026-09-20T17:36:29.840Z",
+          "updated": "2026-09-21T01:27:12.354Z",
           "relative": "just now",
           "active": true
         },
@@ -224,7 +228,7 @@
           "id": "claude-session-0005",
           "title": "explain the snapshot restore order",
           "agents": [],
-          "updated": "2026-09-20T17:36:29.795Z",
+          "updated": "2026-09-21T01:27:12.312Z",
           "relative": "just now",
           "active": false
         },
@@ -232,7 +236,7 @@
           "id": "claude-session-0004",
           "title": "add a test for the empty catalog",
           "agents": [],
-          "updated": "2026-09-20T17:36:29.756Z",
+          "updated": "2026-09-21T01:27:12.272Z",
           "relative": "just now",
           "active": false
         },
@@ -240,7 +244,7 @@
           "id": "claude-session-0003",
           "title": "drop the unused vendor shim",
           "agents": [],
-          "updated": "2026-09-20T17:36:29.708Z",
+          "updated": "2026-09-21T01:27:12.226Z",
           "relative": "just now",
           "active": false
         },
@@ -248,7 +252,7 @@
           "id": "claude-session-0002",
           "title": "why does the ledger re-read every account?",
           "agents": [],
-          "updated": "2026-09-20T17:36:29.663Z",
+          "updated": "2026-09-21T01:27:12.184Z",
           "relative": "just now",
           "active": false
         }
@@ -298,7 +302,7 @@
   },
   "hub": {
     "spec": "catalog",
-    "revision": "8d07d357e6f4344fba663ba3dbdfa72382531c81",
+    "revision": "23dbacc82caa38bf14b780cd6eaf4824c65a33a6",
     "state": "current"
   },
   "activity": [],

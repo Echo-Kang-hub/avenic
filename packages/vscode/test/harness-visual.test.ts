@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -18,17 +18,25 @@ after(async () => {
   for (const dir of scratch) await rm(dir, { recursive: true, force: true });
 });
 
+// `structure` and `gates` describe the dump's structural table and the fixture's
+// structural gate list. They default to one gate the synthetic page satisfies, so
+// the anchor tests below stay about anchors; the tests that follow replace them to
+// show that half of the comparison can fail (and that it refuses to run blind).
 async function pair(
   anchors: unknown[],
   viewport: { clientW: number; clientH: number; dpr?: number },
   rects: Record<string, unknown>,
+  structure: Record<string, unknown> | null = { "card.width": 10 },
+  gates: unknown[] | null = [{ name: "card.width", key: "card.width", expect: 10, tol: 0, note: "the synthetic page's own width" }],
 ): Promise<{ geometry: string; fixture: string }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-compare-"));
   scratch.push(dir);
   const fixture = path.join(dir, "fixture.json");
   const geometry = path.join(dir, "shot.geometry.json");
-  await writeFile(fixture, `${JSON.stringify({ meta: { source: "reference.png (100x50)", activityBar: 0, tolerance: 2 }, anchors }, null, 2)}\n`, "utf8");
-  await writeFile(geometry, `${JSON.stringify({ viewport: { dpr: 1, ...viewport }, anchors: rects }, null, 1)}\n`, "utf8");
+  const declared = gates === null ? {} : { structure: gates };
+  const measured = structure === null ? {} : { structure };
+  await writeFile(fixture, `${JSON.stringify({ meta: { source: "reference.png (100x50)", activityBar: 0, tolerance: 2 }, anchors, ...declared }, null, 2)}\n`, "utf8");
+  await writeFile(geometry, `${JSON.stringify({ viewport: { dpr: 1, ...viewport }, anchors: rects, ...measured }, null, 1)}\n`, "utf8");
   return { geometry, fixture };
 }
 
@@ -89,6 +97,48 @@ test("--width/--height is the size the dump is held to", async () => {
   const result = compare(await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }), ["--width", "640", "--height", "480"]);
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /640x480/);
+});
+
+// A page can put every anchored edge where the reference put it and still not be
+// the dashboard: the structure gates are the half that notices, and each of them
+// is only worth having if it can go red on a page (or a dump) that disagrees.
+test("a structural gate the dump disagrees with fails the run", async () => {
+  const result = compare(await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }, { "card.width": 40 }));
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /card\.width/);
+  assert.match(result.output, /structural gate/);
+});
+
+// One gate cannot compare a value: the footer names whichever CLI the reader is
+// running, so the number in it belongs to the machine. The gate is the pattern,
+// and the digits are reported rather than compared — which is only worth doing if
+// both halves hold: a different number passes and is still printed, a string that
+// is not the pattern fails.
+test("a pattern gate passes on another machine's digits and still reports them", async () => {
+  const gate = { name: "sidebar.footer.version", key: "sidebar.footer", match: "^Avenic v[0-9]+\\.[0-9]+\\.[0-9]+$", note: "the footer's shape, not its digits" };
+  const files = await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }, { "sidebar.footer": "Avenic v1.8.3" }, [gate]);
+  const result = compare(files);
+  assert.equal(result.status, 0, result.output);
+  const sidecar = JSON.parse(await readFile(files.geometry.replace(/\.geometry\.json$/, ".compare.json"), "utf8")) as {
+    structural: { rows: { name: string; measured: unknown }[] };
+  };
+  const row = sidecar.structural.rows.find((entry) => entry.name === "sidebar.footer.version");
+  assert.equal(row?.measured, "Avenic v1.8.3", "the exact text the page drew is reported even though it is not gated");
+  const other = compare(await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }, { "sidebar.footer": "Avenic" }, [gate]));
+  assert.notEqual(other.status, 0, other.output);
+  assert.match(other.output, /sidebar\.footer\.version/);
+});
+
+test("a dump with no structure table fails instead of passing its gates by absence", async () => {
+  const result = compare(await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }, null));
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /no structure table/);
+});
+
+test("a fixture that declares no structural gates is refused", async () => {
+  const result = compare(await pair([anchor], { clientW: 100, clientH: 50 }, { card: rect }, { "card.width": 10 }, null));
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /no structural gates/);
 });
 
 // Imported by URL rather than statically: shot.mjs is an entry script, and an

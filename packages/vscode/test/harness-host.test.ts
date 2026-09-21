@@ -14,6 +14,8 @@ const repo = path.resolve(pkgDir, "..", "..");
 const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.mjs")).href)) as {
   verdict: (run: unknown) => { pass: boolean; reasons: string[] };
   wbWait: (find: () => Promise<unknown>, tries: number, gap: number) => Promise<unknown>;
+  clickAllowed: (label: string) => boolean;
+  ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; window: string }[] };
 };
 const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify-artifacts.mjs")).href)) as {
   installVerdict: (attempt: unknown) => { status: string; detail: string };
@@ -25,8 +27,13 @@ const HEADER = { overlaps: [] as string[] };
 const SCREEN = { name: "01-dashboard-open.png", occluded: false, surface: false };
 const SURFACE = { name: "01-dashboard-open.window.png", surface: true, captured: true };
 
+// The footer line the run reads off the page, and the line the shim was proved
+// to answer: a run that got everything else right but painted "Avenic" with no
+// version has not shown that the panel named this repo's CLI.
+const FOOTER = { text: "Avenic v1.8.4", expected: "Avenic v1.8.4" };
+
 const run = (over: Record<string, unknown> = {}) =>
-  host.verdict({ steps: [SKILLS], row: SESSION, header: HEADER, shots: [SCREEN, SURFACE], errors: [], ...over });
+  host.verdict({ steps: [SKILLS], row: SESSION, header: HEADER, shots: [SCREEN, SURFACE], errors: [], footer: FOOTER, ...over });
 
 // The report used to record all of this and exit 0, so a run that clicked
 // nothing and opened nothing was as green as one that worked.
@@ -114,6 +121,40 @@ test("a session click that did not leave Sessions active with a transcript fails
   assert.match(result.reasons.join("\n"), /transcript/);
 });
 
+// 启动或继续一个 agent 是用户自己的动作，不是这个 harness 的——隔离 profile 也不是
+// 借口。步骤表里将来多出一条 "Continue"，要在点下去之前被拒绝，而不是某天悄悄把一个
+// agent 跑起来。
+test("a click that would start an agent is refused, whatever the step list says", () => {
+  for (const label of ["Continue", "continue with Claude", "  Launch", "Resume session"]) {
+    assert.equal(host.clickAllowed(label), false, label);
+  }
+  for (const label of ["Refresh", "Skills", "Sessions", "Overview", "summarize the release notes for 0.5.5"]) {
+    assert.equal(host.clickAllowed(label), true, label);
+  }
+});
+
+// 遮挡检查的失效方式不是「说错了」，而是「什么都没说就当干净」——它只读探针的
+// stdout，探针换了措辞（比如分隔符少了一个 '='）它就静默地给每一次截图发一张清白
+// 证明。因此没有 points= 行、或者点数为零，都是探针坏了，不是窗口干净。
+test("an ownership scan that answered nothing is a broken probe, not a clean window", () => {
+  assert.throws(() => host.ownershipScan("shot=D:/x.png rect=0,0,100,100 img=100x100", "pre"), /no points/);
+  assert.throws(() => host.ownershipScan("pre=points=0 step=40 strangers=0", "pre"), /no points/);
+});
+
+// 数出来的和列出来的对不上，说明输出被截断了——剩下的那几行不足以说这次读是谁的。
+test("an ownership scan whose strangers do not add up is refused", () => {
+  assert.throws(() => host.ownershipScan("pre=points=1870 step=40 strangers=2\npre=199,134 pid=13232 win=Notepad", "pre"), /strangers/);
+});
+
+test("a scan of a window with nothing over it names no strangers", () => {
+  assert.deepEqual(host.ownershipScan("pre=points=1870 step=40 strangers=0", "pre"), { points: 1870, step: 40, strangers: [] });
+});
+
+test("a scan names the window that is over this one, not just its pid", () => {
+  const scan = host.ownershipScan("pre=points=1870 step=40 strangers=1\npre=1219,1334 pid=13232 win=Notepad", "pre");
+  assert.deepEqual(scan.strangers, [{ x: 1219, y: 1334, pid: 13232, window: "Notepad" }]);
+});
+
 test("a screen read of somebody else's window fails the run", () => {
   const result = run({ shots: [{ name: "01-dashboard-open-occluded.png", occluded: true, byPid: 4242 }, SURFACE] });
   assert.equal(result.pass, false);
@@ -124,6 +165,21 @@ test("a run whose compositor fallback never worked fails", () => {
   const result = run({ shots: [SCREEN, { name: "(no surface capture for 01-dashboard-open.png)", surface: true, captured: false }] });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /surface/);
+});
+
+// 底部那一行说的是这台机器上真正在用的那份 CLI，而这次跑把本 checkout 的 CLI 放在
+// 窗口 PATH 的第一段：面板写出来的那句话因此是这次跑证明得了的一句。写别的（或只写
+// 「Avenic」）说明探针没走到这份 CLI，绿色就不能发。
+test("a footer that does not name this repo's CLI fails the run", () => {
+  const result = run({ footer: { text: "Avenic", expected: "Avenic v1.8.4" } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /footer/i);
+});
+
+test("a run that never read the footer fails", () => {
+  const result = run({ footer: null });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /footer/i);
 });
 
 test("an error in the extension's own log fails the run", () => {

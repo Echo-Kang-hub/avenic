@@ -10,6 +10,7 @@ export { initialize, invalidateAgentStatusCache } from "../../src/services/agent
 export { installedPackIds, installPacks, readSkillsSnapshot } from "../../src/services/skills.ts";
 export { select, sync } from "../../src/services/catalog.ts";
 export {
+  applyProjectConfiguration,
   importProjectSessions,
   setActiveCanonicalSession,
   writeApiConfiguration,

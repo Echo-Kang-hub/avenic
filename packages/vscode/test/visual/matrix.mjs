@@ -30,6 +30,18 @@
 // keyboard probe fails too: forcing the arrow key's step to 0 gives "the arrow
 // key left the selection on tab 0 of 3".
 //
+// The two checks added on 2026-09-21 were each watched fail. `spilled` — the
+// element-level half of the overflow question, red when something is painted
+// outside the window with no ancestor clipping or scrolling it — was made red on
+// a render whose page root hides the overflow (`body{overflow-x:hidden}`) while
+// `.agent-grid` is widened to 1800px: `noHorizontalScroll` stays true and says
+// nothing, while the dump names ten elements painting past the right edge and
+// counts 42, which is exactly why this one is walked from geometry rather than
+// read off a declaration. The tab check is the section check one level down, and
+// the perturbation was the harness's own fault — a clickTab that took the first
+// tab instead of the labelled one — which goes red with "the pane on screen is
+// the Installed (0) tab, not the Official Registry tab that was clicked".
+//
 // The time budgets are the panel's promise — a shell inside 100ms, real data
 // inside 300ms — and a render costs a quarter of each (about 20-27ms), so a red
 // here means re-run before chasing: a loaded machine can spend 100ms on a page
@@ -83,10 +95,40 @@ const RUNS = [
   ["a-reference", 1491, 1024, "dark", { section: "quick" }],
   ["a-reference", 1024, 768, "dark", { section: "sessions" }],
   ["e-full", 1491, 1024, "light", { section: "agents" }],
+  // The states a payload can be in that the reference screenshot says nothing
+  // about, because it is only ever one project on one machine: the project's
+  // other history mode, an agent whose CLI is not installed (both agents, so the
+  // wrong card cannot stand in for the right one), a project that is configured
+  // and completely empty, a registry that was never synced, text longer than the
+  // box it goes in, and a window narrower than the stylesheet's last breakpoint.
+  ["d-isolated", 1491, 1024, "dark"],
+  ["f-no-claude", 1491, 1024, "dark"],
+  ["f-no-claude", 1024, 768, "light"],
+  ["g-no-codex", 1491, 1024, "dark"],
+  ["j-bare", 1491, 1024, "dark"],
+  ["h-long-text", 1491, 1024, "dark"],
+  ["h-long-text", 720, 600, "dark"],
+  ["a-reference", 640, 800, "dark"],
+  // The panes behind the Skills tabs. The Installed pane is what the reference
+  // screenshot shows, so the other two — an empty pack list and a registry whose
+  // answer is "never synced" — are only reachable by clicking their tab.
+  ["j-bare", 1491, 1024, "dark", { section: "skills", tab: "Available Packs" }],
+  ["j-bare", 1491, 1024, "dark", { section: "skills", tab: "Official Registry" }],
+  ["e-full", 1491, 1024, "dark", { section: "skills", tab: "Official Registry" }],
 ];
 
+// FIXED, 2026-09-21 — the three narrow runs this block used to leave red. The
+// spill check found them: a-reference-720x600-dark and c-native-720x600-dark
+// (both green until the check existed) and h-long-text-720x600-dark. At those
+// widths the status pill's label wraps — 36.25px tall inside a pill whose height
+// was a fixed 29px — and the band itself was a fixed 74px, so the status block's
+// overflow was centred *above* the band and painted from top -7, off the top of
+// the document where no amount of scrolling reaches it. The fix is in style.css:
+// the pill and the header band are min-height, so both grow to hold what they
+// write. The same payloads at 1491 still measure a 74px band and a 29px pill.
+
 const runName = ([payload, width, height, theme, options = {}]) =>
-  `${payload}-${width}x${height}-${theme}${options.reading ? "-reading" : ""}${options.keyboard ? "-keyboard" : ""}${options.section ? `-${options.section}` : ""}`;
+  `${payload}-${width}x${height}-${theme}${options.reading ? "-reading" : ""}${options.keyboard ? "-keyboard" : ""}${options.section ? `-${options.section}` : ""}${options.tab ? `-${options.tab.replaceAll(" ", "-").toLowerCase()}` : ""}`;
 
 const rows = [];
 const failures = [];
@@ -112,6 +154,7 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   if (options.reading) shotArgs.push("--reading");
   if (options.keyboard) shotArgs.push("--keyboard");
   if (options.section) shotArgs.push("--section", options.section);
+  if (options.tab) shotArgs.push("--tab", options.tab);
   try {
     execFileSync("node", shotArgs, { stdio: ["ignore", "pipe", "pipe"], cwd: packageDir });
   } catch (error) {
@@ -171,6 +214,16 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   if (checks.collapsed.length > 0) problems.push(`collapsed boxes: ${checks.collapsed.join(", ")}`);
   if (checks.clipped.length > 0) problems.push(`text clipped without ellipsis: ${checks.clipped.join(", ")}`);
   if (checks.overflowing.length > 0) problems.push(`content overflowing a clipped box: ${checks.overflowing.join(", ")}`);
+  // The element-level half of the overflow question, and the one the page-level
+  // check above cannot answer: something painted outside the window with no
+  // ancestor clipping or scrolling it. A dump from a shot.mjs that predates this
+  // check has nothing to read, which is a failure too — a check that is absent
+  // passes every run it is absent from.
+  if (checks.spilled === undefined) {
+    problems.push("the geometry dump has no spilled check — shot.mjs produced an older shape");
+  } else if (checks.spilled.length > 0) {
+    problems.push(`painted outside the viewport with nothing clipping it: ${checks.spilled.join(", ")}`);
+  }
   if (checks.unlabelledControls > 0) problems.push(`${checks.unlabelledControls} control(s) with no accessible name`);
   if (checks.tabsNotTabs.length > 0) problems.push(`chips that are not tabs: ${checks.tabsNotTabs.join(", ")}`);
   if (checks.stripsNotTablists > 0) problems.push(`${checks.stripsNotTablists} tab strip(s) with no tablist role`);
@@ -192,6 +245,12 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   // nowhere would otherwise check the Overview six times and call it coverage.
   if (options.section && checks.section !== options.section) {
     problems.push(`the sidebar says it is showing ${checks.section}, not the ${options.section} that was clicked`);
+  }
+  // The same question one level down: a tab click that landed nowhere leaves the
+  // pane the page already had on screen, and a run that asked for another pane
+  // would be checking that one twice.
+  if (options.tab && checks.tab !== options.tab) {
+    problems.push(`the pane on screen is the ${checks.tab} tab, not the ${options.tab} tab that was clicked`);
   }
   // Roles make a tab strip describable; only the arrow key makes it usable.
   if (options.keyboard) {

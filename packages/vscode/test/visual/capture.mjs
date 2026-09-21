@@ -16,9 +16,9 @@
 //
 // One fixture here is not produced by this script: fixtures/a-reference.json is
 // transcribed from the design image and carries a _provenance field saying which
-// of its values are the reference's rather than a host's (its `version` is the
-// reference footer's "1.8.4" — the CLI's version; the real panel renders the
-// extension's own version, 0.5.5 today).
+// of its values are the reference's rather than a host's. Its `version` is the
+// reference footer's "1.8.4", which is also the version this repo's own CLI
+// ships — the footer names that CLI, not the extension.
 //
 // Writing into fixtures/ overwrites the checked-in payloads in place, so every
 // file is hashed before and after and the summary names what actually changed.
@@ -43,12 +43,20 @@ await build({
 });
 
 const api = await import(pathToFileURL(bundlePath).href);
-const { buildDashboardData, initialize, invalidateAgentStatusCache, installPacks, importProjectSessions, makeCatalogFixture, select, testEnv, withAgentHomes, writeApiConfiguration } = api;
+const { applyProjectConfiguration, buildDashboardData, initialize, invalidateAgentStatusCache, installPacks, importProjectSessions, makeCatalogFixture, select, testEnv, withAgentHomes, writeApiConfiguration } = api;
 
-// The footer version is the host's own: panel.ts passes
-// context.extension.packageJSON.version, so the capture passes the packaged
-// extension's version rather than a literal that is stale after the next bump.
+// The footer's two versions are the host's own: the panel passes the extension
+// version it is running and the cached answer to "which Avenic CLI is on this
+// machine" (panel.ts). Neither belongs to the fixture's project, and a capture
+// running on a build machine cannot probe the machine that will read the
+// fixture — so instead of guessing a host's answers, it pins the two versions
+// this repo produces: the packaged extension's, and the CLI's. That keeps the
+// fixture's footer saying what a host of this build would say. What it must not
+// do is turn those digits into an expectation: they are this build's, and the
+// reader may be running another (compare.mjs gates the footer's shape, not its
+// number, for exactly that reason).
 const extensionVersion = JSON.parse(await readFile(path.resolve(here, "..", "..", "package.json"), "utf8")).version;
+const cliVersion = JSON.parse(await readFile(path.resolve(here, "..", "..", "..", "cli", "package.json"), "utf8")).version;
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 1) {
@@ -79,6 +87,37 @@ async function seedClaudePortable(project, entries) {
   for (const [sessionId, lines] of entries) {
     await writeFile(path.join(dir, `${sessionId}.jsonl`), `${lines.join("\n")}\n`);
   }
+}
+
+// A compaction record is the one place Claude's own store carries a name for a
+// session, and the title is taken from it exactly as written — the 80-character
+// cap applies to a title derived from the first thing the user said, not to one
+// the store already holds. This is how a long title really reaches the panel.
+function claudeSummaryLine(sessionId, summary) {
+  return JSON.stringify({ type: "summary", uuid: `fixture-summary-${sessionId}`, sessionId, summary });
+}
+
+// The launchers a scenario wants core to find. Core resolves each agent's CLI by
+// name on PATH (classifyAgentExecutable -> resolveExecutable), so a directory
+// holding a file called `codex` and nothing called `claude` *is* the state
+// "Claude is not installed on this machine" — no mocking, no dead executable.
+// The files are empty: nothing here ever runs them, and an extension-less name
+// is what both the Windows and the POSIX extension lists accept.
+async function shimPath(name, executables) {
+  const dir = path.join(os.tmpdir(), "avenic-visual-shims", name);
+  await mkdir(dir, { recursive: true });
+  for (const executable of executables) await writeFile(path.join(dir, executable), "");
+  return dir;
+}
+
+// PATH is the only thing that decides availability, so a scenario that means to
+// show a missing CLI has to set it rather than inherit this machine's. Both
+// spellings: Node on Windows hands a process `Path`, callers that build a
+// minimal environment hand it `PATH`, and core reads whichever it finds first.
+function pathOnlyTo(directory, env) {
+  env.PATH = directory;
+  env.Path = directory;
+  return env;
 }
 
 // Each scenario gets a fresh tmp root, a project directory and an isolated
@@ -136,6 +175,96 @@ const SCENARIOS = {
     invalidateAgentStatusCache();
     return { project, env };
   },
+
+  // The other history mode: the project keeps one conversation list per agent,
+  // so the Shared Sessions card draws its "shared history is off" state and its
+  // header offers the switch — a branch no other fixture reaches.
+  async "d-isolated"(root) {
+    const project = path.join(root, "solo");
+    await mkdir(project, { recursive: true });
+    const env = pathOnlyTo(await shimPath("d-isolated", ["claude", "codex", "opencode"]), testEnv(path.join(root, "state")));
+    await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+    await writeApiConfiguration(project, "claude", "project", {
+      provider: "DeepSeek",
+      baseUrl: "https://provider.fixture.invalid/v1",
+      model: "deepseek-chat",
+      credential: "fixture-value-not-a-real-credential",
+    });
+    await seedClaudePortable(project, [
+      ["session-0001", [claudeLine("session-0001", 1, "user", "make the isolated list show what it has")]],
+      ["session-0002", [claudeLine("session-0002", 1, "user", "why is this project's history its own?")]],
+    ]);
+    await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
+    // The wizard's own commit path, which is what the dashboard's "Switch to
+    // Shared" action goes through in reverse: the mode is a project answer, so
+    // it is written as one.
+    await applyProjectConfiguration(project, { historyMode: "isolated" }, { environment: env });
+    return { project, env };
+  },
+
+  // Configured for all three, but Claude's CLI is not on this machine. Its card
+  // is the only one that says "CLI not installed", and its Launch is off while
+  // Change stays on — the state where the remedy is an install, not a config.
+  async "f-no-claude"(root) {
+    const project = path.join(root, "half-installed");
+    await mkdir(project, { recursive: true });
+    const env = pathOnlyTo(await shimPath("f-no-claude", ["codex", "opencode"]), testEnv(path.join(root, "state")));
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "codex", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "opencode", { sessionScope: "project" });
+    return { project, env };
+  },
+
+  // The same gap on the other agent, so "one card says CLI not installed" cannot
+  // pass by pointing at the wrong card.
+  async "g-no-codex"(root) {
+    const project = path.join(root, "half-installed");
+    await mkdir(project, { recursive: true });
+    const env = pathOnlyTo(await shimPath("g-no-codex", ["claude", "opencode"]), testEnv(path.join(root, "state")));
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "codex", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "opencode", { sessionScope: "project" });
+    return { project, env };
+  },
+
+  // Everything configured and ready, and nothing to show: no session imported,
+  // no pack installed, the registry never synced. The Overview's empty states
+  // are the whole picture here.
+  async "j-bare"(root) {
+    const project = path.join(root, "empty-shelf");
+    await mkdir(project, { recursive: true });
+    const env = pathOnlyTo(await shimPath("j-bare", ["claude", "codex", "opencode"]), testEnv(path.join(root, "state")));
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "codex", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await initialize(project, "opencode", { sessionScope: "project" });
+    return { project, env };
+  },
+
+  // Text that is longer than the room it gets: a session whose own store named
+  // it in a full sentence, and an API configuration whose provider and model are
+  // as long as real ones get. Both are ordinary values, not malformed input —
+  // the question is whether the cards ellipsize them or push them over an edge.
+  async "h-long-text"(root) {
+    const project = path.join(root, "long-names");
+    await mkdir(project, { recursive: true });
+    const env = pathOnlyTo(await shimPath("h-long-text", ["claude", "codex", "opencode"]), testEnv(path.join(root, "state")));
+    await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+    await writeApiConfiguration(project, "claude", "project", {
+      provider: "DeepSeek Internal Platform Team (apac-production-cluster-2)",
+      baseUrl: "https://provider.fixture.invalid/v1",
+      model: "deepseek-ai/DeepSeek-V3.2-Reasoning-Preview-2026-08-14",
+      credential: "fixture-value-not-a-real-credential",
+    });
+    await seedClaudePortable(project, [
+      ["session-0001", [
+        claudeSummaryLine("session-0001", "Refactor the retry policy so a capped account backs off instead of failing the whole batch, and keep the ledger's ordering guarantees intact while the writer is paused."),
+        claudeLine("session-0001", 1, "user", "the summary above is the title"),
+      ]],
+      ["session-0002", [claudeLine("session-0002", 1, "user", "short one, for contrast")]],
+    ]);
+    await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
+    return { project, env };
+  },
 };
 
 const short = (value) => createHash("sha256").update(value).digest("hex").slice(0, 12);
@@ -168,7 +297,7 @@ async function main() {
       const captured = await withAgentHomes(home, async () => {
         const { project, env } = await SCENARIOS[name](root);
         invalidateAgentStatusCache();
-        const payload = await buildDashboardData(project, env, { version: extensionVersion });
+        const payload = await buildDashboardData(project, env, { cliVersion, extensionVersion });
         // Paths under this throwaway root are this machine's, not the panel's
         // subject: keep the last segment (the folder's own name) and drop the rest.
         const local = (value) => (typeof value === "string" && value.includes(root) ? path.basename(value) : value);

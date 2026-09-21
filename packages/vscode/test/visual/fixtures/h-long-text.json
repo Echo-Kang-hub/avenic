@@ -6,10 +6,10 @@
   },
   "detail": false,
   "project": {
-    "name": "worker",
-    "root": "worker",
+    "name": "long-names",
+    "root": "long-names",
     "configured": true,
-    "lastUpdated": "2026-09-21 09:27"
+    "lastUpdated": "2026-09-21 09:12"
   },
   "agents": [
     {
@@ -23,28 +23,39 @@
         {
           "label": "Authentication",
           "kind": "badge",
-          "value": "Account (Global)",
-          "tone": "blue",
-          "icon": "account"
-        },
-        {
-          "label": "Account Status",
-          "kind": "status",
-          "value": "Not signed in",
+          "value": "API (Project)",
           "tone": "muted",
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Config Source",
           "kind": "value",
-          "value": "~/AppData/Local/Temp/avenic-visual-home/c-native/.claude",
+          "value": ".claude/settings.local.json",
           "tone": "muted",
-          "icon": "folder"
+          "icon": "file-code"
+        },
+        {
+          "label": "Provider",
+          "kind": "value",
+          "value": "DeepSeek Internal Platform Team (apac-production-cluster-2)",
+          "tone": "muted",
+          "icon": "package",
+          "href": ".claude/settings.local.json"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "deepseek-ai/DeepSeek-V3.2-Reasoning-Preview-2026-08-14",
+          "tone": "muted",
+          "icon": "symbol-structure",
+          "options": [
+            "deepseek-ai/DeepSeek-V3.2-Reasoning-Preview-2026-08-14"
+          ]
         }
       ],
       "sessions": {
         "label": "Project",
-        "count": 0,
+        "count": 2,
         "tone": "brand"
       },
       "history": {
@@ -98,8 +109,8 @@
       "id": "opencode",
       "label": "OpenCode",
       "short": "OpenCode",
-      "ready": true,
-      "statusText": "Ready",
+      "ready": false,
+      "statusText": "Not configured",
       "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
       "fields": [
         {
@@ -111,9 +122,9 @@
         }
       ],
       "sessions": {
-        "label": "Project",
+        "label": "Not set",
         "count": 0,
-        "tone": "brand"
+        "tone": "blue"
       },
       "history": {
         "label": "Shared",
@@ -124,23 +135,61 @@
         "icon": "link-external"
       },
       "actions": {
-        "launch": true,
+        "launch": false,
         "change": true
       }
     }
   ],
   "history": {
     "mode": "shared",
-    "sharedCount": 0
+    "sharedCount": 2
   },
   "shared": {
-    "rows": [],
-    "total": 0
+    "rows": [
+      {
+        "id": "claude-session-0002",
+        "title": "short one, for contrast",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-21T01:12:40.106Z",
+        "relative": "just now",
+        "active": true
+      },
+      {
+        "id": "claude-session-0001",
+        "title": "Refactor the retry policy so a capped account backs off instead of failing the whole batch, and keep the ledger's ordering guarantees intact while the writer is paused.",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-21T01:12:40.051Z",
+        "relative": "just now",
+        "active": false
+      }
+    ],
+    "total": 2
   },
   "native": {
     "claude": {
-      "rows": [],
-      "total": 0
+      "rows": [
+        {
+          "id": "claude-session-0002",
+          "title": "short one, for contrast",
+          "agents": [],
+          "updated": "2026-09-21T01:12:40.106Z",
+          "relative": "just now",
+          "active": true
+        },
+        {
+          "id": "claude-session-0001",
+          "title": "Refactor the retry policy so a capped account backs off instead of failing the whole batch, and keep the ledger's ordering guarantees intact while the writer is paused.",
+          "agents": [],
+          "updated": "2026-09-21T01:12:40.051Z",
+          "relative": "just now",
+          "active": false
+        }
+      ],
+      "total": 2
     },
     "codex": {
       "rows": [],

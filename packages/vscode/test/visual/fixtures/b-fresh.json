@@ -1,5 +1,9 @@
 {
-  "version": "0.5.5",
+  "version": "1.8.4",
+  "versionDetails": {
+    "cli": "1.8.4",
+    "extension": "0.6.0"
+  },
   "detail": false,
   "project": {
     "name": "my-app",

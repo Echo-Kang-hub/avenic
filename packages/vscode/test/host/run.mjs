@@ -17,12 +17,12 @@
 //
 // Every shot is taken twice: once off the screen, and once as the window's own
 // compositor surface over CDP. The screen read is the one that shows the real
-// editor, so it is probed at five points for the process that owns the pixels
-// and repeated if another window is above; if it stays occluded the file is
-// saved with `-occluded` in its name, because a picture that is not of this
-// window must not be readable as one that is. The surface capture cannot be
-// occluded at all, so a busy desktop cannot quietly turn the evidence into a
-// picture of somebody else's window.
+// editor, so the whole of it is scanned — a grid of points every 40px, each asked
+// which process owns the window under it — and repeated if another window is
+// above; if it stays occluded the file is saved with `-occluded` in its name,
+// because a picture that is not of this window must not be readable as one that
+// is. The surface capture cannot be occluded at all, so a busy desktop cannot
+// quietly turn the evidence into a picture of somebody else's window.
 //
 // The run ends in a verdict: a click that changed nothing, a session that did
 // not open, a screen read of another window, a lost compositor fallback or an
@@ -31,7 +31,22 @@
 // is dropped back to NOTOPMOST and this run's processes are reaped (--keep
 // leaves the window up to look at).
 //
-// Nothing here launches or resumes an agent session. The fixture is synthetic.
+// Nothing here launches or resumes an agent session. The fixture is synthetic:
+// a project of the class the product is actually used on (API-managed Claude,
+// project-account Codex, OpenCode answering for itself, Skills from a real
+// catalog, sessions on all three agents), built by the production calls in
+// test/host/fixture.mjs.
+//
+// 具体到点击上：这个 harness 只点刷新、分区的导航项和一条会话的*标题*（标题进的是
+// 对话阅读，见 media/dashboard/main.js 的 viewSession），从不点 Continue / Launch——
+// 启动或继续一个 agent 是用户自己的动作，隔离 profile 也不是借口。这条规矩由
+// clickAllowed 把着（见下），所以将来谁往步骤表里加一条 "Continue"，是这里响亮地
+// 拒绝，而不是某天悄悄把一个 agent 跑起来。
+//
+// The window is started with a throwaway bin directory on PATH holding one
+// `avenic.cmd` that runs *this checkout's* CLI, so the footer's version line is
+// a claim about this repo rather than about whatever is installed on the
+// machine — and the report records what that line actually said.
 //
 // Usage: node packages/vscode/test/host/run.mjs [--keep]
 //   expects packages/vscode/dist/avenic-agent-manager.vsix (npm run package).
@@ -39,12 +54,13 @@
 //   actually used are printed and recorded in the report.
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { buildHostFixture } from "./fixture.mjs";
 
 // Derived rather than typed in: a literal repo path turns "check this checkout"
 // into "check whatever happens to sit at that path on this machine".
@@ -57,7 +73,14 @@ const LOCK = `${OUT}/run.pid`;
 const ROOT = path.join(tmpdir(), "avenic-host-check");
 const UD = path.join(ROOT, "ud");
 const EXT = path.join(ROOT, "ext");
-const PROJECT = path.join(ROOT, "project");
+// The project the window opens. Named, not just "project": the dashboard paints
+// the folder's own name in its header, so this is part of what the screenshot
+// shows.
+const PROJECT = path.join(ROOT, "atlas");
+const CATALOG = path.join(ROOT, "catalog");
+const STATE = path.join(ROOT, "state");
+const AGENT_HOME = path.join(ROOT, "home");
+const SHIM = path.join(ROOT, "bin");
 const PORT = 9333;
 const EXT_ID = "EchoKang.avenic-agent-manager";
 const KEEP = process.argv.includes("--keep");
@@ -93,6 +116,43 @@ function resolveEditor() {
   return { launcher, exe };
 }
 
+// ------------------------------------------------------------------ CLI shim
+// 面板底部那一行版本号说的是这台机器真正在用的那份 Avenic CLI：扩展自己跑
+// `avenic --version` 读它的 PATH。所以「这次跑的是这个 checkout」不能是希望，而要是
+// 这个窗口的 PATH 的第一段——run 自己目录里的一个 .cmd，机器上什么都没装、没改。
+// The version is read from the CLI's manifest, not typed in: a literal here is a
+// stale claim the day the version bumps.
+const CLI_VERSION = JSON.parse(readFileSync(`${REPO}/packages/cli/package.json`, "utf8")).version;
+const FOOTER_LINE = `Avenic v${CLI_VERSION}`;
+
+// The environment the window starts with: the shim first on PATH, and the state
+// root inside this run. The second half matters as much as the first — the
+// dashboard reads the catalog cache and the Skills state from this root, so
+// pointing it here is what makes the window read the fixture's catalog instead
+// of the machine's, and keeps every write inside the run's own directory.
+function windowEnvironment() {
+  const inherited = process.env.PATH ?? process.env.Path ?? "";
+  // Both spellings: Windows preserves whichever one a process was started with,
+  // and core's resolver reads PATH first and Path second.
+  const value = `${SHIM}${path.delimiter}${inherited}`;
+  return { ...process.env, PATH: value, Path: value, AVENIC_STATE_DIR: STATE, XDG_CONFIG_HOME: path.join(AGENT_HOME, ".config") };
+}
+
+// Proved before the window depends on it: this is the command the extension's
+// probe runs, so a shim that cannot answer it here cannot answer it in the
+// footer either — and the report says which line it gave.
+function writeCliShim() {
+  const entry = path.join(REPO, "packages", "cli", "scripts", "skills.mjs");
+  mkdirSync(SHIM, { recursive: true });
+  writeFileSync(path.join(SHIM, "avenic.cmd"), `@echo off\r\n"${process.execPath}" "${entry}" %*\r\n`);
+  const output = execFileSync("cmd.exe", ["/c", "avenic", "--version"], { env: windowEnvironment(), encoding: "utf8", timeout: 60_000 }).trim();
+  // The version, not the sentence: the CLI prints `Avenic 1.8.4` and the panel
+  // paints `Avenic v1.8.4`, and the extension reads the first number out of the
+  // CLI's line (core's parseCliVersion, same rule here).
+  const version = output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+  return { entry, file: path.join(SHIM, "avenic.cmd"), output, version, expected: CLI_VERSION };
+}
+
 // ---------------------------------------------------------------- PowerShell
 // Chromium cannot be captured with PrintWindow (GPU-composited content comes
 // back black), so the window is raised with SWP_NOACTIVATE and read off screen.
@@ -126,9 +186,77 @@ public class Win{
    // it in and the caller's SW_RESTORE brings it back to a real rectangle.
    if(q==pid && (IsIconic(h) || (r.Right-r.Left>=200 && r.Bottom-r.Top>=200))) l.Add(h);return true;},IntPtr.Zero);return l;}
  [DllImport("user32.dll")]static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")]static extern int GetWindowTextLength(IntPtr h);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+ [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+ // One point, one call: the scan below asks this a few thousand times, and
+ // marshalling a POINT and two out-parameters from PowerShell each time is what
+ // would make that slow rather than the syscalls.
+ public static IntPtr HandleAt(int x,int y){POINT p;p.X=x;p.Y=y;return WindowFromPoint(p);}
+ public static uint PidOf(IntPtr h){uint q;GetWindowThreadProcessId(h,out q);return q;}
+ // A window this run may raise or read has to be one that is up and named. Electron
+ // keeps an untitled Chrome_WidgetWin_0 hidden behind the editor's window, and
+ // IsWindowVisible reflects that only until somebody shows it: SW_RESTORE and
+ // SWP_SHOWWINDOW are what show it, so the raise itself is what has to refuse.
+ public static bool Visible(IntPtr h){return IsWindowVisible(h);}
+ public static bool Titled(IntPtr h){return GetWindowTextLength(h)>0;}
+ public static string NameOf(IntPtr h){var c=new StringBuilder(256);GetClassName(h,c,c.Capacity);
+  var t=new StringBuilder(GetWindowTextLength(h)+2);GetWindowText(h,t,t.Capacity);
+  return (t.Length>0?t.ToString():c.ToString());}
 }
 "@
 if(-not("Win" -as [type])){Add-Type -TypeDefinition $cs -Language CSharp}
+
+# Every ~40px of the rectangle, and whose process owns each point. Asked twice:
+# once before a read, to decide whether to raise the window again, and once inside
+# the read itself, because a window can arrive between those two calls and a picture
+# is only this instance's if it was this instance's when the pixels were taken.
+#
+# A grid rather than a handful of fixed points, which is what this used to be: nine
+# points (the corners and the centre, then a 3×3) cannot see a window that sits
+# between them, and two runs' artifact shots came back with somebody else's window
+# on them while every point said the pixels were ours. At 40px the only thing that
+# fits between two points is a window narrower than 40px, and a point the intruder
+# covers is a point its process owns — this is the question "is anything else in
+# this picture", asked of every part of it.
+#
+# The grid is inset by 8px so the window's own rounded corners and its drop shadow
+# are not read as somebody else, and it counts as it goes: the report says how many
+# points were sampled, so a scan that silently covered nothing cannot pass for one
+# that covered the window.
+function Get-Owners([string]$tag,[int]$px,[int]$py,[int]$pw,[int]$ph){
+ $step=40;$inset=8;$n=0;$strangers=@()
+ for($y=$py+$inset;$y -lt $py+$ph-$inset;$y+=$step){
+  for($x=$px+$inset;$x -lt $px+$pw-$inset;$x+=$step){
+   $n++
+   $h=[Win]::HandleAt($x,$y);$owner=[Win]::PidOf($h)
+   # This instance's own windows are not intruders: the panel is one process and the
+   # extension host another, and both are ours to be in the picture.
+   if($pids -notcontains $owner){$strangers+=($tag+$x+","+$y+" pid="+$owner+" win="+[Win]::NameOf($h))}}}
+ Write-Output ($tag+"points="+$n+" step="+$step+" strangers="+$strangers.Count)
+ foreach($s in $strangers){Write-Output $s}}
+
+# Which windows this call is about: the ones this profile's processes have up, that
+# are visible and carry a title — the editor's own window, and not the untitled
+# Chrome_WidgetWin_0 that Electron keeps hidden behind it. A raise is not a neutral
+# call on such a window: ShowWindow(SW_RESTORE) plus SWP_SHOWWINDOW is exactly how a
+# window nobody had shown ends up drawn over the panel, and one run's artifact came
+# back as an empty black rectangle full of this harness's own doing.
+$pids=@(Get-CimInstance Win32_Process -Filter "Name='Code.exe'"|Where-Object{$_.CommandLine -like "*avenic-host-check*"}|Select-Object -ExpandProperty ProcessId)
+$mine=@()
+foreach($p in $pids){foreach($wnd in [Win]::Handles($p)){
+ if([Win]::Visible($wnd) -and [Win]::Titled($wnd)){$mine+=$wnd}}}
+
+# Restore + raise those, so the capture cannot be occluded and the renderer reports
+# real screen geometry (a minimized Electron window reports screenX -31999). Called
+# twice per shot: here, and again a step before the shutter, because among topmost
+# windows the most recent raise is the one on top and this call is 900ms and a scan
+# old by the time the pixels are read.
+function Raise(){
+ foreach($wnd in $mine){
+  [void][Win]::ShowWindow($wnd,9)
+  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-1),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002 -bor 0x0040)}}
 
 # Chromium reports device pixels; a DPI-unaware process sees a virtualized
 # desktop (1707x1067 where the display is 2560x1600), and GetWindowRect speaks
@@ -151,39 +279,32 @@ if($Mode -eq "crop"){
  Write-Output "crop=$OutFile";exit 0
 }
 
-# Restore + raise every window this profile owns, so the capture below cannot be
-# occluded and the renderer reports real screen geometry (a minimized Electron
-# window reports screenX -31999).
-$pids=@(Get-CimInstance Win32_Process -Filter "Name='Code.exe'"|Where-Object{$_.CommandLine -like "*avenic-host-check*"}|Select-Object -ExpandProperty ProcessId)
+# Which window this call is about: the biggest of those. Restoring is what gets a
+# real rectangle back (a minimized Electron window reports screenX -31999 until it
+# is), and only one of them is worth a picture.
 $biggest=$null
-foreach($p in $pids){foreach($wnd in [Win]::Handles($p)){
- [void][Win]::ShowWindow($wnd,9)
- [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-1),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002 -bor 0x0040)
+Raise
+foreach($wnd in $mine){
  $r=New-Object Win+RECT;[void][Win]::GetWindowRect($wnd,[ref]$r)
  $area=($r.Right-$r.Left)*($r.Bottom-$r.Top)
  if(-not $biggest -or $area -gt $biggest.area){
-   $biggest=[pscustomobject]@{area=$area;L=$r.Left;T=$r.Top;W=$r.Right-$r.Left;H=$r.Bottom-$r.Top}}}}
+   $biggest=[pscustomobject]@{area=$area;L=$r.Left;T=$r.Top;W=$r.Right-$r.Left;H=$r.Bottom-$r.Top}}}
 Start-Sleep -Milliseconds 900
 
-# What is on top at a point, and whose process owns it: raising the window is
-# not a promise that nothing else is above it, so the report says which pid the
-# capture actually looked at instead of assuming it was ours. Five points, not
-# one: a window covering the sidebar leaves the centre ours, and a centre-only
-# probe would call that shot clean while the file held somebody else's pixels.
+# What is over the window, and whose process owns it: raising is not a promise
+# that nothing else is above it, so the report names what the capture actually
+# looked through instead of assuming it was ours. A grid over the whole rectangle,
+# not a point or a handful of them — a window covering the sidebar leaves the
+# centre ours, and anything small enough to sit between two fixed points would let
+# a shot be called clean while the file held somebody else's pixels.
 if($Mode -eq "probe"){
- $ix=[int]($W*0.1);$iy=[int]($H*0.1)
- $pts=@((($X+$ix),($Y+$iy)),(($X+$W-$ix),($Y+$iy)),(($X+$ix),($Y+$H-$iy)),(($X+$W-$ix),($Y+$H-$iy)),(($X+[int]($W/2)),($Y+[int]($H/2))))
- foreach($p in $pts){
-  $pt=New-Object Win+POINT;$pt.X=[int]$p[0];$pt.Y=[int]$p[1]
-  $top=[Win]::WindowFromPoint($pt)
-  [uint32]$owner=0;[void][Win]::GetWindowThreadProcessId($top,[ref]$owner)
-  Write-Output ("probe=" + $pt.X + "," + $pt.Y + " pid=" + $owner)}
+ Get-Owners "probe=" $X $Y $W $H
  exit 0
 }
 
 if($Mode -eq "raise"){
- foreach($p in $pids){foreach($wnd in [Win]::Handles($p)){
-  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}}
+ foreach($wnd in $mine){
+  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}
  Write-Output "rect=$($biggest.L),$($biggest.T),$($biggest.W),$($biggest.H)";exit 0
 }
 
@@ -195,12 +316,23 @@ $clip=@()
 if($X+$W -gt $vw){$W=[Math]::Max(1,$vw-$X);$clip+="right"}
 if($Y+$H -gt $vh){$H=[Math]::Max(1,$vh-$Y);$clip+="bottom"}
 $note=if($clip.Count){" clip="+($clip -join "+")}else{""}
+# Raised once more, this close to the shutter. The call above is a second old by
+# now, which is long enough for somebody to have put their own window up, and a
+# raise is the only answer this harness has to that: among topmost windows the last
+# one raised is the one on top. It is not a promise either — the scan below is what
+# has the last word, and it is asked of the rectangle as it is at the shutter.
+Raise
+Start-Sleep -Milliseconds 250
+# The same grid, read here — the call above happened seconds ago, and a window that
+# arrived since is invisible to it. The report demotes the file when this disagrees
+# with the process the read was meant to be of.
+Get-Owners "pre=" $X $Y $W $H
 $bmp=New-Object System.Drawing.Bitmap($W,$H)
 $g=[System.Drawing.Graphics]::FromImage($bmp);$g.CopyFromScreen($X,$Y,0,0,$bmp.Size);$g.Dispose()
 $img="" + $bmp.Width + "x" + $bmp.Height
 $bmp.Save($OutFile,[System.Drawing.Imaging.ImageFormat]::Png);$bmp.Dispose()
-foreach($p in $pids){foreach($wnd in [Win]::Handles($p)){
- [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}}
+foreach($wnd in $mine){
+ [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}
 Write-Output ("shot=" + $OutFile + " rect=" + $X + "," + $Y + "," + $W + "," + $H + " img=" + $img + $note)
 `;
 const ps = (...args) => execFileSync("powershell.exe", ["-NoProfile", "-File", PS_FILE, ...args], { encoding: "utf8" }).trim();
@@ -318,11 +450,40 @@ export async function wbWait(find, tries, gap) {
 }
 
 // ------------------------------------------------------------------ verdict
+// What an ownership scan found: the windows over the rectangle that are not this
+// instance's, and how much of the rectangle was asked at all. The count is
+// evidence too — "nothing in this picture belongs to another process" only means
+// something if the picture was actually covered by the questions — so a scan that
+// answered nothing, or whose named strangers do not add up to the number it
+// counted, is a broken probe rather than a clean window. It is a pure function of
+// the probe's stdout for the same reason: the way this check fails invisibly is
+// by parsing nothing and calling every shot clean, and that is exactly the kind of
+// decision this file tests rather than trusts.
+export function ownershipScan(text, tag) {
+  const summary = text.match(new RegExp(`^${tag}=points=(\\d+) step=(\\d+) strangers=(\\d+)$`, "m"));
+  const strangers = [...text.matchAll(new RegExp(`^${tag}=(-?\\d+),(-?\\d+) pid=(\\d+) win=(.*)$`, "gm"))]
+    .map((match) => ({ x: Number(match[1]), y: Number(match[2]), pid: Number(match[3]), window: match[4] }));
+  // There is no rectangle small enough to sample zero points of, so zero points
+  // is a probe that stopped answering — not a window with nothing over it.
+  if (!summary || Number(summary[1]) === 0) throw new Error(`the ownership scan answered no points for ${tag} — nothing about this read is evidence`);
+  if (strangers.length !== Number(summary[3])) throw new Error(`the ownership scan counted ${summary[3]} strangers but only ${strangers.length} of its lines were readable`);
+  return { points: Number(summary[1]), step: Number(summary[2]), strangers };
+}
+
+// Which labels this harness is allowed to click. Continue / Launch are the panel's
+// way of starting or resuming an agent session, and that is the user's own action —
+// never this run's, isolated profile or not. The check is by label because that is
+// what a click step is: a name from the page. It is a pure function so the rule is
+// pinned by a test instead of by the current step list happening to be gentle.
+export function clickAllowed(label) {
+  return !/^\s*(continue|launch|resume)\b/i.test(label);
+}
+
 // The run's outcome as a pure function of what it observed, so it can be tested
 // without a desktop (test/harness-host.test.ts). Everything it fails on used to
 // be prose in the report while the process exited 0, which made a run that
 // clicked nothing and opened nothing as green as one that worked.
-export function verdict({ steps = [], row = null, header = null, shots = [], errors = [] }) {
+export function verdict({ steps = [], row = null, header = null, shots = [], errors = [], footer = null }) {
   const reasons = [];
   for (const step of steps) {
     // 每个按钮被问的是它那一件事：切换分区的点击必须换掉屏幕上的字，而「刷新」的活儿
@@ -346,6 +507,13 @@ export function verdict({ steps = [], row = null, header = null, shots = [], err
   }
   if (shots.some((entry) => entry.surface === true) && !shots.some((entry) => entry.surface === true && entry.captured === true)) {
     reasons.push("no compositor surface capture succeeded — the fallback for a blocked screen read did not work either");
+  }
+  // 底部那一行说的是「这台机器上真正在用的那份 Avenic CLI」，而这次跑在窗口的 PATH 上
+  // 放了这个 checkout 的 CLI：面板写出来的话因此是这次跑能验证的一句，而不是环境巧合。
+  // 没读到（null）与读到别的都算不通过——探针跨了两个进程边界，猜测不是证据。
+  if (footer === null) reasons.push("the footer's CLI version was never read (no footer check ran)");
+  else if (footer.text !== footer.expected) {
+    reasons.push(`the footer reads ${JSON.stringify(footer.text || "Avenic")}, expected ${JSON.stringify(footer.expected)} — the window's PATH did not reach this repo's CLI`);
   }
   for (const line of errors) reasons.push(`the Extension Host log has an error: ${line}`);
   return { pass: reasons.length === 0, reasons };
@@ -374,7 +542,11 @@ async function main() {
     // Removed, not reused: "installs into a clean profile" is a claim the report
     // makes, and a profile left over from the previous run makes it false —
     // extensions, workspace state and logs all carry into the next one.
-    rmSync(ROOT, { recursive: true, force: true });
+    //
+    // Retried: a window that was killed a moment ago (or one left up by --keep)
+    // still holds its own profile open for a moment, and Windows answers EPERM
+    // rather than waiting — which ended a run before it had opened anything.
+    rmSync(ROOT, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
     // ROOT 自己先落地：capture.ps1 就写在它里面，先写文件再建目录的话，
     // 第一次在干净机器上跑会在 PowerShell 那一行报「找不到这个 .ps1」。
     mkdirSync(ROOT, { recursive: true });
@@ -387,26 +559,29 @@ async function main() {
       "workbench.startupEditor": "none", "telemetry.telemetryLevel": "off", "update.mode": "none",
       "extensions.autoUpdate": false, "window.restoreWindows": "none", "security.workspace.trust.enabled": false,
       "git.enabled": false, "workbench.tips.enabled": false, "workbench.colorTheme": "Default Dark Modern",
+      // 面板是这个窗口的主角：副侧栏（Chat）默认收起来，窗口给面板的就是它自己的宽度。
+      // 这是本 run 一次性 profile 的显示偏好，不是对产品的任何主张。
+      "workbench.secondarySideBar.defaultVisibility": "hidden",
     }, null, 2));
     const sha = createHash("sha256").update(readFileSync(VSIX)).digest("hex");
     const size = statSync(VSIX).size;
     log(`VSIX sha256=${sha} size=${size}`);
 
-    // fixture: real core config + synthetic transcripts (temp dir only)
-    const core = await import(`file:///${REPO}/packages/core/src/index.mjs`);
-    for (const agent of ["claude", "codex"]) {
-      await core.initializeAgent(PROJECT, agent, { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    // The footer's claim, made true before the window exists to make it.
+    const shim = writeCliShim();
+    if (shim.version !== shim.expected) {
+      throw new Error(`the CLI shim answers ${JSON.stringify(shim.output)} (version ${JSON.stringify(shim.version)}), expected ${shim.expected} — the footer would name a version this repo does not build`);
     }
-    const sessionsDir = path.join(PROJECT, ".agents", "sessions", "claude");
-    mkdirSync(sessionsDir, { recursive: true });
-    const transcript = (sid, uuid, ts, model, text) => ["user", "assistant"].map((role, i) => JSON.stringify({
-      type: role, uuid: `${uuid}-${role}`, sessionId: sid, timestamp: new Date(Date.parse(ts) + i * 4000).toISOString(),
-      cwd: PROJECT, message: { role, model, content: [{ type: "text", text: i ? `Done: ${text}` : text }] },
-    })).join("\n") + "\n";
-    writeFileSync(path.join(sessionsDir, "session-0001.jsonl"), transcript("session-0001", "fixture-1", "2026-01-01T00:00:01Z", "claude-sonnet-5", "wire the retry policy into the fetch layer"));
-    writeFileSync(path.join(sessionsDir, "session-0002.jsonl"), transcript("session-0002", "fixture-2", "2026-01-02T09:30:00Z", "claude-opus-5", "summarize the release notes for 0.5.5"));
-    await core.importProjectSessions(PROJECT, "claude", { skipCapture: true });
-    log("fixture ready; core sees", (await core.collectStatus(PROJECT)).history.sessions, "sessions");
+    log(`CLI shim ${shim.file} -> ${JSON.stringify(shim.output)} = version ${shim.version} (from ${shim.entry})`);
+
+    // fixture: a project of the class the product is used on, built by the
+    // production calls (test/host/fixture.mjs) under this run's own directory.
+    const { digest } = await buildHostFixture(PROJECT, { catalogDir: CATALOG, stateDir: STATE, home: AGENT_HOME });
+    log("fixture ready:", digest.project,
+      `agents ${digest.agents.map((agent) => `${agent.id}=${agent.status}`).join(" ")}`,
+      `sessions shared=${digest.sessions.shared} claude=${digest.sessions.claude} codex=${digest.sessions.codex} opencode=${digest.sessions.opencode}`,
+      `skills=${digest.skills.installed}/${digest.skills.packs} packs (${digest.skills.names.join(", ") || "none"})`,
+      `hub=${digest.hub}`);
 
     const codeCli = (...args) => execFileSync("cmd.exe", ["/c", editor.launcher, "--user-data-dir", UD, "--extensions-dir", EXT, ...args], { encoding: "utf8", timeout: 180_000 });
     const installOut = codeCli("--install-extension", VSIX, "--force");
@@ -423,9 +598,9 @@ async function main() {
     }
 
     reap();
-    const child = spawn(editor.exe, ["--user-data-dir", UD, "--extensions-dir", EXT, `--remote-debugging-port=${PORT}`, "--new-window", PROJECT], { detached: true, stdio: "ignore" });
+    const child = spawn(editor.exe, ["--user-data-dir", UD, "--extensions-dir", EXT, `--remote-debugging-port=${PORT}`, "--new-window", PROJECT], { detached: true, stdio: "ignore", env: windowEnvironment() });
     child.unref();
-    log("launched pid", child.pid);
+    log("launched pid", child.pid, "with", shim.file, "first on PATH");
 
     let wbTarget = null;
     for (let i = 0; i < 45 && !wbTarget; i++) {
@@ -487,12 +662,17 @@ async function main() {
     const geometry = async () => json(wbc, `({ sx: window.screenX, sy: window.screenY, w: window.outerWidth, h: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight, dpr: window.devicePixelRatio })`);
     const shots = [];
     let geo0 = null; // the geometry the last shot was taken with (crops are cut from it)
-    // Which process owns the pixels at each sample point: the capture is only
-    // evidence of this instance if this instance is what they came from. One
-    // PowerShell call per round, because the probe sleeps 900ms before it reads.
-    const probe = (rect) => [...ps("-Mode", "probe", "-X", String(rect.x), "-Y", String(rect.y), "-W", String(rect.w), "-H", String(rect.h))
-      .matchAll(/probe=(-?\d+),(-?\d+) pid=(\d+)/g)].map((match) => ({ x: Number(match[1]), y: Number(match[2]), pid: Number(match[3]) }));
-    const blockedBy = (owners) => owners.find((owner) => owner.pid !== child.pid) ?? null;
+    // One PowerShell call per round, because each call sleeps 900ms before it
+    // reads; what comes back is parsed by ownershipScan above, which refuses to
+    // answer for a probe that said nothing rather than call the window clean.
+    const scanOf = ownershipScan;
+    const byName = (stranger) => (stranger === null ? "" : ` (${stranger.window || "no window title"})`);
+    // The scan already drops this instance's own pids, so anything it names is over
+    // the window — including a window of the *other* process this run owns (the
+    // extension host), which a pid comparison against the launched process alone
+    // would have reported.
+    const probe = (rect) => scanOf(ps("-Mode", "probe", "-X", String(rect.x), "-Y", String(rect.y), "-W", String(rect.w), "-H", String(rect.h)), "probe");
+    const blockedBy = (scan) => scan.strangers[0] ?? null;
     const shoot = async (name) => {
       // Restore first: geometry read from a minimized window is meaningless.
       // The raise can come back without a rect (windows momentarily gone, or the
@@ -510,14 +690,16 @@ async function main() {
       const w = sane ? Math.round(g.w * g.dpr) : win32[2];
       const h = sane ? Math.round(g.h * g.dpr) : win32[3];
       // Raising is not a promise that nothing else is above the window — other
-      // topmost windows exist — so every sample point is probed for the process
+      // topmost windows exist — so the whole rectangle is scanned for the process
       // that owns the pixels, and the raise is retried before the read.
-      let block = blockedBy(probe({ x, y, w, h }));
+      let pre = probe({ x, y, w, h });
+      let block = blockedBy(pre);
       for (let attempt = 0; attempt < 2 && block !== null; attempt += 1) {
-        log(`not on top at ${block.x},${block.y} (pid ${block.pid} is); raising again`);
+        log(`not on top at ${block.x},${block.y}: pid ${block.pid}${byName(block)}; raising again`);
         ps("-Mode", "raise");
         await sleep(600);
-        block = blockedBy(probe({ x, y, w, h }));
+        pre = probe({ x, y, w, h });
+        block = blockedBy(pre);
       }
       // The OS rectangle and the renderer's own numbers should agree now that the
       // capture is DPI-aware; when they do not, say so rather than pick silently.
@@ -526,12 +708,39 @@ async function main() {
       // editor — but it is not saved under a clean shot's name: `-occluded` in
       // the filename is the part of the evidence a reader cannot miss, and the
       // report carries the point and the pid that were on top.
-      const file = block === null ? name : name.replace(/\.png$/, "-occluded.png");
-      const out = ps("-Mode", "window", "-OutFile", `${OUT}/${file}`, "-X", String(x), "-Y", String(y), "-W", String(w), "-H", String(h));
+      const shootOnce = () => ps("-Mode", "window", "-OutFile", `${OUT}/${file}`, "-X", String(x), "-Y", String(y), "-W", String(w), "-H", String(h));
+      let file = block === null ? name : name.replace(/\.png$/, "-occluded.png");
+      let out = shootOnce();
+      // 快门落下的那一刻，整个矩形是谁的：探针和快门隔着一两秒，这期间冒出来的窗口
+      // 对探针是不存在的，于是它会把别人的像素写在一个干净的名字下面。同一次
+      // PowerShell 里、CopyFromScreen 之前再扫一遍，这个缺口就没了。
+      // （它管不了另一件事：GPU 合成的窗口偶尔会被读回一块没画完的黑，而那块黑也属于
+      // 本进程——扫描看不出这种读数。所以每一次读都配着一张合成面截图，那种
+      // 时刻的真相在那张上。）
+      let during = scanOf(out, "pre");
+      // 第一次就是别人：再抬一次窗子重读一张，而不是马上判成被遮挡——上面那次探针说
+      // 它就在最上面，一两秒后才被盖住的东西，多半是来了又走的。两次都是别人，才按
+      // 被遮挡记（那也正是这次读真正说明的事）。
+      if (block === null && during.strangers.length > 0) {
+        const who = during.strangers[0];
+        log(`shot: pid ${who.pid}${byName(who)} owned ${who.x},${who.y} while the read was taken; raising and reading again`);
+        ps("-Mode", "raise");
+        await sleep(600);
+        out = shootOnce();
+        during = scanOf(out, "pre");
+      }
+      const stolen = block ?? during.strangers[0] ?? null;
+      if (stolen !== block && stolen !== null) {
+        renameSync(`${OUT}/${file}`, `${OUT}/${file.replace(/\.png$/, "-occluded.png")}`);
+        file = file.replace(/\.png$/, "-occluded.png");
+      }
+      const said = out.split(/\r?\n/).filter((line) => !line.startsWith("pre=")).join(" ").trim();
       geo0 = g;
       shots.push({
-        name: file, screen: true, surface: false, occluded: block !== null, byPid: block?.pid ?? null, at: block === null ? null : `${block.x},${block.y}`,
-        out: `${out} (${sane ? "cdp" : "win32"} geometry, dpr=${g.dpr}, ${block === null ? "all five sample points belong to this instance" : `pid ${block.pid} owns the pixels at ${block.x},${block.y} — occluded`})`,
+        name: file, screen: true, surface: false, occluded: stolen !== null, byPid: stolen?.pid ?? null, at: stolen === null ? null : `${stolen.x},${stolen.y}`,
+        out: `${said} (${sane ? "cdp" : "win32"} geometry, dpr=${g.dpr}, ${stolen === null
+          ? `all ${during.points} points of a ${during.step}px grid over this window belong to this instance, before and during the read`
+          : `pid ${stolen.pid}${byName(stolen)} owns the pixels at ${stolen.x},${stolen.y} — occluded`})`,
       });
       // The same view a few seconds later, this time from the window's own
       // compositor surface over CDP — the two pictures are paired, not
@@ -547,7 +756,7 @@ async function main() {
       } catch (error) {
         shots.push({ name: `(no surface capture for ${name})`, screen: false, surface: true, captured: false, occluded: false, out: error.message });
       }
-      log("shot", file, `${w}x${h} at ${x},${y} via ${sane ? "cdp" : "win32"}`, block === null ? "(on top)" : `(occluded by pid ${block.pid})`);
+      log("shot", file, `${w}x${h} at ${x},${y} via ${sane ? "cdp" : "win32"}`, stolen === null ? `(on top of every one of ${during.points} points)` : `(occluded by pid ${stolen.pid}${byName(stolen)})`);
     };
     const crop = (src, name, r) => {
       // Crops are cut from the surface capture, whose origin and size are the
@@ -601,13 +810,43 @@ async function main() {
     }
 
     // ------------------------------------------------------------------ clicks
+    // 点一个标签，要成立的是「点到了那个标签自己的像素」。这句话有两半，两半都错过。
+    //
+    // 一半是「哪个元素」：候选里既有容器（tr、class 带 row 的 div）也有真正的控件，
+    // 按文档顺序取第一个，于是会话行找到的是包着标题的那个 .row-main。侧栏展开的宽度
+    // 下它被拉满整行（498px），中心落在标题右边的空白上——点下去什么都没发生，面板没
+    // 动是对的，错的是这次点击。所以控件优先，容器只作退路。
+    //
+    // 另一半是「这个元素的哪一点」：容器的中心往往不是它的字，所以按下去之前先问
+    // elementFromPoint——这一点还是不是这个元素（或它的后代/祖先）。不是就改点它文字
+    // 自己的中心；两个都不是就报错。盲点一下，等于把「点到了没有」交给运气，而
+    // 「点了没错」正是这一步要证明的事。
+    const aim = (label) => json(wvc, `(()=>{const d=${DOC};
+  const same=(x)=>(x.innerText||'').trim()===${JSON.stringify(label)};
+  const controls=[...d.querySelectorAll('button,a,[role=button]')];
+  const node=controls.find(same)??[...d.querySelectorAll('tr,[class*=row]')].find(same);
+  if(!node)return null;
+  const onTarget=(p)=>{const hit=d.elementFromPoint(p.x,p.y);return hit!==null&&(hit===node||node.contains(hit)||hit.contains(node));};
+  const centre=(r)=>({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
+  let rect=node.getBoundingClientRect();
+  // 视口外的东西点不到，所以先滚进来：这一步在观察器装上之前，它自己的重排不算这次
+  // 点击的功劳。
+  if(rect.bottom<0||rect.top>d.defaultView.innerHeight||rect.right<0||rect.left>d.defaultView.innerWidth){
+    node.scrollIntoView({block:"center"});rect=node.getBoundingClientRect();}
+  let at=centre(rect);let where="element";
+  if(!onTarget(at)){const range=d.createRange();range.selectNodeContents(node);
+    const text=range.getBoundingClientRect();
+    if(text.width>0&&text.height>0){at=centre(text);where="text";}}
+  return {x:at.x,y:at.y,target:node.tagName+"."+String(node.className),control:controls.includes(node),where,onTarget:onTarget(at)};})()`);
     const click = async (label) => {
+      // 启动/继续一个 agent 是用户自己的动作：这一步宁可把整次跑打断，也不点下去。
+      if (!clickAllowed(label)) throw new Error(`${JSON.stringify(label)} starts an agent session, and launching or resuming one is the user's own action — this harness never clicks it`);
       const frame = await json(wbc, `(()=>{const r=document.querySelector('iframe.webview').getBoundingClientRect();return {x:r.x,y:r.y};})()`);
-      const el = await json(wvc, `(()=>{const d=${DOC};
-    const n=[...d.querySelectorAll('button,a,[role=button],tr,[class*=row]')].find(x=>(x.innerText||'').trim()===${JSON.stringify(label)});
-    if(!n)return null;const r=n.getBoundingClientRect();
-    return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
+      const el = await aim(label);
       if (!el) throw new Error(`no clickable element labelled ${JSON.stringify(label)}`);
+      if (el.onTarget !== true) {
+        throw new Error(`nothing labelled ${JSON.stringify(label)} can be clicked where it is: ${el.target} at (${el.x}, ${el.y}) is not what is under that point`);
+      }
       // Text equality alone is a weak signal: Refresh re-reads the same project and
       // legitimately paints the same words. Counting the DOM mutations the click
       // causes says whether the panel reacted at all.
@@ -620,10 +859,17 @@ async function main() {
       await sleep(80);
       await wbc.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, buttons: 0 });
       await sleep(1600);
-      return { label, x, y, mutations: Number(await evalIn(wvc, "window.__mut || 0")) };
+      // 点的是哪一个元素、点的是它的哪一点，跟着这一击一起记下来：下一回这一击没
+      // 反应时，报告里先要看的就是这两样。
+      const hit = { label, x, y, target: el.target, aimed: el.where, mutations: Number(await evalIn(wvc, "window.__mut || 0")) };
+      // 每一次点击都进这本账，不只是被记进 steps 的那几个：报告里要能一眼看完这一趟
+      // 到底点了哪些元素——「有没有点过哪个开始 agent 的按钮」是一眼就能回答的问题。
+      clicks.push(hit);
+      return hit;
     };
 
     const steps = [];
+    const clicks = [];
     let prev = before;
     // expectText：这一步的点击该不该换掉屏幕上的字。刷新是重读同一个项目，字变不变
     // 取决于项目变没变，不是它答对答错；切分区则必须换。
@@ -660,6 +906,29 @@ async function main() {
       await shoot("04-click-session.png");
     }
 
+    // ---------------------------------------------------- the artifact shot
+    // What this run is for: the dashboard as it stands after the clicks above
+    // have shown it is live, back on Overview and scrolled to the top, with the
+    // editor's own sidebar out of the way so the panel is the whole picture —
+    // the same framing the design reference uses. Ctrl+B through CDP is the
+    // same class of input as the clicks above (the OS cursor is never used);
+    // if the window does not take it the shot is simply narrower, so it is
+    // best-effort and the footer below is what the report checks.
+    await click("Overview");
+    await evalIn(wvc, "window.scrollTo(0, 0)");
+    await wbc.send("Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "b", code: "KeyB", windowsVirtualKeyCode: 66, nativeVirtualKeyCode: 66 });
+    await wbc.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "b", code: "KeyB", windowsVirtualKeyCode: 66, nativeVirtualKeyCode: 66 });
+    await sleep(1500);
+    await evalIn(wvc, "window.scrollTo(0, 0)");
+    await shoot("final-overview.png");
+    // The footer line, read off the page rather than assumed from the shim: the
+    // probe crosses two process boundaries between this harness and the panel,
+    // and "the window was started with the shim on PATH" is not the same
+    // statement as "the footer reads this repo's CLI".
+    const footer = await json(wvc, `(()=>{const d=${DOC};const n=d.getElementById('version');
+  return { text: (n ? n.textContent : '').trim(), line: (d.getElementById('version-line')?.textContent ?? '').trim() };})()`);
+    log(`footer reads ${JSON.stringify(footer.line)}; expected ${JSON.stringify(FOOTER_LINE)}`);
+
     // ---------------------------------------------------- Extension Host log
     // The profile was recreated above, so its logs are this run's; the mtime
     // filter is the belt to that brace, because VS Code can keep a log directory
@@ -691,13 +960,18 @@ async function main() {
     // says nothing about this build.
     const errors = logEntries.filter((entry) => /\bERROR\b/i.test(entry.text) && (entry.ours || /avenic/i.test(entry.text))).map((entry) => entry.text);
 
-    const outcome = verdict({ steps, row, header, shots, errors });
+    // 报告里的夹具一节写的是卡片上真正有的那几行（digest 来自面板自己调用的那个
+    // buildDashboardData），不是这份文件里手抄的期望值。
+    const cardOf = (id) => digest.agents.find((agent) => agent.id === id) ?? { status: "?", fields: [] };
+    const cardLines = ["claude", "codex", "opencode"]
+      .map((id) => `- ${id}: ${cardOf(id).status} — ${cardOf(id).fields.join(" · ")}`).join("\n");
+    const outcome = verdict({ steps, row, header, shots, errors, footer: { text: footer.text, expected: FOOTER_LINE } });
     writeFileSync(`${OUT}/report.md`, `# Avenic VS Code Extension Host check
 
 ## Verdict: ${outcome.pass ? "PASS" : "FAIL"}
 
 ${outcome.pass
-    ? "Every click made the panel react (the ones that switch what the page shows changed it; Refresh repainted the same project, which is what a re-read of unchanged state looks like), the session opened with its transcript, every screen read is this instance's, and the Extension Host log has no errors from this extension."
+    ? "Every click made the panel react (the ones that switch what the page shows changed it; Refresh repainted the same project, which is what a re-read of unchanged state looks like), the session opened with its transcript, the footer names this repo's CLI, every screen read is this instance's, and the Extension Host log has no errors from this extension."
     : outcome.reasons.map((reason) => `- ${reason}`).join("\n")}
 
 Generated ${new Date().toISOString()} by \`packages/vscode/test/host/run.mjs\`; the run started ${new Date(startedAt).toISOString()}.
@@ -721,12 +995,28 @@ ${installOut.trim()}
 ${listOut.trim()}
 \`\`\`
 
-Isolated profile: \`${UD}\` + \`${EXT}\` — removed and recreated for this run; your real profile's settings and extensions were not read or written (VS Code opens its own shared-storage database outside the profile either way).
+Isolated profile: \`${UD}\` + \`${EXT}\` — removed and recreated for this run; your real profile's settings and extensions were not read or written (VS Code opens its own shared-storage database outside the profile either way). The window also runs with the Avenic state root inside this run (\`AVENIC_STATE_DIR=${STATE}\`), so what it reads about Skills is this fixture's catalog and nothing it writes can land in the machine's own state directory.
+
+## Footer
+The dashboard's version line is the CLI the extension finds on its own PATH. This run starts the window with a throwaway bin directory first on PATH holding one \`avenic.cmd\` that runs this checkout's CLI:
+
+- shim: \`${shim.file}\` → \`${shim.entry}\`
+- the shim answers \`avenic --version\` with \`${shim.output}\` (checked before the window was started)
+- the footer on screen reads **\`${footer.text || "Avenic"}\`**, expected \`${FOOTER_LINE}\`
 
 ## Fixture
-\`${PROJECT}\`, configured with the real core (\`initializeAgent\` for claude + codex,
-both \`sessionScope: project\`), plus two synthetic Claude transcripts under
-\`.agents/sessions/claude/\` imported with \`importProjectSessions\`.
+\`${PROJECT}\`, built by the production calls (test/host/fixture.mjs; \`initialize\` for all three agents, \`writeApiConfiguration\`, the real catalog + \`installPacks\`, and \`importProjectSessions\` for each agent's own portable store):
+
+The cards, as the panel reads them back (fields in the order the card paints them):
+${cardLines}
+
+- Claude is \`API (Project)\`, and the model block below \`Model\` is the file's own configuration.
+- Codex is \`Account (Project)\`: a project-scoped account is the agent's own sign-in, so a fixture that never logs in reads "Not signed in" — Avenic does not invent one.
+- OpenCode records only the session scope; its authentication, provider and model are its own.
+- sessions: ${digest.sessions.claude} Claude, ${digest.sessions.codex} Codex, ${digest.sessions.opencode} OpenCode (${digest.sessions.shared} canonical)
+- Skills: ${digest.skills.installed} installed, ${digest.skills.packs} packs from the fixture catalog, Hub ${digest.hub}
+- every credential-shaped string says "fixture"; the Claude model block in \`.claude/settings.local.json\` (\`env.ANTHROPIC_DEFAULT_*\`, \`CLAUDE_CODE_SUBAGENT_MODEL\`, \`CLAUDE_CODE_EFFORT_LEVEL\`) is what an earlier Avenic or the user left in the file Avenic wrote, not something this run asks Avenic to own
+
 No agent was launched and no session was resumed.
 
 ## Screenshots
@@ -738,7 +1028,9 @@ The project header's three parts (title, path, status block) measured in the web
 (the right edge of each element is clamped by every clipping ancestor, so an ellipsised path counts as inside).
 
 ## Clicks (injected via CDP, not the OS cursor)
-${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y}) → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
+${clicks.map((c) => `\`${c.label}\` → ${c.target}`).join(" · ") || "_none_"} — every element any label resolved to. The session row was opened by its *title* (\`viewSession\` → the transcript); no Continue or Launch was clicked, and \`clickAllowed\` refuses such a label outright (starting an agent is the user's action, not this run's).
+
+${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y})${s.hit.target ? ` (${s.hit.target}${s.hit.aimed === "text" ? ", aimed at its text" : ""})` : ""} → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
 
 ## Extension Host log
 Only log files written at or after this run started are listed${staleLogs.length ? ` (${staleLogs.length} from earlier runs ignored)` : ""}.
@@ -747,7 +1039,8 @@ ${logLines.length ? "```\n" + logLines.join("\n") + "\n```" : "_no lines mention
     log("report:", `${OUT}/report.md`);
     log(`verdict: ${outcome.pass ? "PASS" : "FAIL"}`);
     for (const reason of outcome.reasons) log(`  reason: ${reason}`);
-    for (const s of steps) log(`click ${JSON.stringify(s.label)} -> changed=${s.changed} mutations=${s.mutations}`);
+    for (const s of steps) log(`click ${JSON.stringify(s.label)} -> ${s.hit.target ?? "?"} ${s.hit.aimed ?? ""} changed=${s.changed} mutations=${s.mutations}`);
+    log(`clicks this run made: ${clicks.map((c) => `${JSON.stringify(c.label)} -> ${c.target}`).join(", ")}`);
     process.exitCode = outcome.pass ? 0 : 1;
   } finally {
     cleanup();

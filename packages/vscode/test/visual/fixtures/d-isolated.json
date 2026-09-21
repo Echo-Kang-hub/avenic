@@ -6,10 +6,10 @@
   },
   "detail": false,
   "project": {
-    "name": "worker",
-    "root": "worker",
+    "name": "solo",
+    "root": "solo",
     "configured": true,
-    "lastUpdated": "2026-09-21 09:27"
+    "lastUpdated": "2026-09-21 09:22"
   },
   "agents": [
     {
@@ -23,33 +23,44 @@
         {
           "label": "Authentication",
           "kind": "badge",
-          "value": "Account (Global)",
-          "tone": "blue",
-          "icon": "account"
-        },
-        {
-          "label": "Account Status",
-          "kind": "status",
-          "value": "Not signed in",
+          "value": "API (Project)",
           "tone": "muted",
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Config Source",
           "kind": "value",
-          "value": "~/AppData/Local/Temp/avenic-visual-home/c-native/.claude",
+          "value": ".claude/settings.local.json",
           "tone": "muted",
-          "icon": "folder"
+          "icon": "file-code"
+        },
+        {
+          "label": "Provider",
+          "kind": "value",
+          "value": "DeepSeek",
+          "tone": "muted",
+          "icon": "package",
+          "href": ".claude/settings.local.json"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "deepseek-chat",
+          "tone": "muted",
+          "icon": "symbol-structure",
+          "options": [
+            "deepseek-chat"
+          ]
         }
       ],
       "sessions": {
         "label": "Project",
-        "count": 0,
+        "count": 2,
         "tone": "brand"
       },
       "history": {
-        "label": "Shared",
-        "tone": "brand"
+        "label": "Isolated",
+        "tone": "muted"
       },
       "configLink": {
         "label": "Open Config File",
@@ -82,8 +93,8 @@
         "tone": "blue"
       },
       "history": {
-        "label": "Shared",
-        "tone": "brand"
+        "label": "Isolated",
+        "tone": "muted"
       },
       "configLink": {
         "label": "Open Config Folder",
@@ -98,8 +109,8 @@
       "id": "opencode",
       "label": "OpenCode",
       "short": "OpenCode",
-      "ready": true,
-      "statusText": "Ready",
+      "ready": false,
+      "statusText": "Not configured",
       "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
       "fields": [
         {
@@ -111,36 +122,74 @@
         }
       ],
       "sessions": {
-        "label": "Project",
+        "label": "Not set",
         "count": 0,
-        "tone": "brand"
+        "tone": "blue"
       },
       "history": {
-        "label": "Shared",
-        "tone": "brand"
+        "label": "Isolated",
+        "tone": "muted"
       },
       "configLink": {
         "label": "Open OpenCode",
         "icon": "link-external"
       },
       "actions": {
-        "launch": true,
+        "launch": false,
         "change": true
       }
     }
   ],
   "history": {
-    "mode": "shared",
-    "sharedCount": 0
+    "mode": "isolated",
+    "sharedCount": 2
   },
   "shared": {
-    "rows": [],
-    "total": 0
+    "rows": [
+      {
+        "id": "claude-session-0002",
+        "title": "why is this project's history its own?",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-21T01:22:02.033Z",
+        "relative": "just now",
+        "active": true
+      },
+      {
+        "id": "claude-session-0001",
+        "title": "make the isolated list show what it has",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-21T01:22:01.989Z",
+        "relative": "just now",
+        "active": false
+      }
+    ],
+    "total": 2
   },
   "native": {
     "claude": {
-      "rows": [],
-      "total": 0
+      "rows": [
+        {
+          "id": "claude-session-0002",
+          "title": "why is this project's history its own?",
+          "agents": [],
+          "updated": "2026-09-21T01:22:02.033Z",
+          "relative": "just now",
+          "active": true
+        },
+        {
+          "id": "claude-session-0001",
+          "title": "make the isolated list show what it has",
+          "agents": [],
+          "updated": "2026-09-21T01:22:01.989Z",
+          "relative": "just now",
+          "active": false
+        }
+      ],
+      "total": 2
     },
     "codex": {
       "rows": [],

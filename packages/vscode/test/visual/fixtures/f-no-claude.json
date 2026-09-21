@@ -6,24 +6,24 @@
   },
   "detail": false,
   "project": {
-    "name": "worker",
-    "root": "worker",
+    "name": "half-installed",
+    "root": "half-installed",
     "configured": true,
-    "lastUpdated": "2026-09-21 09:27"
+    "lastUpdated": "2026-09-21 09:12"
   },
   "agents": [
     {
       "id": "claude",
       "label": "Claude Code",
       "short": "Claude",
-      "ready": true,
-      "statusText": "Ready",
+      "ready": false,
+      "statusText": "CLI not installed",
       "detail": null,
       "fields": [
         {
           "label": "Authentication",
           "kind": "badge",
-          "value": "Account (Global)",
+          "value": "Account (Project)",
           "tone": "blue",
           "icon": "account"
         },
@@ -37,7 +37,7 @@
         {
           "label": "Account Home",
           "kind": "value",
-          "value": "~/AppData/Local/Temp/avenic-visual-home/c-native/.claude",
+          "value": ".agents/local/claude",
           "tone": "muted",
           "icon": "folder"
         }
@@ -56,7 +56,7 @@
         "icon": "go-to-file"
       },
       "actions": {
-        "launch": true,
+        "launch": false,
         "change": true
       }
     },
@@ -64,22 +64,36 @@
       "id": "codex",
       "label": "Codex",
       "short": "Codex",
-      "ready": false,
-      "statusText": "Not configured",
+      "ready": true,
+      "statusText": "Ready",
       "detail": null,
       "fields": [
         {
           "label": "Authentication",
           "kind": "badge",
-          "value": "Not chosen",
+          "value": "Account (Project)",
+          "tone": "blue",
+          "icon": "account"
+        },
+        {
+          "label": "Account Status",
+          "kind": "status",
+          "value": "Not signed in",
           "tone": "muted",
-          "icon": "key"
+          "icon": "account"
+        },
+        {
+          "label": "Account Home",
+          "kind": "value",
+          "value": ".agents/local/codex",
+          "tone": "muted",
+          "icon": "folder"
         }
       ],
       "sessions": {
-        "label": "Not set",
+        "label": "Project",
         "count": 0,
-        "tone": "blue"
+        "tone": "brand"
       },
       "history": {
         "label": "Shared",
@@ -90,7 +104,7 @@
         "icon": "folder-opened"
       },
       "actions": {
-        "launch": false,
+        "launch": true,
         "change": true
       }
     },
