@@ -374,6 +374,23 @@ export function apiTarget(projectRoot: string | null, agentId: string, scope: Sc
 export function apiRelative(agentId: string, scope: Scope): string;
 /** The key paths one agent's API configuration owns, in its file's shape. */
 export function apiEntries(agentId: string, fields?: ApiFields): Array<{ path: string[]; value: unknown }>;
+/**
+ * The model/effort keys an agent's own configuration can carry, read from the
+ * file that is in effect: Claude's file answers with its role models and its
+ * effort level, Codex's with its reasoning effort. A key the file does not hold
+ * — absent, blank, or not a string — is null; nothing is filled in with a value
+ * nobody wrote. Only the keys of that agent's own file are there: Codex's
+ * project record answers with its one key and never a Claude role key.
+ */
+export interface ApiSettings {
+  primary?: string | null;
+  opus?: string | null;
+  sonnet?: string | null;
+  haiku?: string | null;
+  subagent?: string | null;
+  effort?: string | null;
+  reasoning?: string | null;
+}
 /** What one scope's API configuration currently says. Never a secret — only whether one is set. */
 export interface ApiConfiguration {
   relative: string;
@@ -392,6 +409,12 @@ export interface ApiConfiguration {
   baseUrl: string | null;
   model: string | null;
   credentialSet: boolean;
+  /**
+   * The model block of the file in effect, read from that file itself — a key
+   * the user wrote there is part of it. Null exactly when `present` is false:
+   * like provider and model, it is present-tense only.
+   */
+  settings: ApiSettings | null;
 }
 export function readApiConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ApiConfiguration | null>;
 /**

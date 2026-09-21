@@ -126,6 +126,48 @@ test("an API configuration shows its file, provider and model — never a creden
   }
 });
 
+// API 模式的卡片要说全这个文件里真正在生效的模型：主模型之外还有 Claude Code
+// 自己的角色键（Opus/Sonnet/Haiku/子代理）与 effort。它只读文件——文件里没有的行
+// 不会出现（这正是这些行可以被信任的原因），显示名也只在真的写了的时候才有。
+test("an API card carries the model roles the file really holds, and only those", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-roles-"));
+  try {
+    const project = path.join(root, "project");
+    const env = testEnv(path.join(root, "state"));
+    await mkdir(project, { recursive: true });
+    await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+    await writeApiConfiguration(project, "claude", "project", {
+      provider: "DeepSeek",
+      baseUrl: "https://provider.fixture.invalid/v1",
+      model: "deepseek-chat",
+      credential: "fixture-value-not-a-real-credential",
+    });
+    // 承载配置的那份文件里，角色键是真实存在的（写它的人是用户，或更早的 Avenic），
+    // Haiku 角色故意不写：不存在的键不允许被补成一行。
+    const settingsFile = path.join(project, ".claude", "settings.local.json");
+    const document = JSON.parse(await readFile(settingsFile, "utf8"));
+    document.env = {
+      ...document.env,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-1",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4",
+      CLAUDE_CODE_SUBAGENT_MODEL: "claude-haiku-3.5",
+      CLAUDE_CODE_EFFORT_LEVEL: "medium",
+    };
+    await writeFile(settingsFile, JSON.stringify(document, null, 2));
+    invalidateAgentStatusCache();
+    const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
+    assert.equal(fieldOf(card, "Model")?.value, "deepseek-chat", "主模型仍是文件里那一个");
+    assert.equal(fieldOf(card, "Opus Model")?.value, "claude-opus-4-1");
+    assert.equal(fieldOf(card, "Sonnet Model")?.value, "claude-sonnet-4");
+    assert.equal(fieldOf(card, "Sub Agent Model")?.value, "claude-haiku-3.5");
+    // effort 是文件里的原值，只有首字母按参考图的写法大写（"medium" → "Medium"）。
+    assert.equal(fieldOf(card, "Default Effort")?.value, "Medium");
+    assert.equal(fieldOf(card, "Haiku Model"), undefined, "文件里没有的角色不许出现");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 // 卡片上的图标名字是宿主给的（state.ts），字形是样式表给的。两边各写各的名单时，
 // 错的那一个不会报错：它只是渲染成一块空白，而 visual fixture 用自己的名字正好把
 // 那一格填上了 —— 于是两边的测试都看不见它。这条测试把两份名单对起来。

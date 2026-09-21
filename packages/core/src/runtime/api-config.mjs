@@ -475,6 +475,33 @@ export async function writeApiConfiguration(projectRoot, agentId, scope, fields 
   return { relative: target.relative, created, removed: [] };
 }
 
+// The model/effort keys an agent's own configuration can carry, as key paths in
+// that file's shape. A key nobody wrote has no value — it is never filled in
+// with a model Avenic would have picked — and an agent whose file holds none of
+// them (Codex's own project record) has the keys of its agent and no others.
+const SETTINGS_KEYS = {
+  claude: [
+    ["primary", ["env", "ANTHROPIC_MODEL"]],
+    ["opus", ["env", "ANTHROPIC_DEFAULT_OPUS_MODEL"]],
+    ["sonnet", ["env", "ANTHROPIC_DEFAULT_SONNET_MODEL"]],
+    ["haiku", ["env", "ANTHROPIC_DEFAULT_HAIKU_MODEL"]],
+    ["subagent", ["env", "CLAUDE_CODE_SUBAGENT_MODEL"]],
+    ["effort", ["env", "CLAUDE_CODE_EFFORT_LEVEL"]],
+  ],
+  codex: [["reasoning", ["model_reasoning_effort"]]],
+};
+
+/** One file's answer for those keys: absent, blank or not a string is null. */
+function readSettings(agentId, format, document) {
+  const settings = {};
+  for (const [name, pathArray] of SETTINGS_KEYS[agentId] ?? []) {
+    const found = FORMATS[format].get(document, pathArray);
+    const value = typeof found.value === "string" ? found.value.trim() : "";
+    settings[name] = value === "" ? null : value;
+  }
+  return settings;
+}
+
 /**
  * What one scope's API configuration says, for the wizard's prefill and the
  * status page. Only keys the ledger proves Avenic wrote are reported — a
@@ -485,14 +512,17 @@ export async function writeApiConfiguration(projectRoot, agentId, scope, fields 
 export async function readApiConfiguration(projectRoot, agentId, scope, options = {}) {
   const target = targetFor(projectRoot, agentId, scope, options);
   if (!target) return null;
-  const result = { relative: target.relative, exists: existsSync(target.file), owned: false, present: false, provider: null, baseUrl: null, model: null, credentialSet: false };
+  const result = { relative: target.relative, exists: existsSync(target.file), owned: false, present: false, provider: null, baseUrl: null, model: null, credentialSet: false, settings: null };
   if (!result.exists) return result;
   try {
     if (!target.native) {
       const record = JSON.parse(await readFile(target.file, "utf8"));
       // Avenic's own whole file: its content *is* the configuration, so
-      // provenance and presence coincide.
-      return { ...result, owned: true, present: true, provider: record.provider || null, baseUrl: record.baseUrl || null, model: record.model || null, credentialSet: Boolean(record.envKey) };
+      // provenance and presence coincide. None of the model keys an agent's own
+      // file carries is one of them — Codex's reasoning level is read from its
+      // config.toml, and the launch forwards the model and provider keys only —
+      // so every settings key answers null, whatever the record happens to hold.
+      return { ...result, owned: true, present: true, provider: record.provider || null, baseUrl: record.baseUrl || null, model: record.model || null, credentialSet: Boolean(record.envKey), settings: readSettings(agentId, "json", {}) };
     }
     const ledger = await readLedger(projectRoot);
     const record = recordFor(ledger, agentId, scope);
@@ -519,6 +549,11 @@ export async function readApiConfiguration(projectRoot, agentId, scope, options 
       baseUrl: entry("ANTHROPIC_BASE_URL") ?? entry("base_url"),
       model: entry("ANTHROPIC_MODEL") ?? entry("model"),
       credentialSet: Boolean(entry("ANTHROPIC_AUTH_TOKEN") ?? entry("env_key")),
+      // Like provider and model, the model block is present-tense only: when
+      // the file no longer holds what Avenic wrote, reading its values back
+      // would state the past as the configuration in effect. It comes from the
+      // file, not the ledger — a key the user wrote is part of that file.
+      settings: present ? readSettings(agentId, target.format, document) : null,
     };
   } catch {
     return result;

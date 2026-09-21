@@ -307,6 +307,108 @@ test("a file edited outside Avenic stops claiming the configuration is in effect
   assert.equal(edited.present, false, "文件持有的不再全是 Avenic 写下的值");
 });
 
+// The model block a card shows is the one the file in effect actually holds: a
+// key nobody wrote is null, never a model name Avenic would have picked for it.
+test("the model block reports the values the file in effect holds", async (t) => {
+  const existing = {
+    env: {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "fixture-opus",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "fixture-sonnet",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "fixture-haiku",
+      CLAUDE_CODE_SUBAGENT_MODEL: "fixture-subagent",
+      CLAUDE_CODE_EFFORT_LEVEL: "high",
+    },
+  };
+  const root = await project(t, { ".claude/settings.local.json": `${JSON.stringify(existing, null, 2)}\n` });
+  await writeApiConfiguration(root, "claude", "project", fields);
+  const read = await readApiConfiguration(root, "claude", "project");
+  assert.equal(read.present, true);
+  // The keys Avenic wrote and the keys the user wrote are read the same way:
+  // the card describes the file, not the ledger.
+  assert.deepEqual(read.settings, {
+    primary: fields.model,
+    opus: "fixture-opus",
+    sonnet: "fixture-sonnet",
+    haiku: "fixture-haiku",
+    subagent: "fixture-subagent",
+    effort: "high",
+  });
+});
+
+test("a key the file does not hold, or holds blank, is no value at all", async (t) => {
+  const existing = {
+    env: {
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "fixture-opus",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "",
+      CLAUDE_CODE_EFFORT_LEVEL: "   ",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 3,
+    },
+  };
+  const root = await project(t, { ".claude/settings.local.json": `${JSON.stringify(existing, null, 2)}\n` });
+  await writeApiConfiguration(root, "claude", "project", fields);
+  const read = await readApiConfiguration(root, "claude", "project");
+  assert.equal(read.settings.opus, "fixture-opus");
+  assert.equal(read.settings.sonnet, null, "an empty string is not a model");
+  assert.equal(read.settings.effort, null, "blank after trimming is not an effort level");
+  assert.equal(read.settings.haiku, null, "a number is not a model name");
+  assert.equal(read.settings.subagent, null, "a key that is not in the file has no value");
+  assert.equal(read.settings.primary, fields.model);
+});
+
+// 用户在 Avenic 之外动过这份配置：账本还记得写过（owned），但文件已经不再是
+// Avenic 写下的那份。模型块和 provider/model 一样只在 present 时存在 —— 把
+// 过去时当既成事实展示，比什么都不展示更坏。
+test("a configuration the user edited outside Avenic shows no model block", async (t) => {
+  const root = await project(t);
+  assert.equal((await readApiConfiguration(root, "claude", "project")).settings, null, "no file, no configuration, no model block");
+  await writeApiConfiguration(root, "claude", "project", fields);
+  const file = path.join(root, ".claude/settings.local.json");
+  const document = readJson(root, ".claude/settings.local.json");
+  document.env.ANTHROPIC_MODEL = "the-user-changed-this";
+  writeFileSync(file, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  const read = await readApiConfiguration(root, "claude", "project");
+  assert.equal(read.owned, true);
+  assert.equal(read.present, false);
+  assert.equal(read.settings, null);
+});
+
+test("Codex's global file answers with its own reasoning level, and only that", async (t) => {
+  const existing = [
+    'model = "gpt-5"',
+    'model_reasoning_effort = "high"',
+    "",
+    "[model_providers.other]",
+    'name = "Other"',
+    'model_reasoning_effort = "low"',
+    "",
+  ].join("\n");
+  const root = await project(t);
+  const home = await project(t, { ".codex/config.toml": existing });
+  await writeApiConfiguration(root, "codex", "global", codexFields, { homeDir: home });
+  const read = await readApiConfiguration(root, "codex", "global", { homeDir: home });
+  assert.equal(read.present, true);
+  // The key inside the provider table is that provider's, not the top-level
+  // setting Codex reads: the same name in another section is another key.
+  assert.deepEqual(read.settings, { reasoning: "high" });
+});
+
+test("Codex's own project file carries no model block of its own", async (t) => {
+  const root = await project(t);
+  await writeApiConfiguration(root, "codex", "project", codexFields);
+  const read = await readApiConfiguration(root, "codex", "project");
+  assert.equal(read.present, true);
+  // 这个文件是 Avenic 自己的整份记录，里面没有 Codex 的推理级别，也没有 Claude
+  // 的角色模型 —— 一个都不编。
+  assert.deepEqual(read.settings, { reasoning: null });
+  assert.equal(read.settings.opus, undefined, "a Claude role key is not invented for Codex");
+  // Codex never reads a reasoning level out of this record — the launch hands it
+  // the model and provider keys through -c — so even a key someone pastes in
+  // here is not a setting in effect.
+  const pasted = { ...readJson(root, ".agents/api/codex.json"), model_reasoning_effort: "low" };
+  writeFileSync(path.join(root, ".agents/api/codex.json"), `${JSON.stringify(pasted, null, 2)}\n`, "utf8");
+  assert.deepEqual((await readApiConfiguration(root, "codex", "project")).settings, { reasoning: null });
+});
+
 // 问一个根本没有 Avenic 管理的 API 目标的 agent 要路径（OpenCode 自己的 provider
 // 配置 Avenic 从不写），得到的应该是一句能读懂的话，而不是 null 解引用的崩溃。
 test("asking an agent that owns its provider configuration for a path says so", () => {

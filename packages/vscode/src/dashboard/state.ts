@@ -113,6 +113,23 @@ function authFields(row: StatusAgent): FieldRow[] {
       // 可选项就是文件里那一个值：面板不提供一份自己维护的模型表，改动走 Change 向导。
       fields.push({ label: "Model", kind: "select", value: configuration.model, tone: "muted", icon: "symbol-structure", options: [configuration.model] });
     }
+    // 角色键（Opus/Sonnet/Haiku/子代理）与 effort 是这份文件里真正写着的那几条：
+    // 没写的角色不会得到一行，因此这些行可以说「这就是现在生效的配置」。Claude 的
+    // 角色键与 Codex 的 reasoning 是各自 agent 的形状，这里只是把它们排成行。
+    const settings = configuration.settings;
+    for (const [label, value] of [
+      ["Opus Model", settings?.opus],
+      ["Sonnet Model", settings?.sonnet],
+      ["Haiku Model", settings?.haiku],
+      ["Sub Agent Model", settings?.subagent],
+    ] as const) {
+      if (value) fields.push({ label, kind: "value", value, tone: "muted", icon: "symbol-structure" });
+    }
+    // effort 的原值是小写的枚举（medium/max/…），参考图里写成首字母大写；值本身
+    // 不动，只有这一行的写法跟着图走。
+    for (const [label, value] of [["Default Effort", settings?.effort], ["Reasoning Effort", settings?.reasoning]] as const) {
+      if (value) fields.push({ label, kind: "value", value: value.charAt(0).toUpperCase() + value.slice(1), tone: "muted", icon: "dashboard" });
+    }
   }
   return fields;
 }
