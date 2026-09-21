@@ -240,14 +240,23 @@ if(-not("Win" -as [type])){Add-Type -TypeDefinition $cs -Language CSharp}
 # points were sampled, so a scan that silently covered nothing cannot pass for one
 # that covered the window.
 function Get-Owners([string]$tag,[int]$px,[int]$py,[int]$pw,[int]$ph){
- $step=40;$inset=8;$n=0;$strangers=@()
+ $step=40;$inset=8;$n=0;$strangers=@();$procs=@{}
  for($y=$py+$inset;$y -lt $py+$ph-$inset;$y+=$step){
   for($x=$px+$inset;$x -lt $px+$pw-$inset;$x+=$step){
    $n++
    $h=[Win]::HandleAt($x,$y);$owner=[Win]::PidOf($h)
    # This instance's own windows are not intruders: the panel is one process and the
    # extension host another, and both are ours to be in the picture.
-   if($pids -notcontains $owner){$strangers+=($tag+$x+","+$y+" pid="+$owner+" win="+[Win]::NameOf($h))}}}
+   #
+   # The process's own image name goes in the line as well as the window title: a pid
+   # is not a name a reader can place, and the title can be no help at all — the lock
+   # screen's reads "Windows 输入体验", which is how three runs reported a locked
+   # workstation without anything saying so. Looked up once per pid for this call: a
+   # full-screen occluder owns every point of the grid, and a Get-Process per point
+   # would cost more than the scan it is reporting on.
+   if($pids -notcontains $owner){
+    if(-not $procs.ContainsKey($owner)){$nm='?';try{$nm=(Get-Process -Id $owner -ErrorAction Stop).ProcessName}catch{};$procs[$owner]=$nm}
+    $strangers+=($tag+$x+","+$y+" pid="+$owner+" proc="+$procs[$owner]+" win="+[Win]::NameOf($h))}}}
  Write-Output ($tag+"points="+$n+" step="+$step+" strangers="+$strangers.Count)
  foreach($s in $strangers){Write-Output $s}}
 
@@ -475,8 +484,11 @@ export async function wbWait(find, tries, gap) {
 // decision this file tests rather than trusts.
 export function ownershipScan(text, tag) {
   const summary = text.match(new RegExp(`^${tag}=points=(\\d+) step=(\\d+) strangers=(\\d+)$`, "m"));
-  const strangers = [...text.matchAll(new RegExp(`^${tag}=(-?\\d+),(-?\\d+) pid=(\\d+) win=(.*)$`, "gm"))]
-    .map((match) => ({ x: Number(match[1]), y: Number(match[2]), pid: Number(match[3]), window: match[4] }));
+  // The line carries the process's own image name before the window title, because
+  // neither of the other two fields says who is in the picture: a pid is nobody, and
+  // the title of the window that made three runs fail reads "Windows 输入体验".
+  const strangers = [...text.matchAll(new RegExp(`^${tag}=(-?\\d+),(-?\\d+) pid=(\\d+) proc=(\\S*) win=(.*)$`, "gm"))]
+    .map((match) => ({ x: Number(match[1]), y: Number(match[2]), pid: Number(match[3]), proc: match[4], window: match[5] }));
   // There is no rectangle small enough to sample zero points of, so zero points
   // is a probe that stopped answering — not a window with nothing over it.
   if (!summary || Number(summary[1]) === 0) throw new Error(`the ownership scan answered no points for ${tag} — nothing about this read is evidence`);
@@ -684,7 +696,13 @@ async function main() {
     // reads; what comes back is parsed by ownershipScan above, which refuses to
     // answer for a probe that said nothing rather than call the window clean.
     const scanOf = ownershipScan;
-    const byName = (stranger) => (stranger === null ? "" : ` (${stranger.window || "no window title"})`);
+    // "pid 33352 (LockApp Windows 输入体验)" is a line a reader can act on; the pid
+    // and the window title on their own are not.
+    const byName = (stranger) => {
+      if (stranger === null) return "";
+      const parts = [stranger.proc, stranger.window].filter((part) => part && part !== "?");
+      return ` (${parts.length > 0 ? parts.join(" ") : "no window title"})`;
+    };
     // The scan already drops this instance's own pids, so anything it names is over
     // the window — including a window of the *other* process this run owns (the
     // extension host), which a pid comparison against the launched process alone

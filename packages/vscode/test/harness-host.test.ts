@@ -15,7 +15,7 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   verdict: (run: unknown) => { pass: boolean; reasons: string[] };
   wbWait: (find: () => Promise<unknown>, tries: number, gap: number) => Promise<unknown>;
   clickAllowed: (label: string) => boolean;
-  ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; window: string }[] };
+  ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; proc: string; window: string }[] };
   windowEnvironment: () => Record<string, string | undefined>;
   AGENT_HOME: string;
 };
@@ -167,7 +167,7 @@ test("an ownership scan that answered nothing is a broken probe, not a clean win
 
 // 数出来的和列出来的对不上，说明输出被截断了——剩下的那几行不足以说这次读是谁的。
 test("an ownership scan whose strangers do not add up is refused", () => {
-  assert.throws(() => host.ownershipScan("pre=points=1870 step=40 strangers=2\npre=199,134 pid=13232 win=Notepad", "pre"), /strangers/);
+  assert.throws(() => host.ownershipScan("pre=points=1870 step=40 strangers=2\npre=199,134 pid=13232 proc=notepad win=Notepad", "pre"), /strangers/);
 });
 
 test("a scan of a window with nothing over it names no strangers", () => {
@@ -175,8 +175,23 @@ test("a scan of a window with nothing over it names no strangers", () => {
 });
 
 test("a scan names the window that is over this one, not just its pid", () => {
-  const scan = host.ownershipScan("pre=points=1870 step=40 strangers=1\npre=1219,1334 pid=13232 win=Notepad", "pre");
-  assert.deepEqual(scan.strangers, [{ x: 1219, y: 1334, pid: 13232, window: "Notepad" }]);
+  const scan = host.ownershipScan("pre=points=1870 step=40 strangers=1\npre=1219,1334 pid=13232 proc=notepad win=Notepad", "pre");
+  assert.deepEqual(scan.strangers, [{ x: 1219, y: 1334, pid: 13232, proc: "notepad", window: "Notepad" }]);
+});
+
+// 三个被锁住的跑都是靠这一行才知道画面是谁的：pid 33352 谁也认不出来，那个窗口的标题写着
+// 「Windows 输入体验」——正是锁屏。谁在画面上要写在行里，读的人才知道这是锁着的机器，
+// 而不是探针坏了。
+test("a scan says which process owns the pixels, not only its pid", () => {
+  const scan = host.ownershipScan("pre=points=1870 step=40 strangers=1\npre=199,134 pid=33352 proc=LockApp win=Windows 输入体验", "pre");
+  assert.deepEqual(scan.strangers, [{ x: 199, y: 134, pid: 33352, proc: "LockApp", window: "Windows 输入体验" }]);
+});
+
+// 名字查不到时不能变成一句空话：进程已经退出的那个窗口仍然是「谁在上面」的答案，
+// 标题还在，行就还得读得出来。
+test("a stranger whose process is gone still reads by its window title", () => {
+  const scan = host.ownershipScan("pre=points=1870 step=40 strangers=1\npre=1219,1334 pid=13232 proc=? win=Notepad", "pre");
+  assert.deepEqual(scan.strangers, [{ x: 1219, y: 1334, pid: 13232, proc: "?", window: "Notepad" }]);
 });
 
 test("a screen read of somebody else's window fails the run", () => {
