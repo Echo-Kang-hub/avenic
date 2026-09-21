@@ -11,7 +11,8 @@ import {
   completeCanonicalContinuation,
   createCanonicalSession,
   initializeAgent,
-  setSessionInteropMode,
+  setHistoryMode,
+  writeApiConfiguration,
 } from "../packages/core/src/index.mjs";
 
 // End-to-end coverage of the full CLI command surface. Every command position
@@ -146,9 +147,13 @@ test("help leads with the end-user commands and keeps the per-agent ones below",
     for (const line of ["avenic init", "avenic change", "avenic sessions", "avenic self-update", "avenic --version"]) {
       assert.ok(help.includes(line), `help must show ${line}`);
     }
-    assert.ok(help.indexOf("avenic init") < help.indexOf("avenic <claude|codex|opencode> init"), "the per-agent wrappers belong below the everyday commands");
-    assert.match(help, /global auth|global\|project/, "help must say what the auth scope chooses");
+    assert.ok(help.indexOf("avenic init") < help.indexOf("avenic <claude|codex> init"), "the per-agent wrappers belong below the everyday commands");
+    assert.match(help, /--auth account\|api/, "help must name both authentication methods");
+    assert.match(help, /--scope global\|project/, "help must say which scope each method owns");
     assert.match(help, /shared\|isolated/, "help must name both history modes");
+    // OpenCode answers for its own authentication and provider, so it appears
+    // in the per-agent list without either question.
+    assert.match(help, /avenic opencode init \[--sessions global\|project\]/);
   });
 });
 
@@ -222,6 +227,31 @@ test("runtime overview and doctor cover all three agents", async () => {
   });
 });
 
+test("an agent whose method was not answered reads as not chosen, not as not initialized", async () => {
+  // 一个项目可以只答案「会话存哪儿」，把认证留到启动时再问 —— 那是合法状态，页面上
+  // 该说的是「还没选」，而不是把已初始化的 agent 报成未初始化。
+  await withTempDirectory("avenic-unanswered-", async (projectRoot) => {
+    assert.equal(runAgent(projectRoot, ["init", "--agents", "claude", "--sessions", "project"]).status, 0);
+    const status = runAgent(projectRoot, ["status"]);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /Claude Code\s+found\s+not chosen/);
+    assert.doesNotMatch(status.stdout, /Claude Code\s+found\s+not initialized/);
+    assert.match(status.stdout, /OpenCode\s+(found|not found)\s+native/);
+  });
+});
+
+test("an agent that manages its own authentication is never told a launch will ask", async () => {
+  // OpenCode 的认证和 provider 是它自己的：init 的收尾语不能对它说「还没有认证
+  // 方式，启动时会问一次」——那一问在它的启动路径上根本不存在（launch.mjs 的提问
+  // 条件就写着 !managesOwnAuth），而摘要里的 Authentication 行已经说了归谁。
+  await withTempDirectory("avenic-native-note-", async (projectRoot) => {
+    const init = runAgent(projectRoot, ["opencode", "init", "--sessions", "project"]);
+    assert.equal(init.status, 0, init.stderr);
+    assert.match(init.stdout, /Native \(OpenCode manages its own\)/);
+    assert.doesNotMatch(init.stdout, /no authentication method/);
+  });
+});
+
 test("status refuses arguments it does not have", async () => {
   await withTempDirectory("avenic-status-usage-", async (projectRoot) => {
     const result = runAgent(projectRoot, ["status", "--verbose"]);
@@ -235,13 +265,13 @@ test("a flag is never taken as another flag's value", async () => {
   // `--agents --auth project` either swallowed the next flag or was refused
   // depending on which command you typed.
   await withTempDirectory("avenic-flag-values-", async (projectRoot) => {
-    const missingAgents = runAgent(projectRoot, ["init", "--agents", "--auth", "project"]);
+    const missingAgents = runAgent(projectRoot, ["init", "--agents", "--auth", "api", "--scope", "project"]);
     assert.notEqual(missingAgents.status, 0);
     assert.match(`${missingAgents.stdout}${missingAgents.stderr}`, /Missing value for --agents/);
 
-    const missingName = runAgent(projectRoot, ["model", "add", "--name", "--base-url", "https://example.com"]);
-    assert.notEqual(missingName.status, 0);
-    assert.match(`${missingName.stdout}${missingName.stderr}`, /Missing value for --name/);
+    const missingScope = runAgent(projectRoot, ["claude", "init", "--scope", "--sessions", "project"]);
+    assert.notEqual(missingScope.status, 0);
+    assert.match(`${missingScope.stdout}${missingScope.stderr}`, /Missing value for --scope/);
   });
 });
 
@@ -250,7 +280,7 @@ test("sessions git off works in a project that is not a checkout", async () => {
   // repository has to be the same no-op as an empty index — not a failure of
   // the git call underneath it.
   await withTempDirectory("avenic-sessions-git-norepo-", async (projectRoot) => {
-    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "global"]);
+    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "account"]);
     assert.equal(initialized.status, 0, initialized.stderr);
 
     const off = runAgent(projectRoot, ["sessions", "git", "off"]);
@@ -262,7 +292,7 @@ test("sessions git off works in a project that is not a checkout", async () => {
 test("sessions git toggles on/off/status and rejects invalid modes", async () => {
   await withTempDirectory("avenic-sessions-git-", async (projectRoot) => {
     spawnSync("git", ["init", "--quiet"], { cwd: projectRoot, windowsHide: true });
-    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "global"]);
+    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "account"]);
     assert.equal(initialized.status, 0, initialized.stderr);
 
     const on = runAgent(projectRoot, ["sessions", "git", "status"]);
@@ -314,8 +344,8 @@ test("a refused Codex resume rehydrates a fresh native thread through the offici
     const log = path.join(projectRoot, "codex-arguments.jsonl");
     await mkdir(path.join(codexHome, "sessions", "2026", "09", "18"), { recursive: true });
     await mkdir(bin, { recursive: true });
-    await initializeAgent(projectRoot, "codex", "global", "global");
-    await setSessionInteropMode(projectRoot, "shared");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global", sessionScope: "global" });
+    await setHistoryMode(projectRoot, "shared");
     await createCanonicalSession(projectRoot, { id: "shared" });
     // Canonical ids carry provenance, which is what lets a projection tell the
     // target whose turn it is reading: "B" was Claude's answer, so Codex must
@@ -384,26 +414,47 @@ test("a refused Codex resume rehydrates a fresh native thread through the offici
   });
 });
 
-test("agent auth CLI switches scope, resets, and rejects invalid modes", async () => {
+test("agent auth reports the method, switches it, resets, and rejects unknown ones", async () => {
   await withTempDirectory("avenic-auth-", async (projectRoot) => {
-    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "global"]);
+    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "account", "--scope", "project"]);
     assert.equal(initialized.status, 0, initialized.stderr);
 
     const current = runAgent(projectRoot, ["claude", "auth"]);
     assert.equal(current.status, 0, current.stderr);
-    assert.match(current.stdout, /Effective auth\s+global/);
+    assert.match(current.stdout, /Authentication\s+Account/);
+    assert.match(current.stdout, /Account scope\s+Project/);
+    // Account mode names where the agent's own sign-in lives and what the local
+    // files say about it — and says nothing about a model, because it is not
+    // configuring one.
+    assert.match(current.stdout, /Auth home\s+\.agents\/local\/claude/);
+    assert.match(current.stdout, /Auth status\s+(Signed in|Not signed in|Unknown)/);
+    assert.doesNotMatch(current.stdout, /Provider\s/);
+    assert.doesNotMatch(current.stdout, /Config source\s/);
 
-    const project = runAgent(projectRoot, ["claude", "auth", "project"]);
-    assert.equal(project.status, 0, project.stderr);
-    assert.match(project.stdout, /Effective\s+project/);
+    // Switching to API prints the same page for the answer it just wrote, plus
+    // the one sentence saying which file now carries the provider.
+    const api = runAgent(projectRoot, ["claude", "auth", "api", "--scope", "project"]);
+    assert.equal(api.status, 0, api.stderr);
+    assert.match(api.stdout, /^◆ {2}Claude Code status/m);
+    assert.match(api.stdout, /Authentication\s+API/);
+    assert.match(api.stdout, /Configuration\s+Project/);
+    assert.match(api.stdout, /Config source\s+\.claude\/settings\.local\.json \(nothing written yet\)/);
+    assert.match(api.stdout, /API: the provider, endpoint and model belong in \.claude\/settings\.local\.json/);
+
+    // The override is this checkout's answer, and it says so.
+    const overridden = runAgent(projectRoot, ["claude", "auth"]);
+    assert.match(overridden.stdout, /Authentication\s+API/);
+    assert.match(overridden.stdout, /Method source\s+Local override \(runtime\.local\.json\)/);
 
     const reset = runAgent(projectRoot, ["claude", "auth", "reset"]);
     assert.equal(reset.status, 0, reset.stderr);
-    assert.match(reset.stdout, /Effective\s+global/);
+    assert.match(reset.stdout, /Authentication\s+Account/, "the project's own answer is what remains");
+    assert.match(reset.stdout, /Method source\s+Project configuration/);
+    assert.match(reset.stdout, /Account scope\s+Project/);
 
     const invalid = runAgent(projectRoot, ["claude", "auth", "bogus"]);
     assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Authentication must be global or project: bogus/);
+    assert.match(invalid.stderr, /Authentication method must be account or api: bogus/);
   });
 });
 
@@ -413,7 +464,7 @@ test("agent launch and auth before init fail with hints", async () => {
     assert.equal(launch.status, 1);
     assert.match(launch.stderr, /is not initialized\. Run: avenic claude init/);
 
-    const auth = runAgent(projectRoot, ["claude", "auth", "project"]);
+    const auth = runAgent(projectRoot, ["claude", "auth", "account"]);
     assert.equal(auth.status, 1);
     assert.match(auth.stderr, /is not initialized/);
   });
@@ -423,7 +474,7 @@ test("init validates options and auth/sessions modes", async () => {
   await withTempDirectory("avenic-init-validate-", async (projectRoot) => {
     const invalidAuth = runAgent(projectRoot, ["claude", "init", "--auth", "bogus"]);
     assert.equal(invalidAuth.status, 1);
-    assert.match(invalidAuth.stderr, /Authentication must be global or project: bogus/);
+    assert.match(invalidAuth.stderr, /Authentication method must be account or api: bogus/);
 
     const invalidSessions = runAgent(projectRoot, ["codex", "init", "--sessions", "bogus"]);
     assert.equal(invalidSessions.status, 1);
@@ -440,12 +491,29 @@ test("init validates options and auth/sessions modes", async () => {
     const deinit = runAgent(projectRoot, ["claude", "deinit", "--bogus"]);
     assert.equal(deinit.status, 1);
     assert.match(deinit.stderr, /Unknown option: --bogus/);
+
+    const credentialsAlone = runAgent(projectRoot, ["claude", "deinit", "--purge-credentials"]);
+    assert.equal(credentialsAlone.status, 1, "第二个开关不能单独用");
+    assert.match(credentialsAlone.stderr, /--purge-credentials requires --purge/);
+
+    // OpenCode 自己管认证与 provider：--auth 没有诚实的含义，就不该被安静地丢掉。
+    const nativeAuth = runAgent(projectRoot, ["opencode", "init", "--auth", "api"]);
+    assert.equal(nativeAuth.status, 1);
+    assert.match(nativeAuth.stderr, /OpenCode manages its own authentication/);
+    const mixed = runAgent(projectRoot, ["init", "--agents", "claude,opencode", "--auth", "api"]);
+    assert.equal(mixed.status, 1);
+    assert.match(mixed.stderr, /OpenCode manages its own authentication/);
+
+    // 没有可选的东西时，用法行说的是你正在用的那条命令。
+    const emptyInit = runAgent(projectRoot, ["init"]);
+    assert.equal(emptyInit.status, 1);
+    assert.match(emptyInit.stderr, /Usage: avenic init --agents/);
   });
 });
 
 test("top-level init and change keep shared history separate from agent scopes", async () => {
   await withTempDirectory("avenic-project-setup-", async (projectRoot) => {
-    const initialized = runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "isolated"]);
+    const initialized = runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "account", "--sessions", "project", "--history", "isolated"]);
     assert.equal(initialized.status, 0, initialized.stderr);
     assert.match(initialized.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+isolated/);
 
@@ -453,27 +521,32 @@ test("top-level init and change keep shared history separate from agent scopes",
     assert.equal(changed.status, 0, changed.stderr);
     assert.match(changed.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+shared/);
     const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
-    assert.equal(runtime.sessionInterop, "shared");
-    assert.deepEqual(runtime.agents.claude, { enabled: true, auth: "global", sessions: "project" });
-    assert.deepEqual(runtime.agents.codex, { enabled: true, auth: "global", sessions: "project" });
+    assert.equal(runtime.historyMode, "shared");
+    assert.deepEqual(runtime.agents.claude, { enabled: true, authMethod: "account", accountScope: "global", sessionScope: "project" });
+    assert.deepEqual(runtime.agents.codex, { enabled: true, authMethod: "account", accountScope: "global", sessionScope: "project" });
+
+    // 同一条用法行在 change 下说的是 change，不是 init。
+    const emptyChange = runAgent(projectRoot, ["change", "--replace-agents"]);
+    assert.equal(emptyChange.status, 1);
+    assert.match(emptyChange.stderr, /Usage: avenic change --agents/);
   });
 });
 
 test("change updates only the selected agent scope unless agents are explicitly replaced", async () => {
   await withTempDirectory("avenic-change-scope-", async (projectRoot) => {
-    assert.equal(runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "shared"]).status, 0);
-    const changed = runAgent(projectRoot, ["change", "--agents", "codex", "--auth", "project"]);
+    assert.equal(runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "account", "--sessions", "project", "--history", "shared"]).status, 0);
+    const changed = runAgent(projectRoot, ["change", "--agents", "codex", "--auth", "api", "--scope", "project"]);
     assert.equal(changed.status, 0, changed.stderr);
     const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
     assert.deepEqual(Object.keys(runtime.agents).sort(), ["claude", "codex"]);
-    assert.equal(runtime.agents.claude.auth, "global");
-    assert.equal(runtime.agents.codex.auth, "project");
+    assert.deepEqual(runtime.agents.claude, { enabled: true, authMethod: "account", accountScope: "global", sessionScope: "project" });
+    assert.deepEqual(runtime.agents.codex, { enabled: true, authMethod: "api", configScope: "project", sessionScope: "project" });
   });
 });
 
 test("agent sessions import and status work through the CLI", async () => {
   await withTempDirectory("avenic-sessions-cli-", async (projectRoot) => {
-    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "global"]);
+    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "account"]);
     assert.equal(initialized.status, 0, initialized.stderr);
 
     await withTempDirectory("avenic-claude-home-", async (claudeHome) => {
@@ -505,12 +578,12 @@ test("agent sessions import and status work through the CLI", async () => {
 test("every result block is a page of the terminal layer", async () => {
   await withTempDirectory("avenic-result-blocks-", async (projectRoot) => {
     const commands = [
-      ["claude", "init", "--auth", "global"],
+      ["claude", "init", "--auth", "account"],
       ["claude", "status"],
-      ["claude", "auth", "project"],
+      ["claude", "auth", "api", "--scope", "project"],
       ["claude", "sessions", "status"],
       ["claude", "deinit"],
-      ["init", "--agents", "claude", "--auth", "global", "--sessions", "project", "--history", "shared"],
+      ["init", "--agents", "claude", "--auth", "account", "--sessions", "project", "--history", "shared"],
     ];
     for (const argumentsList of commands) {
       const result = runAgent(projectRoot, argumentsList);
@@ -1002,5 +1075,69 @@ test("catalog update follows upstream revisions", async () => {
     const upToDate = runAgent(cloneRoot, ["hub", "update", "--check"]);
     assert.equal(upToDate.status, 0, upToDate.stderr);
     assert.match(upToDate.stdout, /up: up to date/);
+  });
+});
+
+// `deinit --purge` 说的是清掉 Avenic 的数据。agent 自己的登录（Account · Project
+// 签在 .agents/local/<agent>/ 里的那个）不是 Avenic 写的：默认留下并点名说出留下的
+// 是哪一个，连它一起删要第二次明说——与 release 路径同一条 ownership 规则。
+test("deinit --purge keeps the agent's own sign-in and names it, until asked twice", async () => {
+  await withTempDirectory("avenic-deinit-purge-", async (projectRoot) => {
+    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "account", "--scope", "project"]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const credential = path.join(projectRoot, ".agents", "local", "codex", "auth.json");
+    await writeFile(credential, "{}\n");
+
+    const purged = runAgent(projectRoot, ["codex", "deinit", "--purge"]);
+    assert.equal(purged.status, 0, purged.stderr);
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "codex")), false, "Avenic 的会话数据被清掉");
+    assert.equal(existsSync(credential), true, "登录文件留下");
+    assert.match(purged.stdout, /Kept \.agents\/local\/codex\/auth\.json — the sign-in Codex wrote itself/);
+
+    const cleared = runAgent(projectRoot, ["codex", "deinit", "--purge", "--purge-credentials"]);
+    assert.equal(cleared.status, 0, cleared.stderr);
+    assert.equal(existsSync(credential), false, "第二次明说，连登录一起删");
+  });
+});
+
+// 手改过文件之后，页面不能继续把账本当现在时用：Provider/Model 行必须消失（那是
+// 文件里已经没有的值），剩下的那句要说清是「Avenic 写过的那份不在了」，并给出补救。
+test("a configuration edited out of the file is reported as gone, with the remedy", async () => {
+  await withTempDirectory("avenic-auth-stale-", async (projectRoot) => {
+    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "account", "--scope", "project"]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const switched = runAgent(projectRoot, ["claude", "auth", "api", "--scope", "project"]);
+    assert.equal(switched.status, 0, switched.stderr);
+    await writeApiConfiguration(projectRoot, "claude", "project", {
+      provider: "FixtureProvider",
+      baseUrl: "https://provider.fixture.invalid/v1",
+      model: "fixture-model",
+      credential: "fixture-credential-not-a-real-secret",
+    });
+    const written = runAgent(projectRoot, ["claude", "auth"]);
+    assert.equal(written.status, 0, written.stderr);
+    assert.match(written.stdout, /Provider\s+FixtureProvider/);
+    assert.match(written.stdout, /Model\s+fixture-model/);
+
+    // 用户在 Avenic 之外删掉了配置块。
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    const document = JSON.parse(await readFile(file, "utf8"));
+    delete document.env;
+    await writeFile(file, `${JSON.stringify(document, null, 2)}\n`);
+
+    const stale = runAgent(projectRoot, ["claude", "auth"]);
+    assert.equal(stale.status, 0, stale.stderr);
+    assert.doesNotMatch(stale.stdout, /Provider\s/, "provider 不在文件里了，就不能再显示一个");
+    assert.doesNotMatch(stale.stdout, /Model\s/);
+    assert.match(stale.stdout, /Config source\s+\.claude\/settings\.local\.json \(gone — run avenic change\)/);
+
+    // 项目状态页说同一件事（两处各自用自己的语言，同一条事实），补救命令完整可见；
+    // 机器可读的那份给出结构化的那个布尔值。
+    const projectStatus = runAgent(projectRoot, ["status"]);
+    assert.equal(projectStatus.status, 0, projectStatus.stderr);
+    assert.match(projectStatus.stdout, /Claude Code: API configuration gone — run: avenic change/);
+    const reported = JSON.parse(runAgent(projectRoot, ["status", "--json"]).stdout).agents.find((agent) => agent.id === "claude").auth.configuration;
+    assert.equal(reported.owned, true, "账本还是证明得了这份配置曾经是 Avenic 写的");
+    assert.equal(reported.present, false, "但配置已不在文件里");
   });
 });

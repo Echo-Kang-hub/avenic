@@ -41,7 +41,7 @@ import path from "node:path";
 import process from "node:process";
 import { createPerfFixture } from "./fixture.mjs";
 import {
-  budget, cliEntry, measures, record, resolveReal, summarize, timeToShim, verdict, writeShim,
+  budget, cliEntry, configureProject, measures, record, resolveReal, summarize, timeToShim, verdict, writeShim,
 } from "./harness.mjs";
 
 const argument = (name, fallback) => {
@@ -120,13 +120,12 @@ async function sampleAll(context, options) {
 }
 
 async function configure(context) {
-  // The project has to be configured before a wrapped launch means anything.
-  const init = spawnSync(
-    process.execPath,
-    [cliEntry, "init", "--agents", context.measured.join(","), "--auth", "global", "--sessions", "project", "--history", "shared"],
-    { cwd: context.fixture.projectRoot, env: context.environment, encoding: "utf8" },
-  );
-  if (init.status !== 0) throw new Error(`init failed: ${init.stderr}`);
+  // The project has to be configured before a wrapped launch means anything,
+  // and which commands that takes is the model's answer — derived from the
+  // measured agents, never spelled here: one of them is refused a method
+  // question, and a refused init would leave every sample below measuring an
+  // error exit instead of a launch.
+  configureProject({ projectRoot: context.fixture.projectRoot, environment: context.environment, agents: context.measured });
   // Seeding thousands of files makes the first spawn of the run pay for the
   // operating system inspecting them, which lands on whichever measurement
   // happens first. A real machine has nothing to inspect on a command it has
@@ -214,7 +213,12 @@ async function main() {
   }
 
   await context.fixture.dispose();
-  if (Object.values(report.agents).some((data) => data.failures.length > 0)) process.exitCode = 1;
+  // A budget row that printed FAIL has to leave the process failing too: a
+  // harness whose exit code only counts failed samples reports a blown budget
+  // as a clean run to anything that reads exit codes instead of the table.
+  const overBudget = Object.values(report.agents).some((data) => ["cold", "steady", "recovery", "all"]
+    .some((situation) => verdict(data[situation].overhead) === "FAIL"));
+  if (overBudget || Object.values(report.agents).some((data) => data.failures.length > 0)) process.exitCode = 1;
 }
 
 await main();

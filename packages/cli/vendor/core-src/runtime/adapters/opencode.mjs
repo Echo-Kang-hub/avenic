@@ -31,6 +31,11 @@ export function toCanonical(content, options = {}) {
   if (!exported || typeof exported !== "object") throw new Error("Malformed opencode session export");
   const nativeSessionId = options.nativeSessionId ?? exported.id ?? exported.info?.id ?? exported.session?.id;
   if (typeof nativeSessionId !== "string") throw new Error("OpenCode export has no session id");
+  // The session's own name. It is set by the user in OpenCode's own UI, or by
+  // whichever host imported the session, so it is the best title there is —
+  // and an export that nests its payload carries it in the same two places the
+  // session id does.
+  const title = exported.info?.title ?? exported.data?.info?.title ?? null;
   const messages = exported.messages ?? exported.data?.messages ?? [];
   if (!Array.isArray(messages)) throw new Error("OpenCode export messages must be an array");
   const events = messages.flatMap((message, index) => {
@@ -52,7 +57,7 @@ export function toCanonical(content, options = {}) {
       extensions: { opencode: { message } },
     }];
   });
-  return { nativeSessionId, events, revision: options.revision ?? null };
+  return { nativeSessionId, title, events, revision: options.revision ?? null };
 }
 
 function nativeId(prefix, value) {

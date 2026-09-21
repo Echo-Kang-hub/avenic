@@ -599,7 +599,52 @@ export function multiSelect(options = {}) {
 const WIZARD_FOOTERS = {
   multi: "↑↓ move · space select · enter confirm · shift+tab back · esc cancel",
   single: "↑↓ move · enter confirm · shift+tab back · esc cancel",
+  text: "type · enter confirm · shift+tab back · esc cancel",
 };
+
+// 文本步骤的编辑器：与单选的模型同形（rows / reduce / accept / message），
+// 供向导把它当作一步来画。`mask` 的那一步只回显点数——密钥不该出现在终端里，
+// 也不该出现在折叠后的摘要里。默认空答案不算答案；步骤自己说了 `optional`
+// 才能空着确认（凭据那一问：字段不回填，空着就是「保持原样」）。
+function textModel(step, draft, { width, colors }) {
+  let value = step.value?.(draft) ?? "";
+  let message = "";
+  const shown = () => (step.mask === true
+    ? colors.muted("•".repeat(Math.min(value.length, 24)))
+    : value);
+  return {
+    message: () => message,
+    // 只画中间那一条：帧头和帧尾由画这一帧的人按同一步的字段加（和另外两个模型
+    // 一样）。这里再画一份，文本步骤就会有两层标题、两层帧尾。
+    rows: () => [
+      truncate(`${colors.muted("│")}  ${colors.cursor("▸")} ${shown()}${colors.brand("▏")}${value.length === 0 && step.placeholder ? `  ${colors.muted(step.placeholder)}` : ""}`, width),
+    ],
+    reduce(intent) {
+      message = "";
+      if (intent === "erase") {
+        value = value.slice(0, -1);
+        return true;
+      }
+      if (intent === "toggle") {
+        value += " ";
+        return true;
+      }
+      if (typeof intent?.text === "string") {
+        value += intent.text;
+        return true;
+      }
+      return false;
+    },
+    accept() {
+      const trimmed = value.trim();
+      if (trimmed.length === 0 && step.optional !== true) {
+        message = step.emptyMessage ?? "Enter a value";
+        return null;
+      }
+      return { value: trimmed, lines: [] };
+    },
+  };
+}
 
 /**
  * 向导：一串问题，一屏答完。
@@ -615,7 +660,8 @@ const WIZARD_FOOTERS = {
  *     value(draft) / values(draft) —— 上一次的答案（回来时预选中）
  *     write(draft, value) —— 把答案记进草稿（只改内存）
  *     summary(draft) —— 折叠时那一行摘要
- *     footer, minSelected, emptyMessage, searchable, apply: true }
+ *     footer, minSelected, emptyMessage, optional, searchable, apply: true }
+ * `optional` 只对文本步骤有效：空答案仍是一个答案（凭据不问自明地保持原样）。
  * 被标了 `apply: true` 的那一步是终点：Yes 调用 `apply(draft)` 并落定，
  * No 取消（什么都不写）。它的答案不画成轨道条目，而是由落定帧的标题和 └ 行
  * 表示：标题 `appliedTitle`，└ 行是 `apply()` 返回的 `summary`。
@@ -640,6 +686,8 @@ export function wizard(options = {}) {
           { ...step, initial: step.values?.(draft) ?? [] },
           { width, colors },
         );
+      } else if (step.kind === "text") {
+        model = textModel(step, draft, { width, colors });
       } else {
         const previous = step.value?.(draft);
         model = singleSelectModel(
@@ -654,13 +702,24 @@ export function wizard(options = {}) {
   // 已答过的步骤：◇ 标题 + 一行摘要。传进来的是「已经答完的那一段」——画当前帧
   // 时是 steps[index] 之前的，落定时是全部（Apply 那一步由落定帧自己的标题和
   // └ 行表示，不重复成条目）。
+  //
+  // 同一组的连续步骤折叠成一块：一个 ◇ 标题，一行摘要里各条答案用 │ 串起来
+  // （API 配置的五问答案是同一件事，分开画五行会把整场问答埋掉）。组标题取组内
+  // 第一步的标题。
   const completedRows = (list) => {
     const rows = [];
-    for (const step of list) {
+    for (let at = 0; at < list.length; at += 1) {
+      const step = list[at];
       if (step.apply) continue;
+      const group = step.group
+        ? list.slice(at).filter((entry) => entry.group === step.group)
+        : [step];
+      if (step.group) at += group.length - 1;
       rows.push(`${colors.brandSoft("◇")}  ${colors.strong(truncate(step.title, width - 4))}`);
-      const summary = step.summary?.(draft);
-      if (summary) rows.push(`${colors.muted("│")}  ${colors.muted(truncate(summary, width - 4))}`);
+      const parts = group.map((entry) => entry.summary?.(draft)).filter((summary) => summary);
+      if (parts.length > 0) {
+        rows.push(`${colors.muted("│")}  ${colors.muted(truncate(parts.join(" │ "), width - 4))}`);
+      }
     }
     return rows;
   };

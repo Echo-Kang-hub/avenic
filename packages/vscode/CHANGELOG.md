@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.5.5
+
+- **The extension asks the same two questions the CLI does, and draws them the
+  same way.** Authentication = Account means the agent signs in with its own
+  account — the extension configures no model and shows no provider fields;
+  Authentication = API means the project owns the provider, endpoint, model and
+  credential, and those questions appear only then. Account + Project names the
+  home the agent's own login writes (`<project>/.agents/local/<agent>`, reached
+  by pointing the agent's own configuration-root variable at it), and API +
+  Project names the agent's own configuration file. Every step comes from core,
+  so the panel cannot describe a different project than `avenic change` would
+  write. Escape still writes nothing.
+- **The status row says where the state is, not just that it exists.** An
+  Account row reports its home and whether a sign-in has happened — read from
+  the agent's own credential file, and reported as unknown rather than guessed
+  when it cannot be read. An API row reports which file carries the
+  configuration and the selected provider and model, or `尚未写入` while Avenic
+  has not written it. A file the user wrote themselves is not "configured":
+  only the ownership ledger decides that. The row and the dashboard now say one
+  sentence from one function, so the tree and the panel can no longer word the
+  same fact differently.
+- **Switching method keeps the old configuration unless you say otherwise.**
+  After the new answers are collected and before anything is written, the wizard
+  asks whether to keep the previous Account/API configuration (default: keep).
+  Choosing remove happens after the new configuration is written, lists what
+  will be deleted, and asks again before deleting — only artifacts Avenic
+  provably wrote for this project, never your global account, never
+  `~/.claude`/`~/.codex`, never another project, and never
+  `.claude/settings.local.json` merely because you switched to Account.
+- **Launching and status are core's, including the project-scoped account
+  home.** The launch, its session capture and its watchdog all receive the same
+  environment from core's `agentRuntimeEnvironment`; the extension no longer has
+  a second opinion about where a run's sessions live. Launching is still core's
+  sequence end to end (`beginLaunch` … `finishLaunch`), and the terminal receives
+  core's `quoteShellLine`.
+- **The model panel is gone.** Device-level provider profiles, the model library,
+  project bindings and the connection test were removed from the extension
+  together with the library in core: a model configuration belongs to a project
+  and lives in the agent's own configuration file.
+- Ships core 1.6.5 (and CLI 1.8.4): authentication method and model configuration
+  are separate questions with separate owners, one wizard serves both hosts, and
+  switching methods keeps what you had unless you say otherwise.
+
 ## 0.5.4
 
 - **Initialize and Configure are one progressive wizard.** The project

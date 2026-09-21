@@ -1,0 +1,423 @@
+{
+  "_provenance": {
+    "source": "Hand-transcribed from the reference design image (image.png at the repo root). NOT captured: test/visual/capture.mjs only produces b-fresh, c-native and e-full.",
+    "shape": "Mirrors protocol.ts's DashboardData, but every value is the reference's or invented to draw it — it is not what a project on disk produced.",
+    "transcribed-from-the-image": [
+      "version \"1.8.4\" — the reference footer's text, i.e. the CLI's version; the real panel renders the extension's own version (panel.ts passes context.extension.packageJSON.version, \"0.5.5\" today), so no host emits this string",
+      "project.root \"D:\\Code\\agenthome-cli\" — the reference machine's path, not a value this harness produces"
+    ],
+    "invented-to-draw-the-reference": "agents[].fields values and options, session titles and counts, skills and pack names, hub spec/revision, activity rows",
+    "gated-by": "shot.mjs renders this payload; compare.mjs measures it against fixtures/reference-geometry.json, whose refs come from the image itself (e.g. text.version's 74..151px run)",
+    "not-regenerated": "capture.mjs never writes this file, so a value here that the host cannot emit stays until someone decides what the footer should show"
+  },
+  "project": {
+    "name": "agenthome-cli",
+    "root": "D:\\Code\\agenthome-cli",
+    "configured": true,
+    "lastUpdated": "2025-09-20 20:47"
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "ready": true,
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "API (Project)",
+          "tone": "brand",
+          "icon": "account"
+        },
+        {
+          "label": "Config Source",
+          "kind": "value",
+          "value": ".claude/settings.local.json",
+          "tone": "muted",
+          "icon": "file-code"
+        },
+        {
+          "label": "Provider",
+          "kind": "value",
+          "value": "DeepSeek",
+          "tone": "plain",
+          "icon": "package",
+          "href": "https://example.invalid/provider"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "claude-sonnet-4",
+          "tone": "plain",
+          "icon": "symbol-structure",
+          "options": [
+            "claude-sonnet-4",
+            "claude-opus-4"
+          ]
+        },
+        {
+          "label": "Sub Agent Model",
+          "kind": "select",
+          "value": "claude-haiku-3.5",
+          "tone": "plain",
+          "icon": "symbol-parameter",
+          "options": [
+            "claude-haiku-3.5"
+          ]
+        },
+        {
+          "label": "Default Effort",
+          "kind": "select",
+          "value": "Medium",
+          "tone": "plain",
+          "icon": "dashboard",
+          "options": [
+            "Low",
+            "Medium",
+            "High"
+          ]
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 8,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config File",
+        "icon": "go-to-file"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "Claude",
+      "statusText": "Ready"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "ready": true,
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Account (Project)",
+          "tone": "blue",
+          "icon": "account"
+        },
+        {
+          "label": "Account Status",
+          "kind": "status",
+          "value": "Signed in",
+          "tone": "green",
+          "icon": "unlock"
+        },
+        {
+          "label": "Account Scope",
+          "kind": "value",
+          "value": "Project (.agents/local/codex)",
+          "tone": "muted",
+          "icon": "file-directory"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "GPT-5",
+          "tone": "plain",
+          "icon": "symbol-structure",
+          "options": [
+            "GPT-5",
+            "o4-mini"
+          ]
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 5,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config Folder",
+        "icon": "folder-opened"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "Codex",
+      "statusText": "Ready"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "ready": true,
+      "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Native (OpenCode UI)",
+          "tone": "purple",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 3,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open OpenCode",
+        "icon": "link-external"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "OpenCode",
+      "statusText": "Ready"
+    }
+  ],
+  "history": {
+    "mode": "shared",
+    "sharedCount": 12
+  },
+  "shared": {
+    "rows": [
+      {
+        "id": "s-fix-auth-env",
+        "title": "Fix authentication environment handling",
+        "agents": [
+          "claude",
+          "codex"
+        ],
+        "updated": "2025-09-20T20:30:00Z",
+        "relative": "2 hours ago",
+        "active": true
+      },
+      {
+        "id": "s-model-wizard",
+        "title": "Implement model configuration wizard",
+        "agents": [
+          "claude",
+          "codex"
+        ],
+        "updated": "2025-09-20T17:10:00Z",
+        "relative": "5 hours ago",
+        "active": false
+      },
+      {
+        "id": "s-review-tests",
+        "title": "Review test results and fix failing cases",
+        "agents": [
+          "codex",
+          "opencode"
+        ],
+        "updated": "2025-09-19T21:05:00Z",
+        "relative": "1 day ago",
+        "active": false
+      },
+      {
+        "id": "s-ui-design",
+        "title": "Update VS Code extension UI design",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2025-09-19T18:40:00Z",
+        "relative": "1 day ago",
+        "active": true
+      }
+    ],
+    "total": 12
+  },
+  "native": {
+    "claude": {
+      "rows": [
+        {
+          "id": "n-claude-1",
+          "title": "Implement agent runtime model",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2025-09-20T20:15:00Z",
+          "relative": "2 hours ago",
+          "active": false
+        },
+        {
+          "id": "n-claude-2",
+          "title": "Fix TUI rendering issue",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2025-09-19T22:00:00Z",
+          "relative": "1 day ago",
+          "active": false
+        },
+        {
+          "id": "n-claude-3",
+          "title": "Refactor environment handling",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2025-09-18T19:30:00Z",
+          "relative": "2 days ago",
+          "active": false
+        },
+        {
+          "id": "n-claude-4",
+          "title": "Add skills import feature",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2025-09-17T16:20:00Z",
+          "relative": "3 days ago",
+          "active": false
+        },
+        {
+          "id": "n-claude-5",
+          "title": "Update documentation",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2025-09-16T11:00:00Z",
+          "relative": "4 days ago",
+          "active": false
+        }
+      ],
+      "total": 8
+    },
+    "codex": {
+      "rows": [
+        {
+          "id": "n-codex-1",
+          "title": "Add session handoff tests",
+          "agents": [
+            "codex"
+          ],
+          "updated": "2025-09-20T18:05:00Z",
+          "relative": "4 hours ago",
+          "active": false
+        },
+        {
+          "id": "n-codex-2",
+          "title": "Tighten CLI prompt handling",
+          "agents": [
+            "codex"
+          ],
+          "updated": "2025-09-19T20:12:00Z",
+          "relative": "1 day ago",
+          "active": false
+        }
+      ],
+      "total": 5
+    },
+    "opencode": {
+      "rows": [
+        {
+          "id": "n-opencode-1",
+          "title": "Check provider configuration",
+          "agents": [
+            "opencode"
+          ],
+          "updated": "2025-09-20T12:00:00Z",
+          "relative": "10 hours ago",
+          "active": false
+        }
+      ],
+      "total": 3
+    }
+  },
+  "skills": {
+    "installed": [
+      {
+        "name": "code-reviewer",
+        "description": "Code review and improvement suggestions",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      },
+      {
+        "name": "test-writer",
+        "description": "Generate and run tests",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      },
+      {
+        "name": "docs-writer",
+        "description": "Write and maintain documentation",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      }
+    ],
+    "installedTotal": 15,
+    "packs": [
+      {
+        "id": "core-workflow",
+        "name": "core-workflow",
+        "description": "Planning and review skills",
+        "installed": true,
+        "count": 6
+      },
+      {
+        "id": "release-kit",
+        "name": "release-kit",
+        "description": "Packaging and changelog helpers",
+        "installed": false,
+        "count": 4
+      }
+    ],
+    "packsTotal": 2
+  },
+  "hub": {
+    "spec": "acme/skill-hub#main",
+    "revision": "0123456789abcdef0123456789abcdef01234567",
+    "state": "current"
+  },
+  "activity": [
+    {
+      "time": "20:47:12",
+      "text": "Project configuration loaded",
+      "tone": "green"
+    },
+    {
+      "time": "18:32:11",
+      "text": "Skill \"code-reviewer\" imported",
+      "tone": "green"
+    },
+    {
+      "time": "20:45:03",
+      "text": "Claude session started",
+      "tone": "green"
+    }
+  ],
+  "empty": null,
+  "version": "1.8.4",
+  "transcript": null,
+  "detail": false
+}

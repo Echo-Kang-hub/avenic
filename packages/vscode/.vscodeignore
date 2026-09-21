@@ -9,3 +9,9 @@ build-tests.mjs
 .test-out/**
 .gitignore
 package-lock.json
+# 视觉 harness 的产物：`node test/visual/shot.mjs` 不带 --out 时会把渲染页、截图、
+# 几何报告和它自己的浏览器 profile 落在包目录里。它们是本机看布局用的，不该进 VSIX。
+shot.html
+shot.png
+shot.geometry.json
+.edge-profile/**

@@ -14,7 +14,7 @@ import { cloneHead, normalizeRepositoryInput, repositoryIdentity } from "./git.m
 import { createTempDirectory, removeTempDirectory } from "./vendor.mjs";
 import { catalogLayout } from "./paths.mjs";
 
-export function parseFrontmatterName(content, file) {
+function parseFrontmatterName(content, file) {
   const frontmatter = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/);
   const match = frontmatter?.[1].match(/^name:\s*(.+?)\s*$/m);
   if (!match) {
@@ -23,7 +23,7 @@ export function parseFrontmatterName(content, file) {
   return match[1].replace(/^["']|["']$/g, "").trim();
 }
 
-export async function readSkill(skillDirectory, requireMatchingFolder = true) {
+async function readSkill(skillDirectory, requireMatchingFolder = true) {
   const file = path.join(skillDirectory, "SKILL.md");
   if (!existsSync(file)) {
     fail(`Missing SKILL.md: ${skillDirectory}`);

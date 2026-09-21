@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import { durableEnvironment } from "../packages/core/src/index.mjs";
+import { environmentHome } from "../packages/core/src/runtime/environment.mjs";
+import { claudeProjectKey, hasProjectCopy as hasClaudeCopy } from "../packages/core/src/runtime/adapters/claude.mjs";
+import { hasProjectCopy as hasCodexCopy } from "../packages/core/src/runtime/adapters/codex.mjs";
 import { watchdogState } from "../packages/cli/src/cli/watchdog.mjs";
 
 // A launch hands its own environment to a detached process by way of a file in
@@ -73,4 +79,40 @@ test("the watchdog state file carries no credential and no environment wholesale
 test("an environment with nothing durable in it yields an empty object, not the whole environment", () => {
   assert.deepEqual(durableEnvironment({ ANTHROPIC_AUTH_TOKEN: "sk-x", TERM: "xterm" }), {});
   assert.deepEqual(durableEnvironment(undefined ?? {}), {});
+});
+
+test("an adapter finds native storage through the home the environment names", async () => {
+  // Snapshot, capture and revert resolve CLAUDE_CONFIG_DIR / CODEX_HOME — and,
+  // absent those, the home — from the environment they are handed. A fallback
+  // to this process's own homedir would read and write the developer's root
+  // during a run that used the fixture's.
+  const home = await mkdtemp(path.join(os.tmpdir(), "avenic-adapter-home-"));
+  try {
+    const projectRoot = path.join(home, "project");
+    await mkdir(projectRoot, { recursive: true });
+    const environment = { HOME: home, USERPROFILE: home };
+    const sessionId = "11111111-2222-3333-4444-000000000001";
+
+    const claudeDir = path.join(home, ".claude", "projects", claudeProjectKey(projectRoot));
+    await mkdir(claudeDir, { recursive: true });
+    await writeFile(path.join(claudeDir, `${sessionId}.jsonl`), "{}\n");
+    assert.equal(await hasClaudeCopy(projectRoot, sessionId, { environment }), true);
+
+    const codexDir = path.join(home, ".codex", "sessions", "2026", "09", "18");
+    await mkdir(codexDir, { recursive: true });
+    const meta = JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd: projectRoot, model_provider: "openai" } });
+    await writeFile(path.join(codexDir, `rollout-${sessionId}.jsonl`), `${meta}\n`);
+    assert.equal(await hasCodexCopy(projectRoot, sessionId, { environment }), true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("the machine's home is read from the environment it is given", () => {
+  // A host that only sets `HOME` has still said where home is — on either
+  // platform — and the answer must never be this process's own home.
+  assert.equal(environmentHome({ HOME: "/tmp/fixture-home" }), "/tmp/fixture-home");
+  // Where both names are present, the platform's own decides.
+  const both = { HOME: "/tmp/fixture-home", USERPROFILE: "/tmp/fixture-user" };
+  assert.equal(environmentHome(both), process.platform === "win32" ? "/tmp/fixture-user" : "/tmp/fixture-home");
 });

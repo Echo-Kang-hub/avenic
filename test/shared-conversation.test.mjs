@@ -7,7 +7,7 @@ import {
   readCanonicalSession,
   setActiveCanonicalSession,
 } from "../packages/core/src/index.mjs";
-import { withClaudeProject } from "./helpers/session-fixture.mjs";
+import { ACCOUNT_PROJECT_AGENT, withClaudeProject } from "./helpers/session-fixture.mjs";
 
 // The acceptance test for the one promise Shared mode makes: a user can move
 // the same conversation from one agent to another and each agent continues it
@@ -179,8 +179,8 @@ test("one shared conversation survives Claude → Codex → Claude → Codex", a
   }, {
     sessions: 1,
     records: HISTORY,
-    agents: { claude: { auth: "global", sessions: "project" }, codex: { auth: "global", sessions: "project" } },
-    sessionInterop: "shared",
+    agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
+    historyMode: "shared",
   });
 });
 
@@ -248,8 +248,8 @@ test("every turn of the shared conversation reaches the next agent whole", async
   }, {
     sessions: 1,
     records: HISTORY,
-    agents: { claude: { auth: "global", sessions: "project" }, codex: { auth: "global", sessions: "project" } },
-    sessionInterop: "shared",
+    agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
+    historyMode: "shared",
   });
 });
 
@@ -297,7 +297,7 @@ test("a long shared conversation is projected from its delta, not replayed", asy
   }, {
     sessions: 1,
     records: 6,
-    agents: { claude: { auth: "global", sessions: "project" }, codex: { auth: "global", sessions: "project" } },
-    sessionInterop: "shared",
+    agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
+    historyMode: "shared",
   });
 });

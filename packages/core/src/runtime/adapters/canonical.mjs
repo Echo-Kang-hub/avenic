@@ -93,7 +93,3 @@ export function canonicalBlocks(content) {
 export function eventTimestamp(value) {
   return timestamp(value);
 }
-
-export function readonlyProjection(events) {
-  return { capability: "read-only", events };
-}

@@ -12,9 +12,13 @@ export const AGENTS = {
     displayName: "Codex",
     executable: "codex",
   },
+  // OpenCode owns its own authentication and provider configuration end to end:
+  // Avenic records where its sessions live and nothing else, so the flag lives
+  // with the agent rather than as another `=== "opencode"` at each call site.
   opencode: {
     displayName: "OpenCode",
     executable: "opencode",
+    managesOwnAuth: true,
   },
 };
 
@@ -34,6 +38,13 @@ export function getAgent(agentId) {
   }
   return { id: agentId, ...agent };
 }
+
+// Where each agent's own login keeps its credentials. Avenic reads this file —
+// it never writes one, and never deletes one as ordinary cleanup — so "signed
+// in" is a fact about local files, and a purge that would take it has to say so
+// first. It lives with the registry because the reader and the remover must
+// name the same file.
+export const CREDENTIAL_FILE = { claude: ".credentials.json", codex: "auth.json" };
 
 export function agentExecutableAvailable(agentId, environment = process.env) {
   const agent = getAgent(agentId);

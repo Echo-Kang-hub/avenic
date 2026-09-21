@@ -25,9 +25,10 @@ try {
   const files = await readdir(path.join(env.CLAUDE_CONFIG_DIR, "projects"), { recursive: true });
   const jsonl = files.find((file) => file.endsWith(`${sessionId}.jsonl`));
   assert.ok(jsonl, "Claude must persist the resumed native session");
-  const rootProject = path.join(env.CLAUDE_CONFIG_DIR, "projects");
-  const dirs = await readdir(rootProject);
-  const content = await readFile(path.join(rootProject, dirs[0], jsonl), "utf8");
+  // `readdir` already hands back the path of the record relative to `projects`
+  // (`<munged cwd>/<session>.jsonl`); joining another directory onto it doubled
+  // the first segment and read a path Claude never wrote.
+  const content = await readFile(path.join(env.CLAUDE_CONFIG_DIR, "projects", jsonl), "utf8");
   const canonical = toCanonical(content, { nativeSessionId: sessionId });
   assert.ok(canonical.events.some((event) => event.content.some((part) => part.text === "D")));
   console.log(`Claude bootstrap/resume/capture smoke passed: ${sessionId}`);

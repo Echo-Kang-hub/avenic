@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import {
   addDirectSkills,
   adoptPackedSkills as coreAdoptPackedSkills,
@@ -115,6 +117,21 @@ export async function installedPackLayers(scope: Scope, cwd?: string, environmen
     return layers;
   } catch {
     return [];
+  }
+}
+
+// A skill row wants one thing core's status model does not carry: the sentence
+// the skill writes about itself. It is read from the skill's own directory —
+// the path core resolved, never one the plugin guessed — and whatever is not
+// there is reported as absent rather than invented.
+export async function describeSkill(directory: string): Promise<string | null> {
+  try {
+    const head = (await readFile(path.join(directory, "SKILL.md"), "utf8")).slice(0, 4_096);
+    const frontmatter = head.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    const line = (frontmatter ? frontmatter[1] : head).match(/^description:\s*(.+)$/m);
+    return line === null ? null : line[1].trim().replace(/^["']|["']$/g, "");
+  } catch {
+    return null;
   }
 }
 

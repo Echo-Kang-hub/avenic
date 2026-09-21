@@ -6,7 +6,9 @@ import {
   readCanonicalSession,
   readCanonicalSessionRecord,
   syncNativeMapping,
+  upgradeCanonicalSessionTitle,
 } from "./canonical-sessions.mjs";
+import { sessionTitleFor } from "./session-title.mjs";
 import { getSessionAdapter } from "./adapters/index.mjs";
 import { agentCursors, canonicalCursors, loadCursors, sameStamp, saveCursors, stampOf } from "./cursors.mjs";
 import { buildHandoff } from "./handoff.mjs";
@@ -15,16 +17,19 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  agentHomeRoot,
   agentSessionsRoot,
   configureProject,
   effectiveAgentConfig,
   loadRuntime,
-  projectAuthEnvironment,
   projectConfig,
   runtimePaths,
   setActiveCanonicalSession,
-  validateSessionInteropMode,
+  validateHistoryMode,
 } from "./config.mjs";
+import { apiRelative, removeApiConfiguration } from "./api-config.mjs";
+import { agentRuntimeEnvironment, effectiveAgentEnvironment } from "./agent-runtime.mjs";
+import { getAgent } from "./agents.mjs";
 import {
   acquireSessionLease,
   isConversationFile,
@@ -33,6 +38,62 @@ import {
   releaseSessionLease,
   sessionLeasePath,
 } from "./sessions.mjs";
+
+/**
+ * The agents whose authentication method a draft changes: the answers that
+ * *replace* one another, as opposed to answers that merely arrive. Only these
+ * leave something behind, so only these are ever asked about — and only these
+ * are ever released. `stored` is what the project said before the run
+ * (`projectDraft` copies it in), so comparing the two is what tells the
+ * difference.
+ */
+export function methodSwitches(draft) {
+  const switched = [];
+  for (const agentId of draft?.selected ?? []) {
+    const stored = draft.stored?.[agentId] ?? {};
+    const next = draft.agents?.[agentId] ?? {};
+    const before = stored.authMethod ?? null;
+    const after = next.authMethod ?? null;
+    if (!before || !after) continue;
+    // A change of method, and a move of *where* an API configuration is
+    // written: both leave the previous one standing, and only the answer that
+    // replaced it can say so. The scope is part of an API answer — the global
+    // one is live for every project on the machine — so an API answer that
+    // moved scopes is asked about like a method that changed. An account that
+    // moved scopes is not: a home is the agent's own sign-in, and the release
+    // for it deletes nothing.
+    const movedScope = before === "api" && after === "api"
+      && (stored.configScope ?? "global") !== (next.configScope ?? "global");
+    if (before !== after || movedScope) switched.push({ agentId, before, after });
+  }
+  return switched;
+}
+
+/**
+ * The switches a "Remove" could actually act on: the ones whose previous answer
+ * was an API configuration, which is the only thing Avenic can show it wrote.
+ * A project account home is a sign-in the agent performed, so a host asks the
+ * destructive question only when this is non-empty — a confirmation for a
+ * deletion that is never going to happen teaches users to click through them.
+ */
+function deletableSwitches(draft) {
+  return methodSwitches(draft).filter(({ agentId }) => draft.stored?.[agentId]?.authMethod === "api");
+}
+
+/**
+ * What that removal would name, in the words every host uses: the agent, and
+ * the file the previous configuration lives in. One formatter, so a terminal
+ * confirmation and an editor modal cannot name different files for the same
+ * answer — and so the question itself can be drawn from the step list rather
+ * than asked again inside a write, where a cancel can no longer reach it.
+ */
+export function removalTargets(draft) {
+  return deletableSwitches(draft).map(({ agentId }) => ({
+    agentId,
+    name: getAgent(agentId).displayName,
+    relative: apiRelative(agentId, draft.stored?.[agentId]?.configScope ?? "global"),
+  }));
+}
 
 function canonicalRevision(stored) {
   return stored.session.revision
@@ -45,7 +106,7 @@ function canonicalRevision(stored) {
 export async function observeSharedNativeSessions(projectRoot, agentId, options = {}) {
   const adapter = getSessionAdapter(agentId);
   const captured = await timed("observe.capture", () => adapter.capture(projectRoot, options));
-  const mode = projectConfig(await loadRuntime(projectRoot)).sessionInterop;
+  const mode = projectConfig(await loadRuntime(projectRoot)).historyMode;
   const imported = mode === "shared"
     ? await timed("observe.import", () => importProjectSessions(projectRoot, agentId, { ...options, skipCapture: true, setActive: options.setActive }))
     : { imported: 0, diagnostics: [] };
@@ -56,9 +117,12 @@ export async function recoverSharedNativeSessions(projectRoot, agentIds, options
   const results = [];
   for (const agentId of agentIds) {
     try {
-      results.push({ agentId, ...(await observeSharedNativeSessions(projectRoot, agentId, {
-        environment: typeof options.environmentForAgent === "function" ? options.environmentForAgent(agentId) : options.environment,
-      })) });
+      // The home this agent's runs write to, from the project's own answer: a
+      // caller hands the base environment it was given (or nothing), and the
+      // capture still reads the same root the launch used.
+      const supplied = typeof options.environmentForAgent === "function" ? options.environmentForAgent(agentId) : options.environment;
+      const environment = await effectiveAgentEnvironment(projectRoot, agentId, supplied);
+      results.push({ agentId, ...(await observeSharedNativeSessions(projectRoot, agentId, { environment })) });
     } catch (error) {
       results.push({ agentId, changed: false, diagnostic: error.message });
     }
@@ -125,6 +189,44 @@ export async function joinLaunchGroup(projectRoot, agentId, options = {}) {
 }
 
 /**
+ * The opening sequence of a project-scoped launch, written once for every host:
+ * join the project+agent launch group, then hand the agent the project's
+ * session records. From here the launch ends with `finishLaunch`, which leaves
+ * the group through the same member id. A host adds only what is its own — the
+ * durability watch, the child process or terminal, the wording of "not
+ * initialized" — so the CLI and the extension cannot drift on the order of
+ * these steps or on which one releases the group when the restore fails.
+ * `skipRestore` is for `avenic <agent> sessions continue`: that run reads
+ * native storage itself, so the project's records must not overwrite it.
+ * `member` is null for agents whose storage the official CLI owns (opencode)
+ * and for global-scope launches, which join nothing.
+ */
+export async function beginLaunch(projectRoot, agentId, options = {}) {
+  const environment = options.environment ?? process.env;
+  const portable = options.config?.sessionScope === "project";
+  const group = portable ? await joinLaunchGroup(projectRoot, agentId, { environment }) : null;
+  if (portable && !options.skipRestore) {
+    // Project session records take priority on launch: conflicting native
+    // copies are overwritten silently. Native storage is never written to
+    // proactively; only `avenic <agent> sessions writeback` writes project
+    // records back to native storage.
+    try {
+      await getSessionAdapter(agentId).restore(projectRoot, { environment });
+    } catch (error) {
+      // Leaving the group reverts native storage when this was the only
+      // launch in it.
+      if (group) {
+        try {
+          await group.release();
+        } catch {}
+      }
+      throw error;
+    }
+  }
+  return { portable, member: group?.member ?? null };
+}
+
+/**
  * The exit sequence for a launch: capture what the run produced, then leave the
  * group (the last member restores native storage). A host that started a
  * durability watch removes its state here too. `beforeRevert` runs while the
@@ -186,11 +288,16 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
   const adapter = getSessionAdapter(agentId);
   const portable = agentSessionsRoot(projectRoot, agentId);
   const ownsCursors = options.cursors === undefined;
-  const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
+  // The import reads the home the agent's runs wrote to, resolved from the
+  // project's own answer instead of trusted from the caller: `avenic sessions
+  // sync` hands this process's environment, and for Account · Project the
+  // machine's home is a different tree holding a different person's runs.
+  const environment = await effectiveAgentEnvironment(projectRoot, agentId, options.environment);
+  const cursors = options.cursors ?? loadCursors(projectRoot, environment);
   const files = agentCursors(cursors, agentId);
   const captured = options.skipCapture
     ? { count: 0, changed: false, diagnostics: [] }
-    : await adapter.capture(projectRoot, { ...options, cursors });
+    : await adapter.capture(projectRoot, { ...options, environment, cursors });
   let discovered = 0; let imported = 0; let unchanged = 0; let skipped = 0; let failed = 0; let selected = 0;
   const diagnostics = [...(captured.diagnostics ?? [])];
   // Files some pass imported while it was not allowed to select them (the
@@ -232,8 +339,25 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
     // must append to the canonical session a shared launch projected it into,
     // never fork a second conversation holding the same turns.
     const canonicalId = await canonicalSessionFor(projectRoot, agentId, native.nativeSessionId, cursors);
-    const created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title: `${agentId} ${native.nativeSessionId}` });
+    // What this conversation is called: the name its own store gave it, the
+    // first thing the user said, or — for a session that holds nothing yet —
+    // the short id a later capture will replace. A session is created with it,
+    // and a session an earlier import named after its native id is given it
+    // here; anything else keeps the title it has.
+    const title = sessionTitleFor({ agentId, nativeSessionId: native.nativeSessionId, nativeTitle: native.title, events: native.events });
+    const created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title });
     const appended = await appendCanonicalEvents(projectRoot, canonicalId, native.events);
+    // A conversation created a line ago already carries this title, so only a
+    // session that was here before this import can have one to replace.
+    if (!created.created) await upgradeCanonicalSessionTitle(projectRoot, canonicalId, title, {
+      agentId,
+      nativeSessionId: native.nativeSessionId,
+      // What this conversation would be called if its own store had no name to
+      // give: the first thing the user said. A stored title equal to it was
+      // written by an earlier capture, not chosen by anyone, and may be
+      // replaced by the name the conversation has now gained.
+      derivedTitle: sessionTitleFor({ agentId, nativeSessionId: native.nativeSessionId, nativeTitle: null, events: native.events }),
+    });
     await syncNativeMapping(projectRoot, canonicalId, {
       agentId,
       nativeSessionId: native.nativeSessionId,
@@ -273,7 +397,7 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
     }
     for (const item of pending) files[item.relative].pending = false;
   }
-  if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
+  if (ownsCursors) await saveCursors(projectRoot, cursors, environment);
   return { ...captured, discovered, imported, unchanged, skipped, failed, diagnostics };
 }
 
@@ -281,23 +405,34 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
 // Shared imports each enabled agent into the canonical workspace by identity;
 // unrelated conversations remain separate canonical sessions rather than being
 // joined merely because their timestamps are close.
-export async function setSessionInteropMode(projectRoot, mode, options = {}) {
-  validateSessionInteropMode(mode);
+export async function setHistoryMode(projectRoot, mode, options = {}) {
+  validateHistoryMode(mode);
   const before = await loadRuntime(projectRoot);
-  const previous = projectConfig(before).sessionInterop;
-  const configured = await configureProject(projectRoot, {
+  const previous = projectConfig(before).historyMode;
+  // A caller carrying a whole draft (the wizard's commit) writes that draft,
+  // so a mode change can never drop the answers that came with it — including
+  // the API half, which is written by the same configuration step. A caller
+  // that only moves the mode keeps the old shape.
+  const configured = await configureProject(projectRoot, options.draft ?? {
     ...(options.agents === undefined ? {} : { agents: options.agents }),
-    sessionInterop: mode,
-  });
+    historyMode: mode,
+  }, options);
   if (previous === mode || mode !== "shared") {
     return { previous, mode, imported: [], config: configured.config };
   }
   const imported = [];
   for (const agentId of Object.keys(configured.config.agents)) {
-    const agent = effectiveAgentConfig(configured, agentId);
-    const environment = options.environmentForAgent?.(agentId) ?? (agent?.auth === "project"
-      ? { ...process.env, ...projectAuthEnvironment(agentId, projectRoot) }
-      : process.env);
+    // Capture reads the environment the agent itself runs in — the same one a
+    // launch hands it, resolved from the same answer (`agentRuntimeEnvironment`
+    // over the effective config). For Account · Project that is the project's
+    // own home; falling back to this process's environment would capture the
+    // developer's global root instead of the home the run actually wrote.
+    const environment = agentRuntimeEnvironment(
+      projectRoot,
+      agentId,
+      effectiveAgentConfig(configured, agentId),
+      options.environmentForAgent?.(agentId) ?? options.environment ?? process.env,
+    );
     try {
       imported.push({ agentId, ...(await importProjectSessions(projectRoot, agentId, { environment, setActive: false })) });
     } catch (error) {
@@ -313,16 +448,57 @@ export async function setSessionInteropMode(projectRoot, mode, options = {}) {
 // decision here prevents CLI and VS Code from drifting on the same-mode path.
 export async function applyProjectConfiguration(projectRoot, draft, options = {}) {
   const before = await loadRuntime(projectRoot);
-  const previous = projectConfig(before).sessionInterop;
-  if (previous === draft.sessionInterop) {
-    const configured = await configureProject(projectRoot, draft);
-    return { previous, mode: draft.sessionInterop, imported: [], config: configured.config };
+  const previous = projectConfig(before).historyMode;
+  if (previous === draft.historyMode) {
+    const configured = await configureProject(projectRoot, draft, options);
+    return { previous, mode: draft.historyMode, imported: [], config: configured.config };
   }
-  return setSessionInteropMode(projectRoot, draft.sessionInterop, {
-    agents: draft.agents,
-    environmentForAgent: options.environmentForAgent,
-  });
+  // The mode changed, so history still has to be imported — but the rest of
+  // the draft is written either way: the mode decides how history is
+  // imported, never whether the project's answers reach their files.
+  return setHistoryMode(projectRoot, draft.historyMode, { ...options, draft });
 }
+
+/**
+ * Give back what one agent's previous method left on disk.
+ *
+ * Only an API configuration can be released: Avenic wrote those keys and the
+ * ledger says which ones, so the removal restores the values it displaced and
+ * keeps every key the user changed after the fact. A project account home is
+ * never released — the sign-in inside it is the agent's own, written by the
+ * agent's own login, and nothing in it can be shown to be Avenic's. Which is
+ * why the answer names it instead of deleting it.
+ */
+export async function releasePreviousMethod(projectRoot, agentId, previous, options = {}) {
+  if (previous?.authMethod !== "api") {
+    // A caller that hands no previous answer gets no method back: naming one
+    // would report "an Account was released" about a project that never
+    // answered, which is a fact this function would be inventing.
+    const method = previous?.authMethod === "account" ? "account" : null;
+    const home = method === "account" && previous.accountScope === "project" ? agentHomeRoot(projectRoot, agentId) : null;
+    return {
+      agentId,
+      method,
+      relative: null,
+      // Project-relative, the way every other surface names it: hosts print the
+      // same string the status page and the wizard's descriptions use.
+      home: home === null ? null : path.relative(projectRoot, home).split(path.sep).join("/"),
+      removed: 0,
+      conflicts: 0,
+      kept: 0,
+      deleted: false,
+    };
+  }
+  const result = await removeApiConfiguration(projectRoot, agentId, previous.configScope ?? "global", {
+    environment: options.environment,
+    // The home travels with every other option: a caller that redirected where
+    // a configuration is written must redirect where it is given back, or a
+    // removal reads the developer's own file instead of the fixture's.
+    homeDir: options.homeDir,
+  });
+  return { agentId, method: "api", home: null, ...result };
+}
+
 
 // The service owns mapping updates. Adapters only understand one native format,
 // which keeps canonical-to-agent conversion linear as new agents are added.
@@ -443,9 +619,12 @@ export async function reconcileCanonicalSession(projectRoot, canonicalSessionId,
   const results = [];
   for (const [agentId, mapping] of Object.entries(stored.mappings.projections ?? {})) {
     if (!mapping?.nativeSessionId) continue;
-    const environment = typeof options.environmentForAgent === "function"
+    const supplied = typeof options.environmentForAgent === "function"
       ? options.environmentForAgent(agentId)
       : options.environment;
+    // Each projection is read from the home its own agent runs under, resolved
+    // here rather than trusted from the caller.
+    const environment = await effectiveAgentEnvironment(projectRoot, agentId, supplied);
     try {
       const captured = await captureCanonicalSession(projectRoot, canonicalSessionId, agentId, { environment });
       results.push({ agentId, ...captured });
@@ -604,6 +783,9 @@ export async function continueCanonicalSession({ projectRoot, canonicalId, targe
   if (typeof capture !== "function" || typeof launch !== "function") {
     throw new Error("Canonical continuation requires capture and launch hooks");
   }
+  // The projection this opens and the read-back that follows must land in the
+  // home the target's runs use — Account · Project's own, not the caller's.
+  environment = await effectiveAgentEnvironment(projectRoot, targetAgent, environment);
   if (captureKnown) await captureKnown();
   let forceBootstrap = Boolean(requestedBootstrap);
   let recoveredProjection = false;

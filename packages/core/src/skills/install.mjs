@@ -89,7 +89,7 @@ export function createInstallContext(global, options = {}) {
   };
 }
 
-export async function resolveInstallPacks(context, explicitPacks) {
+async function resolveInstallPacks(context, explicitPacks) {
   const requested = parsePackArguments(explicitPacks);
   if (requested.length > 0) {
     return normalizePackIds(requested);

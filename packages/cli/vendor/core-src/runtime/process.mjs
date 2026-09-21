@@ -28,6 +28,28 @@ export function resolveOnPath(executable, environment) {
   return null;
 }
 
+/**
+ * One command line for a shell to run: the rule for quoting an argv, written
+ * once. cmd.exe re-parses `& | ^ < > ( )` even inside an argument and splits on
+ * whitespace, so a caller that hands a whole line to a shell (the launcher's
+ * `.cmd` branch, the extension's terminal `sendText`) must quote exactly like
+ * this. Parts are quoted only when they need it, so the common case — a bare
+ * command with plain arguments — comes back as the line the user typed.
+ */
+export function quoteShellLine(executable, argumentsList) {
+  const needsQuotes = /[\s"&|^<>()]/;
+  const quote = (part) => {
+    if (!needsQuotes.test(part)) return part;
+    // 双引号没有一条对两种 shell 都对的内嵌写法：cmd 认 `""`，POSIX 与 PowerShell
+    // 读 `\"`，同一条命令在另一边就是另一种含义。加引号救不了它，那就拒绝——
+    // 一行静默变意的命令比一个错误更糟，而到这里的参数（session id、路径）本就不
+    // 该带双引号。
+    if (part.includes("\"")) throw new Error(`Cannot pass ${JSON.stringify(part)} to a shell: a double quote cannot be quoted the same way for cmd and POSIX shells`);
+    return `"${part}"`;
+  };
+  return [quote(executable), ...argumentsList.map(quote)].join(" ");
+}
+
 function invocation(executable, argumentsList, environment) {
   const resolved = resolveOnPath(executable, environment) ?? executable;
   if (process.platform === "win32" && resolved.toLowerCase().endsWith(".ps1")) {
@@ -41,13 +63,9 @@ function invocation(executable, argumentsList, environment) {
   // （如 opencode.cmd）经 shell（cmd）运行。注意：node 20.16+ 对 args 数组会做
   // CreateProcess 引号转义（\"），cmd 无法还原——必须整体作为 shell 命令透传。
   if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(resolved)) {
-    // cmd.exe 会把 & | ^ < > ( ) 当作元字符二次解析——即使它们在参数中间。
-    // 白名单（model/schema.mjs 的 validateBaseUrl）已经拒绝这些字符，但用户自带参数
+    // 白名单（model/schema.mjs 的 validateBaseUrl）已经拒绝元字符，但用户自带参数
     // （如 `avenic codex --cd "a&b"`）仍会经过这里，因此拼接层必须同样加固。
-    const needsQuotes = /[\s"&|^<>()]/;
-    const quote = (part) => (needsQuotes.test(part) ? `"${part}"` : part);
-    const line = [quote(resolved), ...argumentsList.map(quote)].join(" ");
-    return { command: line, argumentsList: [], shell: true };
+    return { command: quoteShellLine(resolved, argumentsList), argumentsList: [], shell: true };
   }
   return { command: resolved, argumentsList };
 }

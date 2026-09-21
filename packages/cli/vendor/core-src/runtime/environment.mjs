@@ -1,16 +1,30 @@
+import os from "node:os";
 import process from "node:process";
 
-// What a detached launch helper still needs once the launching process is gone:
-// where the agents keep their native storage, where this machine keeps home and
-// temp, and how an executable is found on PATH.
-const DURABLE = [
-  "PATH",
-  "PATHEXT",
-  "SystemRoot",
-  "windir",
-  "COMSPEC",
-  "TEMP",
-  "TMP",
+/**
+ * The machine's own home, as the environment handed to a call describes it:
+ * `USERPROFILE` on Windows and `HOME` on POSIX — the variables `os.homedir()`
+ * reads there. A Windows host that sets only `HOME` has still said where home
+ * is, so that is honoured before this process's own answer. Read from the
+ * environment and not from this process because a host can ask about an
+ * environment that is not its own: the two answers differ, and a path derived
+ * from the wrong one is a wrong fact — including the wrong file to write.
+ */
+export function environmentHome(environment = process.env) {
+  const native = environment[process.platform === "win32" ? "USERPROFILE" : "HOME"];
+  return native || environment.HOME || os.homedir();
+}
+
+// Where a user's world lives: the home, config, data, state and cache roots an
+// agent resolves its configuration and its storage from. Written down once,
+// because two rules have to agree about it — a launch keeps these names
+// (`DURABLE` below), and so a detached watchdog can find the tree a run wrote
+// to. `CLAUDE_CONFIG_DIR` / `CODEX_HOME` are on the list for exactly that
+// reason: for a project-scoped account the agent's own home *is* redirected
+// into the project (`agentRuntimeEnvironment`), and a root the watch does not
+// look at is a run whose sessions silently stop being recorded. The Windows and
+// XDG members are there for the same reason, not as a guess about one vendor.
+export const USER_WORLD_ROOTS = [
   "HOME",
   "USERPROFILE",
   "HOMEDRIVE",
@@ -23,6 +37,20 @@ const DURABLE = [
   "XDG_CACHE_HOME",
   "CLAUDE_CONFIG_DIR",
   "CODEX_HOME",
+];
+
+// What a detached launch helper still needs once the launching process is gone:
+// where the agents keep their native storage, where this machine keeps home and
+// temp, and how an executable is found on PATH.
+const DURABLE = [
+  "PATH",
+  "PATHEXT",
+  "SystemRoot",
+  "windir",
+  "COMSPEC",
+  "TEMP",
+  "TMP",
+  ...USER_WORLD_ROOTS,
   "GIT_DIR",
   "GIT_WORK_TREE",
   "GIT_CEILING_DIRECTORIES",

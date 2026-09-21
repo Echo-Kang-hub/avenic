@@ -1,0 +1,150 @@
+{
+  "version": "0.5.5",
+  "detail": false,
+  "project": {
+    "name": "my-app",
+    "root": "my-app",
+    "configured": false,
+    "lastUpdated": null
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "short": "Claude",
+      "ready": false,
+      "statusText": "Not configured",
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Not chosen",
+          "tone": "muted",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Not set",
+        "count": 0,
+        "tone": "blue"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config File",
+        "icon": "go-to-file"
+      },
+      "actions": {
+        "launch": false,
+        "change": true
+      }
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "short": "Codex",
+      "ready": false,
+      "statusText": "Not configured",
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Not chosen",
+          "tone": "muted",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Not set",
+        "count": 0,
+        "tone": "blue"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config Folder",
+        "icon": "folder-opened"
+      },
+      "actions": {
+        "launch": false,
+        "change": true
+      }
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "short": "OpenCode",
+      "ready": false,
+      "statusText": "Not configured",
+      "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Native (OpenCode UI)",
+          "tone": "purple",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Not set",
+        "count": 0,
+        "tone": "blue"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open OpenCode",
+        "icon": "link-external"
+      },
+      "actions": {
+        "launch": false,
+        "change": true
+      }
+    }
+  ],
+  "history": {
+    "mode": "shared",
+    "sharedCount": 0
+  },
+  "shared": {
+    "rows": [],
+    "total": 0
+  },
+  "native": {
+    "claude": {
+      "rows": [],
+      "total": 0
+    },
+    "codex": {
+      "rows": [],
+      "total": 0
+    },
+    "opencode": {
+      "rows": [],
+      "total": 0
+    }
+  },
+  "skills": {
+    "installed": [],
+    "installedTotal": 0,
+    "packs": [],
+    "packsTotal": 0
+  },
+  "hub": {
+    "spec": "Echo-Kang-hub/SkillsHub#main",
+    "revision": null,
+    "state": "missing"
+  },
+  "activity": [],
+  "transcript": null,
+  "empty": "This project has no Avenic configuration yet."
+}

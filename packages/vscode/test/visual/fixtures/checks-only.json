@@ -1,0 +1,8 @@
+{
+  "meta": {
+    "source": "no reference geometry: these views are not the reference screenshot, so only the harness's own whole-page checks apply",
+    "activityBar": 0,
+    "tolerance": 2
+  },
+  "anchors": []
+}

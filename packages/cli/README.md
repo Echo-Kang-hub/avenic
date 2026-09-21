@@ -34,7 +34,7 @@ npm uninstall -g avenic
 
 ```bash
 cd <你的项目>
-avenic init          # 交互式配置：选 Agent → 选认证 → 选会话存储 → 选历史模式 → 确认
+avenic init          # 交互式配置：选 Agent → 每个 Agent 选认证方式与作用域 → 选会话存储 → 选历史模式 → 确认
 avenic claude        # 进入 Claude Code；avenic codex / avenic opencode 同理
 ```
 
@@ -49,7 +49,7 @@ avenic --version                    # 打印已安装版本
 avenic self-update                  # 更新到 npm 上的最新版
 ```
 
-不改配置也能用：不带参数运行 `avenic init` 之外的任何命令都不会改动已有配置；`avenic claude` 在未配置的项目里按默认设置启动。
+不改配置也能用：除 `init`、`change`、`<agent> auth` 之外的命令都不写认证与运行时配置；还没回答认证方式的项目，普通启动会先问一次（非终端环境按该 Agent 自己的账号启动并说明），尚未初始化的项目会提示先跑 `avenic <agent> init`。
 
 ## 交互式配置（TUI）
 
@@ -69,11 +69,13 @@ avenic self-update                  # 更新到 npm 上的最新版
 非终端环境（管道、CI、脚本）自动回退为参数模式，不会卡在提示上：
 
 ```bash
-avenic init --agents claude,codex --auth global --sessions project --history shared
-avenic change --agents codex --auth project --replace-agents
+avenic init --agents claude,codex --auth account --sessions project --history shared
+avenic change --agents codex --auth api --scope project --replace-agents
 ```
 
-`--agents` 指定要启用的 Agent；`avenic change` 默认只改你点名的 Agent，`--replace-agents` 才会整体替换。
+`--agents` 指定要启用的 Agent；`--auth account|api` 是认证方式，`--scope global|project` 是这种方式自己的作用域（默认 `global`，只能跟着 `--auth` 出现）。`avenic change` 默认只改你点名的 Agent，`--replace-agents` 才会整体替换。
+
+参数模式回答的是**方式**：`--auth api` 只记下"这个项目用 API"，provider、端点、模型和凭据要由交互向导收齐后写进 Agent 自己的配置文件——只带 `--auth api` 运行时不会替你写任何配置（启动时若还没有，会有一行提示让你跑 `avenic change`）。换方式时的 Keep/Remove 一问只存在于交互模式；非终端环境一律按 Keep 处理，绝不删除旧配置。
 
 ## 终端外观
 
@@ -116,7 +118,7 @@ avenic change --agents codex --auth project --replace-agents
 - **Shared**（共享）：Avenic 的 canonical 历史是唯一持久来源，各 Agent 的原生会话是它的投影。Claude Code、Codex、OpenCode 可以继续同一条会话；原生历史会被增量导入，不会重复。
 - **Isolated**（独立）：各 Agent 保留自己的原生历史，互不干扰；仍可导入、查看，并可随时用 `avenic change` 无损切换到 Shared（每条会话保留自己的身份与出处，不做拼接）。
 
-认证与历史完全解耦：**继续一条共享会话不改变你现有的登录**——Claude 的 provider（含 DeepSeek/API/cc-switch）、Codex 的登录、OpenCode 的配置都保持原样。Avenic 不是凭据管理器。
+认证与历史完全解耦：**继续一条共享会话不改变任何一个 Agent 的认证配置**——接力只把各 Agent 平时用的那套运行环境交给它，不切换 provider、不复制凭据、不要求重新登录，也不会为了会话另造一套凭据目录。
 
 ```bash
 avenic sessions list                        # 列出共享会话与各 Agent 游标
@@ -136,9 +138,8 @@ OpenCode 的投射不会替用户选模型：它用你在 OpenCode 配置里指�
 
 一个命令回答「这个项目现在是什么样」：配置了什么、历史模式与活动会话、三个 Agent 各自的初始化/认证/会话/同步状态、Skills 与 Hub。
 
-```
+```console
 $ avenic status
-
 AVENIC · Status
 │  D:\FileDownload\Projects\agenthome-cli
 
@@ -149,20 +150,25 @@ AVENIC · Status
 ◇  History
 │  Mode      shared
 │  Sessions  24
-│  Active    claude-bee6f9b7-…  claude bee6f9b7-…
+│  Active    claude-bee6f9b7-…  claude bee6f9b7
 │  Events    5939
 │  Updated   2026-09-19 09:51
 
 ◇  Agents
-│  Agent        CLI    Auth             Sessions          History  Sync
-│  Claude Code  found  global auth      project sessions  10       current
-│  Codex        found  global auth      project sessions  10       current
-│  OpenCode     found  not initialized  —                 0        —
+│  Agent        CLI    Auth               Sessions  History  Sync
+│  Claude Code  found  API · Project      project   10       current
+│  Codex        found  Account · Project  project   10       stale
+│  OpenCode     found  native             —         0        —
+│  ·  Claude Code: Config source .claude/settings.local.json, Provider DeepSeek, Model deepseek-chat
+│  !  Codex: stale — run: avenic sessions continue <id> --agent <agent> to extend it
+│  ·  Codex: Auth home .agents/local/codex
+│  !  Codex: Auth status Not signed in — run: avenic codex to sign in
+│  ·  OpenCode: run: avenic opencode init
 
 ◇  Skills
-│  Project  15 installed · optimized
-│  Global   nothing installed
-│  Hub      Echo-Kang-hub/SkillsHub · current · 9122e3a
+│  Project   15 installed · optimized · current
+│  Global    nothing installed
+│  Hub       Echo-Kang-hub/SkillsHub · current · 9122e3a
 ```
 
 `Sync` 一列的含义是「项目里的投射离共享历史还有多远」，每个值都对应一个可以动手的状态：
@@ -170,11 +176,20 @@ AVENIC · Status
 | 值 | 含义 | 下一步 |
 |---|---|---|
 | `current` | 投射停在共享历史的最后一个事件上 | 无事可做 |
-| `stale` | 共享历史有了新事件，投射还没跟上 | `avenic <agent>` 启动时会自动补齐 |
-| `missing` | 有映射，但项目里没有对应会话 | `avenic <agent> sessions import` |
+| `stale` | 共享历史有了新事件，投射还没跟上 | `avenic sessions continue <id> --agent <agent>` 把它接上 |
+| `missing` | 有映射，但两个存储里都找不到对应会话 | 共享历史：`avenic sessions continue <id> --agent <agent>` 重建，或 `avenic sessions sync`；独立历史：`avenic sessions sync`，或 `avenic change --history shared` 后重建 |
 | `running` | 这个项目里正有一个该 Agent 在跑 | 无 |
-| `dirty` | 上次启动没走完退出流程 | 下次启动会自动恢复 |
+| `dirty` | 上次启动没走完退出流程 | `avenic sessions sync` 收尾 |
 | `none` | 该 Agent 未初始化 | `avenic <agent> init` |
+
+`Auth` 一列写的是「认证方式 · 这种方式自己的作用域」，例如 `Account · Global`、`API · Project`；OpenCode 写 `native`（它自己管认证与 provider）。每个 Agent 的行下面跟着它这一种方式特有的几行，回答的都是「这份状态在哪」：
+
+| 方式 | 下面的行 |
+|---|---|
+| Account | `Auth home`（仅 `project` 作用域）：项目里的账号家目录，如 `.agents/local/codex`。`Auth status`：`Signed in` / `Not signed in` / `Unknown`——读 Agent 自己的凭据文件得出，从不打印凭据本身；平台把凭据放在文件之外（例如 macOS 钥匙串）时就写 `Unknown`，而不是替它断言「没登录」。`avenic <agent> status` 里这三个值各占一行；`avenic status` 只在需要动作时把 `Not signed in`、`Unknown` 作为 `!` 提示打出来。 |
+| API | `Config source`：装着这份配置的文件（Claude 的项目作用域是 `.claude/settings.local.json`，Codex 的项目作用域是 `.agents/api/codex.json`）。Avenic 还没写过时，`avenic <agent> status` 写 `<文件> (nothing written yet)`，`avenic status` 给一行 `!` 提示 `<文件> holds no configuration Avenic wrote (run: avenic change)`——你自己手写的 provider 键不算这个项目的答案；写过则再给出 `Provider`、`Model`，以及凭据是有（`Set`）还是没有（启动时从你自己的环境里读）。 |
+
+`Auth` 列没有方式可报时写 `not initialized`；未初始化的 Agent 会在下面给出 `run: avenic <agent> init`，CLI 不在 PATH 上的则说明「这个 Agent 的 CLI 不在 PATH 上，Avenic 仍然管理它的历史」。
 
 `avenic status --json` 输出同一份模型的 JSON（`schemaVersion: 1`），VS Code 插件展示的就是它。
 
@@ -189,31 +204,88 @@ AVENIC · Status
 | 命令 | 说明 |
 |---|---|
 | `avenic <agent>` | 启动 Agent，其余参数透传给官方 CLI |
-| `avenic <agent> init [--auth global\|project] [--sessions global\|project]` | 初始化该 Agent 的运行时 |
-| `avenic <agent> deinit [--purge]` | 移除运行时；`--purge` 一并删除数据 |
-| `avenic <agent> auth [global\|project\|reset]` | 设置认证作用域；不带参数时查看当前状态 |
+| `avenic <claude\|codex> init [--auth account\|api] [--scope global\|project] [--sessions global\|project]` | 初始化该 Agent 的运行时 |
+| `avenic opencode init [--sessions global\|project]` | OpenCode 自己管认证与 provider，只记会话作用域 |
+| `avenic <agent> deinit [--purge [--purge-credentials]]` | 移除运行时；`--purge` 一并删除数据（Agent 自己的登录默认保留）；连登录一起删要再加 `--purge-credentials` |
+| `avenic <claude\|codex> auth [account\|api\|reset] [--scope global\|project]` | 改这个项目的认证方式；不带参数时打印该 Agent 的状态页 |
 | `avenic <agent> status` | 查看该 Agent 的配置与状态 |
 | `avenic <agent> sessions import\|writeback\|status` | 管理便携会话 |
 | `avenic status [--json]` | 这个项目的一览：配置 / 历史 / Agent / Skills |
 | `avenic doctor` | 环境自检（已弃用：用 `avenic status`） |
 
-这些按 Agent 的子命令是项目配置的薄包装：它们读写的仍是 `avenic init` 建的同一份配置，不会另起一套状态。
+这些按 Agent 的子命令是项目配置的薄包装：它们读写的仍是 `avenic init` 建的同一份配置——项目自己的答案在 `.agents/runtime.json`，本机对这个项目的覆盖在 `.agents/local/runtime.local.json`——不会另起一套状态。
 
-`init` 的输出会列出实际创建或修改的内容（`.agents/runtime.json`、`.agents/sessions/<agent>/`、`.agents/local/<agent>/`、`.gitignore`）及使用方法。`init` 可重复执行：结构已符合时不作修改，有缺失时只增量补齐。
+`init` 的输出会列出实际创建或修改的内容（`.agents/runtime.json`、`.agents/sessions/<agent>/`、Account·Project 时的 `.agents/local/<agent>/`、`.gitignore`），并以一句话说明这次选的方式落在磁盘的哪里。`init` 可重复执行：结构已符合时不作修改，有缺失时只增量补齐。
 
-### 认证作用域
+### 认证方式：Account 与 API
 
-- `global`（默认）：使用 Agent 的本机全局凭据（如 `~/.claude`、`~/.codex`）。
-- `project`：凭据与配置保存在项目 `.agents/local/<agent>/`（自动 gitignore）。同一 Agent 在不同项目可使用不同账号。
+每个 Agent 在这个项目里回答同一个问题：**认证方式**（`authMethod: account | api`）。**认证方式与模型/provider 配置是两个不同的问题**：Account 是 Agent 自己登录，Avenic 不配置任何模型；API 是 Avenic 把 provider、端点、模型与凭据写进 Agent 自己读的那个文件。作用域只属于回答它的那一种方式——`accountScope` 只对 Account 存在，`configScope` 只对 API 存在，两者不会同时存在；`sessionScope` 与两者都无关。
 
-```bash
-avenic claude auth project        # 切换到项目认证
-avenic claude auth global         # 切回全局
-avenic claude auth reset          # 清除本项目覆盖，恢复默认
-avenic claude auth                # 查看当前生效的认证作用域
+**Account**——Avenic 不登录、不存凭据、不发明凭据格式：
+
+- `global`（默认）：用这台机器本就有的登录，Avenic 什么都不改。
+- `project`：把 Agent **自己的**配置根变量指向项目——Claude 是 `CLAUDE_CONFIG_DIR`，Codex 是 `CODEX_HOME`，都指向 `<项目>/.agents/local/<agent>`。Agent 自己的 `login` 在它自己的格式里往那里写自己的文件，`cwd` 仍是项目根；用户的 `~/.claude`、`~/.codex` 不会被读进这个家目录，也不会被写、被删。
+
+**API**——Avenic 写的是该 Agent 自己读的配置文件：
+
+| Agent | 作用域 | 写进哪个文件 | 写什么 |
+|---|---|---|---|
+| Claude Code | `global` | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、`env.ANTHROPIC_MODEL`、`env.ANTHROPIC_AUTH_TOKEN` |
+| Claude Code | `project` | `.claude/settings.local.json`（Claude 自己的项目配置文件） | 同上 |
+| Codex | `global` | `~/.codex/config.toml` | `model`、`model_provider` 与 `[model_providers.<id>]` 表的 `name`/`base_url`/`env_key`/`wire_api` |
+| Codex | `project` | `.agents/api/codex.json`（Avenic 自己的记录） | 同样的字段；启动时以 `-c model=…`、`-c model_provider=…`、`-c model_providers.<id>.*` 交给这一次 Codex |
+
+provider 的 id 由 provider 名称推导（小写，非字母数字折叠成 `-`）；`wire_api` 在 OpenAI 自家端点上写 `responses`，其他端点写 `chat`。Claude 的凭据是 bearer token，写进配置文件（向导里掩码输入，之后只以「有没有」出现）；Codex 的凭据字段是**环境变量名**，Avenic 写的是这个名字，密钥本身留在你的环境里——启动时该变量没有值，会明确提示。
+
+**再次 `avenic change` 时，这一套问题是「回填」的。** provider、端点、模型都按 Avenic 写过的值预填，凭据那一问则始终空着——密钥不回显，所以空着只能是同一个意思：**保持已经写下的那个**。于是对着一路 Enter 走完 `change` 不会改动配置，一个字节都不变；要清掉这份配置，用的是换方式时的 Keep/Remove 那一问。
+
+**写进 Agent 自己的文件时，写入不是覆盖，而是记账。** Avenic 把创建了哪些键、写了什么、写之前是什么记进 `.agents/projection.json`；因此换方式并选择 Remove 时，它只交还自己证明得了的东西：还保持原样的键恢复原值（原本没有的删除），你后来改过的键报为冲突并原样保留。账本里不含密钥本身，只留一个哈希，所以「你改没改过」仍然可证。
+
+**两份文件、两个作用**——别混淆：
+
+| 文件 | 属于谁 | Avenic 会怎样 |
+| --- | --- | --- |
+| `.agents/local/<agent>/` | Account·Project 下 Agent 自己的账号家目录 | 只把 Agent 的配置根变量指过来；里面的一切由 Agent 自己的 `login` 写，Avenic 不写、不改；`deinit --purge` 默认也保留其中的登录文件（会点名），连它一起删要再加 `--purge-credentials` |
+| `.claude/settings.local.json` | Claude Code 自己的项目配置 | 只在 API 模式下、且只对账本记为 Avenic 的键写入；切回 Account 不会删它，你自己写的键一个都不动 |
+
+启动只读配置：方式与作用域决定这次运行的环境与参数，配置文件的写入只发生在 `init`、`change` 与 `<agent> auth`（以及启动时你选择 Remember 的那一次）。
+
+### 密钥与 Git
+
+Avenic 把下列路径写进项目 `.gitignore` 的 `# Agent Runtime` 分节：`.claude/skills/`、`.claude/settings.local.json`、`.agents/skills/`、`.agents/local/`、`.agents/tmp/`、`.agents/direct/`、`.agents/licenses/`、`.agents/api/`、`.agents/projection.json`；`.agents/sessions/` 另由 `avenic sessions git on|off` 控制（默认进 Git）。
+
+规则只跟着它所保护的东西同进退：`deinit` 只会移除守护对象已经不存在的规则（`.agents/local/` 在目录还在时就保留——Agent 自己的登录在里面），不会出现「凭据文件还在、却已经能被 `git add`」的窗口。
+
+### 换一种方式
+
+`avenic change` 在收齐新答案之后、写入之前，若发现某个 Agent 换了方式，会先问一次：
+
+```text
+◆  Existing Account/API configuration detected. Keep previous configuration?
+│  ▸ ◉  Keep   the previous configuration stays where it is
+│    ○  Remove   delete only what Avenic wrote for the previous answer
 ```
 
-认证作用域与历史模式是独立的两个维度，四种组合都成立：全局认证 + 共享历史、项目认证 + 独立历史等。
+默认 **Keep**：新答案照常写入，旧配置留在原地不动。选 **Remove** 会再确认一次（`Delete the previous API configuration? This cannot be undone.`），然后只删除 Avenic 能证明是自己为**这个项目**写下的东西：账本登记的键按原值归还，你后来改过的键保留并报告。旧的 Account 家目录只被点名、不会被删——里面的登录是 Agent 自己做的，证明不了是 Avenic 的；`~/.claude`、`~/.codex`、别的项目一律不碰，`.claude/settings.local.json` 也不会因为你切回 Account 就被删掉。
+
+`avenic <agent> auth` 走同一条路口：先问旧答案，再写新答案，然后打印这个 Agent 的状态页，外加一句说明这次的方式落在磁盘的哪里。
+
+```bash
+avenic claude auth api --scope project   # 这个项目改用 API 配置，写进 .claude/settings.local.json
+avenic claude auth account               # 改回由 Claude 自己登录
+avenic claude auth reset                 # 清掉本机覆盖，回到项目自己的答案
+avenic claude auth                       # 查看当前生效的方式与作用域
+```
+
+`auth reset` 清掉的是**本机覆盖**（`.agents/local/runtime.local.json`），项目在 `.agents/runtime.json` 里的答案随即重新生效。
+
+### 项目还没回答方式时
+
+还没回答方式的 Agent，普通启动会先问一次：Account（用它自己的账号登录）还是 API（用 provider/model/API 配置），再问一次可选的 `Remember for this project?`（默认 No）。Esc 取消这次启动。非终端环境（管道、CI）不问，按该 Agent 自己的账号启动并把这件事说出来。全程只读本地状态：不联网、不发起登录、不调用模型。
+
+回答只影响**这一次启动**，除非你选了 Remember——那时它作为本机覆盖记进 `.agents/local/runtime.local.json`，不替换项目在 `.agents/runtime.json` 里的答案；`avenic <agent> status` 的 `Method source` 一行会说明这份答案来自项目配置还是本机覆盖。
+
+认证方式与历史模式是独立的两个维度，四种组合都成立：Account + 共享历史、API + 独立历史等。
 
 ### 会话记录
 
@@ -249,40 +321,6 @@ AVENIC_WATCH_INTERVAL_MS=1000 avenic claude   # 默认 3000
 > OpenCode 例外：其会话存储由官方 CLI 自行管理，`avenic opencode` 启动后原生存储仍保留本次运行产生的会话，不受上述回滚保护。
 
 > 项目会话可能包含提示词、源码、命令输出、路径与密钥；仅在可信仓库中提交会话。
-
-## Models（模型配置）
-
-Avenic 用两层结构管理模型配置：**本机配置库是唯一事实来源，项目只存绑定与回滚账本**。
-
-- **本机配置库**：默认 `~/.config/avenic/models.json`（状态根受 `AVENIC_STATE_DIR`、`XDG_CONFIG_HOME` 影响），保存 profile——端点、API 类型、密钥、模型与开关。库是设备级的，不随项目迁移。
-- **项目绑定**：`.agents/model.json`，记录当前项目用的是哪个 profile，以及 Claude 投影的账本（写入了哪些键、写入前的原值）；profile 本身只存在于库里。
-
-```bash
-avenic model                    # 查看库路径、项目绑定与投影状态
-avenic model list               # 列出本机 profile（> 标记当前项目绑定）
-avenic model add --name <名称> --base-url <URL> --api-key <密钥> [--model <id>]
-avenic model use <id>           # 绑定到当前项目；不带 id 时在终端上选择
-avenic model test <id>          # 发一次最小真实请求（失败退出码 2）
-avenic model clear              # 解绑并恢复绑定前的项目设置
-```
-
-完整子命令与参数表见上文的命令表，或运行 `avenic --help`。
-
-### 三个 Agent 的生效方式
-
-绑定只作用于**本项目**；模型配置不写 Agent 的全局配置（如 `~/.claude/settings.json`、`~/.codex/config.toml`）：
-
-| Agent | 生效方式 |
-|---|---|
-| Claude Code | 绑定与启动时把 profile 投影进项目 `.claude/settings.local.json`（逐键记账，指纹一致时零写入；解绑按账本还原，用户手改过的键保持不动）；启动时同时注入进程环境变量兜底（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_MODEL` 及角色模型变量）。 |
-| Codex | 只注入本次启动的 argv：`-c model_provider=…`、`model_providers.<id>.*`（`wire_api=responses`）与 `-m <model>`；用户自带 `-m`/`model_provider=` 时对应项跳过。Codex 需要 Responses API 端点；profile 不具备时启动不改配置，按 Codex 全局配置继续。 |
-| OpenCode | 只注入本次启动的 `OPENCODE_CONFIG_CONTENT`：Anthropic 端点覆盖内置 provider，其他端点定义自定义 provider。 |
-
-### 密钥与 Git
-
-- CLI 与插件面板只显示掩码（前 3 后 4 位）；**底层仍是明文 JSON 存储**——库文件与项目投影里的密钥不加密，请按凭据对待。
-- 绑定时 Avenic 自动在项目 `.gitignore` 补齐以下规则（缺少 `# Agent Runtime` 分节时一并写入分节头）：`.agents/model.json`、`.claude/settings.local.json`、`.agents/model.lock`、`.agents/tmp/`。**不要提交这些文件**（绑定文件含投影账本，可能包含用户原值），本机配置库同样不要提交。
-- `avenic model test` 会向配置的端点发送一次真实请求，消耗极少量额度。
 
 ## Skills
 
@@ -504,8 +542,9 @@ avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
 |---|---|
 | `avenic init` / `avenic change` | 再跑一次 `avenic change` 改回原值；对话框里 Ctrl+C 取消则什么都没写 |
 | `avenic sessions continue <id> --agent <x>` | 在 `avenic sessions` 界面里选 “Set active session” 换回原会话；或不再调用它 |
-| `avenic <agent> init` | `avenic <agent> deinit`（加 `--purge` 连会话数据一起删除） |
-| `avenic <agent> auth project` / `auth global` | 执行相反设置，或 `auth reset` 恢复默认 |
+| `avenic <agent> init` | `avenic <agent> deinit`（加 `--purge` 连会话数据一起删除；Agent 自己的登录默认保留，连它一起删要再加 `--purge-credentials`） |
+| `avenic <agent> auth account` / `auth api` | 执行相反设置（切换时先问 Keep/Remove，默认保留旧配置），或 `auth reset` 清掉本机覆盖 |
+| `avenic <agent> auth api` 写下的配置 | `avenic change` 或 `<agent> auth` 切换时选 Remove：只交还账本登记的键，你改过的键保留 |
 | `avenic <agent> sessions import` | 只复制不删除；清除项目副本：`avenic <agent> deinit --purge` 后重新 `init` |
 | `avenic sessions git off` | `avenic sessions git on` |
 | `avenic skills install [pack...]`（简写 `avenic skills [pack...]`） | `avenic skills uninstall`（全部）或 `avenic skills uninstall <pack>` |

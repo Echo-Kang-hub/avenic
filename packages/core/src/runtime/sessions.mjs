@@ -6,7 +6,6 @@ import {
   open,
   readFile,
   readdir,
-  rename,
   rm,
   rmdir,
   stat,
@@ -32,7 +31,7 @@ export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 const identityCache = new Map();
 const IDENTITY_CACHE_LIMIT = 4096;
 
-export function normalizeProjectIdentity(value) {
+function normalizeProjectIdentity(value) {
   if (typeof value !== "string" || !value.trim()) return null;
   const cached = identityCache.get(value);
   if (cached !== undefined) return cached;
@@ -58,7 +57,7 @@ export function samePath(left, right) {
   return normalizedLeft !== null && normalizedLeft === normalizedRight;
 }
 
-export function transformJsonLines(content, transform) {
+function transformJsonLines(content, transform) {
   const trailingNewline = content.endsWith("\n");
   const lines = content.split(/\r?\n/);
   if (trailingNewline) {
@@ -94,54 +93,6 @@ export async function listFiles(root) {
   }
   await walk(root);
   return files.sort();
-}
-
-export async function replaceDirectory(destination, build) {
-  const parent = path.dirname(destination);
-  const suffix = `${process.pid}-${Date.now()}`;
-  const temporary = `${destination}.tmp-${suffix}`;
-  const backup = `${destination}.bak-${suffix}`;
-  await mkdir(parent, { recursive: true });
-  await rm(temporary, { recursive: true, force: true });
-  await mkdir(temporary, { recursive: true });
-  try {
-    await build(temporary);
-    if (existsSync(destination)) {
-      await renameWithRetry(destination, backup);
-    }
-    await renameWithRetry(temporary, destination);
-    await rm(backup, { recursive: true, force: true });
-  } catch (error) {
-    await rm(temporary, { recursive: true, force: true });
-    if (existsSync(backup) && !existsSync(destination)) {
-      await renameWithRetry(backup, destination);
-    }
-    throw error;
-  }
-}
-
-async function renameWithRetry(source, destination) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await rename(source, destination);
-      return;
-    } catch (error) {
-      if (attempt >= 4 || !["EACCES", "EBUSY", "EPERM"].includes(error.code)) throw error;
-      await delay(40 * (attempt + 1));
-    }
-  }
-}
-
-export async function snapshotFiles(sourceRoot, relativeFiles, destination, transform) {
-  await replaceDirectory(destination, async (temporary) => {
-    for (const relative of relativeFiles) {
-      const source = path.join(sourceRoot, relative);
-      const target = path.join(temporary, relative);
-      await mkdir(path.dirname(target), { recursive: true });
-      const content = await readFile(source);
-      await writeFile(target, transform ? await transform(content, relative) : content);
-    }
-  });
 }
 
 // Copy only the native files whose stamp moved since the last capture. A
@@ -259,7 +210,7 @@ function containsBytes(haystack, needle, ignoreCase) {
   return false;
 }
 
-export async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, transform, options = {}) {
+async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, transform, options = {}) {
   let added = 0;
   let conflicts = 0;
   let updated = 0;

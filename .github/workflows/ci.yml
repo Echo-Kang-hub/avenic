@@ -7,6 +7,15 @@ on:
 permissions:
   contents: read
 
+# The visual and host layers of the release gate are not run here, because
+# neither can pass on an Ubuntu runner: packages/vscode/test/visual/shot.mjs
+# drives Edge from its Windows install paths (`C:/Program Files/.../msedge.exe`),
+# and packages/vscode/test/host/run.mjs reads the screen through PowerShell
+# CopyFromScreen inside a real VS Code window, which needs a desktop session.
+# They stay a Windows step of the release: `npm run test:visual`,
+# `npm run test:host`, or the whole gate in one command, `npm run release:gate`
+# (pack → verify → vscode tests → visual → host).
+
 jobs:
   test:
     name: Test and package check

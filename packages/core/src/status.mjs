@@ -14,8 +14,12 @@ import process from "node:process";
 import { countCanonicalEvents, listCanonicalSessionRecords } from "./runtime/canonical-sessions.mjs";
 import { getSessionAdapter } from "./runtime/adapters/index.mjs";
 import { AGENTS, classifyAgentExecutable, getAgent } from "./runtime/agents.mjs";
+import { accountHome, accountSignInStatus } from "./runtime/agent-runtime.mjs";
+import { environmentHome } from "./runtime/environment.mjs";
+import { readApiConfiguration } from "./runtime/api-config.mjs";
 import {
   agentSessionsRoot,
+  effectiveAgentConfig,
   getActiveCanonicalSessionId,
   loadRuntime,
   projectConfig,
@@ -27,7 +31,10 @@ import { currentRepositoryState } from "./skills/git.mjs";
 import { createInstallContext, isCatalogDirectory, skillsInstallationStatus } from "./skills/install.mjs";
 import { PROJECT_LOCK_FILE, globalLockFile } from "./skills/paths.mjs";
 
-export const STATUS_SCHEMA_VERSION = 1;
+// Additive fields do not bump this: a consumer that reads the fields it knows
+// keeps working. A removed, renamed or repurposed field does — that is what the
+// number is for, and it is the only thing allowed to raise it.
+const STATUS_SCHEMA_VERSION = 1;
 
 async function readJsonFile(file) {
   try {
@@ -119,15 +126,57 @@ async function projectionSessionMissing(projectRoot, agentId, projection, contex
   }
 }
 
+// A directory under the machine's own home reads as `~…`, the way the docs and
+// every command hint spell it. Measured against the environment this status was
+// read in, never against this process's home: a host can describe another
+// machine's environment, and shortening against the wrong home invents a `~`
+// that points somewhere else.
+function tildify(directory, environment) {
+  const machine = environmentHome(environment);
+  return directory.startsWith(machine + path.sep) ? `~${directory.slice(machine.length)}` : directory;
+}
+
 async function agentOverview(projectRoot, agentId, context) {
   const agent = getAgent(agentId);
-  const configured = context.config.agents[agentId] ?? null;
+  // The scope this agent actually runs under, local override included: an
+  // override leaves the project's configuration saying something else, and a
+  // status that reported the project's scope would name a file the launch
+  // never reads. One answer, the same one the launcher asks for.
+  const configured = effectiveAgentConfig(context.state, agentId);
   const executable = classifyAgentExecutable(agentId, { cwd: projectRoot, environment: context.environment });
   const adapter = getSessionAdapter(agentId);
   const sessions = await adapter.status(projectRoot).then((status) => status.count).catch(() => null);
   const launchGroup = await launchGroupState(agentId, projectRoot);
   const projection = context.projections[agentId] ?? null;
   const projectionMissing = await projectionSessionMissing(projectRoot, agentId, projection, context);
+  // The two methods answer with different facts, and a host shows the one the
+  // method owns: an Account says where its sign-in lives and whether it has
+  // happened; an API configuration says which file carries it and what it
+  // selects — never the credential itself, only whether one is set.
+  let auth = null;
+  if (configured?.authMethod) {
+    const scope = configured.authMethod === "account" ? configured.accountScope : configured.configScope;
+    // The home is the Account's: where the agent's own sign-in lives. It is
+    // reported for *both* scopes — the project's relative to the root, the
+    // machine's own with `~` — because that is the directory the sign-in state
+    // below was just read from, and a `null` there described no file at all.
+    // An API configuration names its file instead, so it has no home here.
+    const home = configured.authMethod === "account" ? accountHome(projectRoot, agentId, scope, context.environment) : null;
+    auth = {
+      method: configured.authMethod,
+      scope,
+      source: configured.source,
+      // Forward-slashed either way: this value is shown to people and to other
+      // hosts, and `~\\.claude` on Windows reads like a different directory next
+      // to the `~/.claude` in the docs and in every command hint.
+      home: home === null ? null
+        : (scope === "project" ? path.relative(projectRoot, home) : tildify(home, context.environment)).split(path.sep).join("/"),
+      status: configured.authMethod === "account" ? await accountSignInStatus(agentId, home) : null,
+      configuration: configured.authMethod === "api"
+        ? await readApiConfiguration(projectRoot, agentId, scope, { environment: context.environment })
+        : null,
+    };
+  }
   return {
     id: agentId,
     displayName: agent.displayName,
@@ -136,8 +185,11 @@ async function agentOverview(projectRoot, agentId, context) {
     available: Boolean(executable.executable),
     installMethod: executable.installMethod,
     initialized: Boolean(configured),
-    auth: configured?.auth ?? null,
-    sessions: configured?.sessions ?? null,
+    // OpenCode answers for its own authentication and provider; the one thing
+    // Avenic records for it is where its sessions live.
+    runtime: agentId === "opencode" ? "native" : null,
+    auth,
+    sessions: configured?.sessionScope ?? null,
     history: {
       // Where this agent's copies live, so every host names the same directory.
       directory: agentSessionsRoot(projectRoot, agentId),
@@ -214,7 +266,6 @@ async function hubOverview(projectRoot, environment) {
   const revision = present ? await cacheRevision(directory) : null;
   const pinned = await pinnedRevision(projectRoot, environment);
   return {
-    configured: true,
     spec,
     name: catalogDisplayName(spec),
     repository,
@@ -246,7 +297,7 @@ export async function collectStatus(projectRoot, options = {}) {
   ]);
   const agents = [];
   for (const agentId of Object.keys(AGENTS)) {
-    agents.push(await agentOverview(root, agentId, { config, environment, history, projections }));
+    agents.push(await agentOverview(root, agentId, { state, environment, history, projections }));
   }
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
@@ -255,11 +306,11 @@ export async function collectStatus(projectRoot, options = {}) {
       name: path.basename(root),
       configured: Object.keys(config.agents).length > 0,
       agents: Object.keys(config.agents),
-      historyMode: config.sessionInterop,
+      historyMode: config.historyMode,
     },
     history: {
       ...history,
-      mode: config.sessionInterop,
+      mode: config.historyMode,
       projections,
     },
     agents,

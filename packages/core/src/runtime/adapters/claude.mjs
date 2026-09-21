@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { agentSessionsRoot, runtimePaths } from "../config.mjs";
+import { environmentHome } from "../environment.mjs";
 import { cachedFileHead, knownDirectories, loadCursors, rememberDirectories, saveCursors } from "../cursors.mjs";
 import {
   hashContent,
@@ -25,6 +25,10 @@ export function toCanonical(content, options = {}) {
   const parsed = parseJsonLines(content, agentId, { diagnostics: true });
   const records = parsed.records;
   const nativeSessionId = options.nativeSessionId ?? records.find((record) => typeof record.sessionId === "string")?.sessionId ?? "unknown";
+  // What Claude Code itself calls the conversation. A summarized session opens
+  // with the compaction record, and that summary is the only name the native
+  // store ever writes down — everything else about a session is its messages.
+  const title = records.find((record) => record.type === "summary" && typeof record.summary === "string" && record.summary.trim())?.summary ?? null;
   const events = records.flatMap((record, index) => {
     const role = record.message?.role;
     if (!isConversationRole(role)) return [];
@@ -39,7 +43,7 @@ export function toCanonical(content, options = {}) {
       extensions: { claude: { record, message: record.message } },
     }];
   });
-  return { nativeSessionId, events, diagnostics: parsed.diagnostics, revision: options.revision ?? null };
+  return { nativeSessionId, title, events, diagnostics: parsed.diagnostics, revision: options.revision ?? null };
 }
 
 // Claude Code has no supported way to append to a transcript, and inventing one
@@ -158,7 +162,7 @@ export async function hasProjectCopy(projectRoot, nativeSessionId, options = {})
 }
 
 function locations(projectRoot, environment = process.env) {
-  const claudeHome = environment.CLAUDE_CONFIG_DIR || path.join(homedir(), ".claude");
+  const claudeHome = environment.CLAUDE_CONFIG_DIR || path.join(environmentHome(environment), ".claude");
   return {
     native: path.join(claudeHome, "projects", claudeProjectKey(projectRoot)),
     portable: agentSessionsRoot(projectRoot, "claude"),

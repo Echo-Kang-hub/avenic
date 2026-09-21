@@ -11,17 +11,20 @@
   "scripts": {
     "sync-core": "node scripts/sync-core.mjs",
     "pretest": "npm run sync-core",
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs && node scripts/host-home-check.mjs",
     "perf": "node scripts/perf/profile.mjs",
     "perf:tui": "node scripts/perf/tui-render.mjs --runs 200",
-  "tui:visual": "node scripts/tui-visual.mjs",
-  "tui:capture": "node scripts/tui-visual.mjs --pty --out dist/tui-captures",
+    "tui:visual": "node scripts/tui-visual.mjs",
+    "tui:capture": "node scripts/tui-visual.mjs --pty --out dist/tui-captures",
     "test:vscode": "npm --prefix packages/vscode test",
+    "test:visual": "npm --prefix packages/vscode run test:visual",
+    "test:host": "node packages/vscode/test/host/run.mjs",
     "test:install": "npm run sync-core && node integration/global-install.mjs",
     "test:release": "npm run sync-core && node integration/release-smoke.mjs",
     "pack:cli": "cd packages/cli && npm pack --dry-run --json",
     "release:pack": "node scripts/pack-release.mjs",
-    "release:verify": "node scripts/verify-artifacts.mjs"
+    "release:verify": "node scripts/verify-artifacts.mjs",
+    "release:gate": "npm run release:pack && npm run release:verify && npm run test:vscode && npm run test:visual && npm run test:host"
   },
   "files": [
     "packages/core/",

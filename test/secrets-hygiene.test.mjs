@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { writeApiConfiguration } from "../packages/core/src/index.mjs";
 import { withClaudeProject, removeTree } from "./helpers/session-fixture.mjs";
 
 // A launch reads the credentials a developer's shell exports, and an agent needs
@@ -184,9 +185,12 @@ test("a session run with credentials in the environment leaves them in none of i
       const roots = [projectRoot, home, root, auditRoot];
       const relative = (file) => path.relative(projectRoot, file).split(path.sep).join("/");
 
-      // One project, three agents, one shared history.
+      // One project, three agents, one shared history. OpenCode answers for its
+      // own authentication and provider, so the method flag belongs to the two
+      // agents that have one — asking OpenCode for it is refused, loudly.
       for (const agentId of ["claude", "codex", "opencode"]) {
-        const initialized = run(`${agentId} init`, [agentId, "init", "--auth", "global"]);
+        const answers = agentId === "opencode" ? [agentId, "init"] : [agentId, "init", "--auth", "account"];
+        const initialized = run(`${agentId} init`, answers);
         assert.equal(initialized.status, 0, initialized.stderr);
       }
       const shared = run("change", ["change", "--history", "shared"]);
@@ -221,7 +225,7 @@ test("a session run with credentials in the environment leaves them in none of i
       // project, which is the one place a native store and the project tree are
       // the same tree — so it is where a credential copied out of the
       // environment would be most likely to survive.
-      const scoped = run("claude auth project", ["claude", "auth", "project"]);
+      const scoped = run("claude auth project", ["claude", "auth", "account", "--scope", "project"]);
       assert.equal(scoped.status, 0, scoped.stderr);
       const scopedLaunch = run("claude launch (project auth)", ["claude"]);
       assert.equal(scopedLaunch.status, 0, scopedLaunch.stderr);
@@ -284,74 +288,89 @@ test("a session run with credentials in the environment leaves them in none of i
   }
 });
 
-test("a profile's own key reaches only the files the project keeps out of git", async () => {
+test("an API configuration's credential reaches only the files the project keeps out of git", async () => {
   const auditRoot = await mkdtemp(path.join(os.tmpdir(), "avenic-secrets-temp-"));
   try {
     await withClaudeProject(async (fixture) => {
-      const { projectRoot, home, root, environment: fixtureEnvironment } = fixture;
+      const { projectRoot, home, root } = fixture;
       const environment = { ...SECRETS, TEMP: auditRoot, TMP: auditRoot, TMPDIR: auditRoot };
       const run = runner(fixture, environment);
 
-      const initialized = run("claude init", ["claude", "init", "--auth", "global"]);
-      assert.equal(initialized.status, 0, initialized.stderr);
+      for (const agentId of ["claude", "codex"]) {
+        const initialized = run(`${agentId} init (api, project)`, [agentId, "init", "--auth", "api", "--scope", "project"]);
+        assert.equal(initialized.status, 0, initialized.stderr);
+      }
 
-      // The key a user stores in Avenic is a credential Avenic manages, and it
-      // has exactly two homes in a project plus one on the machine: the
-      // projection the agent reads, the ledger that makes the projection
-      // reversible, and the library. All three are documented, gitignored and
-      // restricted; everything else must never see it.
-      const key = SECRETS.ANTHROPIC_API_KEY;
-      const added = run("model add", ["model", "add", "--name", "Fixture", "--base-url", "https://fixture.invalid/v1", "--api-key", key, "--model", "fixture-main"]);
-      assert.equal(added.status, 0, added.stderr);
-      const bound = run("model use", ["model", "use", "fixture"]);
-      assert.equal(bound.status, 0, bound.stderr);
+      // The four answers the API half of the wizard collects, written where the
+      // wizard writes them. Claude's own project configuration file carries the
+      // credential; the ledger beside it makes the write reversible and keeps a
+      // hash rather than the value. Codex has no project file of its own, so its
+      // project answer is Avenic's record, and its "credential" is the *name* of
+      // an environment variable — a name is not a secret, which is exactly why
+      // that is the field Codex takes.
+      const key = SECRETS.ANTHROPIC_AUTH_TOKEN;
+      const fields = { provider: "Fixture", baseUrl: "https://fixture.invalid/v1", model: "fixture-main" };
+      await writeApiConfiguration(projectRoot, "claude", "project", { ...fields, credential: key });
+      await writeApiConfiguration(projectRoot, "codex", "project", { ...fields, credential: "FIXTURE_CODEX_KEY" });
 
-      // A launch with the profile bound: the key is injected into the agent's
-      // process, which is the only place it is allowed to travel.
+      // A launch reads the configuration rather than carrying one: the key is
+      // already in the agent's process environment, which is where it belongs.
       const launched = run("claude launch", ["claude"]);
       assert.equal(launched.status, 0, launched.stderr);
+      const codexLaunched = run("codex launch", ["codex"]);
+      assert.equal(codexLaunched.status, 0, codexLaunched.stderr);
 
-      const listed = run("model list", ["model", "list"]);
-      assert.equal(listed.status, 0, listed.stderr);
-      assert.match(listed.stdout, /Fixture/, "the profile must really be listed");
+      // Reporting is read-only, and a report says whether a credential is set —
+      // never what it is.
       const status = run("status", ["status"]);
       assert.equal(status.status, 0, status.stderr);
+      assert.match(status.stdout, /Agent\s+CLI\s+Auth\s+Sessions\s+History\s+Sync/);
+      // The page names the file the launch reads; the machine-readable form
+      // says whether a credential is in it — as a boolean, never a value.
+      assert.match(status.stdout, /Config source \.claude\/settings\.local\.json/);
       const json = run("status --json", ["status", "--json"]);
       assert.equal(json.status, 0, json.stderr);
+      const reported = JSON.parse(json.stdout).agents.find((agent) => agent.id === "claude").auth.configuration;
+      assert.equal(reported.credentialSet, true);
+      assert.equal(JSON.stringify(reported).includes(key), false, "a report must never carry the secret itself");
 
       await settleWatches(auditRoot);
       const { leaks } = await scanForMarkers([projectRoot, home, root, auditRoot]);
       const allowed = [
         path.join(projectRoot, ".claude", "settings.local.json"),
-        path.join(projectRoot, ".agents", "model.json"),
-        path.join(fixtureEnvironment.AVENIC_STATE_DIR, "models.json"),
-        // The transaction directories a write stages through. A crash leaves a
-        // staged copy behind, so the project gitignores the whole directory
-        // rather than pretending a key-bearing backup cannot exist.
+        // A write is staged before it is put in place, so the staged copy may
+        // hold a credential too: the directory is gitignored as a whole rather
+        // than pretending a key-bearing backup cannot exist.
         `${path.join(projectRoot, ".agents", "tmp")}${path.sep}`,
+        // Avenic's own records: the ledger keeps a hash, and Codex's record
+        // keeps the variable's name. Neither is expected to hold the value —
+        // they are listed so a leak into them is reported as itself instead of
+        // as an unexplained file.
+        path.join(projectRoot, ".agents", "projection.json"),
+        path.join(projectRoot, ".agents", "api", "codex.json"),
       ];
       const tolerated = (file) => allowed.some((entry) => file === entry || file.startsWith(entry));
       assert.deepEqual(
         leakedPaths(leaks.filter(({ file }) => !tolerated(file))),
         [],
-        "a key written by a model binding reached a file outside the protected set",
+        "a credential written by an API configuration reached a file outside the protected set",
       );
-      // ...and the protected files must really hold it, or the assertion above
-      // would pass on a run that never stored the key at all.
-      for (const file of allowed.slice(0, 3)) {
-        assert.ok(leaks.some((entry) => entry.file === file), `${file} must be where the key lives`);
-      }
+      // ...and the protected file must really hold it, or the assertion above
+      // would pass on a run that never stored the credential at all.
+      assert.ok(leaks.some(({ file }) => file === path.join(projectRoot, ".claude", "settings.local.json")),
+        "the agent's own project configuration is where the credential lives");
+      assert.equal(leaks.some(({ file }) => file === path.join(projectRoot, ".agents", "projection.json")), false,
+        "the ledger records what Avenic wrote, never the secret it wrote");
 
       const ignore = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
-      for (const rule of [".agents/model.json", ".claude/settings.local.json"]) {
-        assert.match(ignore, new RegExp(`^${rule.replace(/\./g, "\\.")}$`, "m"), `${rule} holds a key and must never be committed`);
+      for (const rule of [".claude/settings.local.json", ".agents/api/", ".agents/projection.json", ".agents/tmp/"]) {
+        assert.match(ignore, new RegExp(`^${rule.replace(/\./g, "\\.")}$`, "m"), `${rule} is Avenic's own state and must never be committed`);
       }
       if (process.platform !== "win32") {
         // chmod is meaningless on Windows, where the user profile's ACL is what
         // protects a file; POSIX has to carry the restriction itself.
-        for (const file of allowed.slice(0, 3)) {
-          if (file.startsWith(fixtureEnvironment.AVENIC_STATE_DIR)) continue;
-          assert.equal((await stat(file)).mode & 0o777, 0o600, `${file} holds a key and must not be world readable`);
+        for (const file of [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".agents", "api", "codex.json")]) {
+          assert.equal((await stat(file)).mode & 0o777, 0o600, `${file} holds a provider answer and must not be world readable`);
         }
       }
     });

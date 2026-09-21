@@ -6,83 +6,115 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { listCanonicalSessions } from "@avenic/core";
-import { agentStatus, deinitialize, initialize, prepareAgentLaunch, setAuthMode, setSessionsMode } from "../src/services/agents.ts";
+import { agentStatus, deinitialize, initialize, prepareAgentLaunch, releaseSummary } from "../src/services/agents.ts";
 import { select } from "../src/services/catalog.ts";
 import { installPacks, repairLinks } from "../src/services/skills.ts";
-import { makeCatalogFixture, testEnv } from "./helpers.ts";
+import { makeCatalogFixture, testEnv, withAgentHomes } from "./helpers.ts";
 
-test("init → auth switch → sessions switch → deinit round-trip on real core", async () => {
+test("init → reconfigure → deinit round-trip on real core", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
   try {
-    await initialize(dir, "claude", "global", "project");
+    await initialize(dir, "claude", { authMethod: "account", accountScope: "global", sessionScope: "project" });
     let status = await agentStatus(dir, "claude");
-    assert.equal(status.effective?.auth, "global");
-    assert.equal(status.effective?.sessions, "project");
-    await setAuthMode(dir, "claude", "project");
+    assert.equal(status.auth?.method, "account");
+    assert.equal(status.auth?.scope, "global");
+    assert.equal(status.sessions, "project");
+    // 同一场问答的第二次：方法、作用域、会话各自换一个答案，写的是同一份 schema。
+    await initialize(dir, "claude", { authMethod: "api", configScope: "project", sessionScope: "global" });
     status = await agentStatus(dir, "claude");
-    assert.equal(status.effective?.auth, "project");
-    await setSessionsMode(dir, "claude", "global");
-    status = await agentStatus(dir, "claude");
-    assert.equal(status.effective?.sessions, "global");
+    assert.equal(status.auth?.method, "api");
+    assert.equal(status.auth?.scope, "project");
+    assert.equal(status.auth?.configuration?.relative, ".claude/settings.local.json");
+    assert.equal(status.sessions, "global");
     await deinitialize(dir, "claude");
-    assert.equal((await agentStatus(dir, "claude")).effective, null);
+    const after = await agentStatus(dir, "claude");
+    assert.equal(after.initialized, false);
+    assert.equal(after.auth, null);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("manifest registers the nine agent command ids", async () => {
+test("manifest registers the agent command ids, one wizard for init and change", async () => {
   const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const manifest = JSON.parse(await readFile(path.join(pkgDir, "package.json"), "utf8"));
   const ids = manifest.contributes?.commands ?? [];
-  for (const id of ["avenic.agents.init", "avenic.agents.launch", "avenic.agents.install", "avenic.agents.update", "avenic.agents.deinit", "avenic.agents.switchAuth", "avenic.agents.switchSessions", "avenic.agents.sessionsImport", "avenic.agents.sessionsWriteback"]) {
+  for (const id of ["avenic.agents.configureProject", "avenic.agents.launch", "avenic.agents.install", "avenic.agents.update", "avenic.agents.deinit", "avenic.agents.sessionsImport", "avenic.agents.sessionsWriteback"]) {
     assert.ok(ids.some((c: { command: string }) => c.command === id), id);
+  }
+  // 逐行切换的老入口必须消失：方法与作用域只在一场问答里回答，命令面板里
+  // 不该再有第二条通往上一次写盘的路。
+  for (const gone of ["avenic.agents.init", "avenic.agents.switchAuth", "avenic.agents.switchSessions"]) {
+    assert.equal(ids.some((c: { command: string }) => c.command === gone), false, gone);
   }
 });
 
-// 启动准备复用 core 原语（与 `avenic claude` 同语义）：project auth → CLAUDE_CONFIG_DIR 指入
-// 项目内 .agents/local/claude（原生存储随项目走=测试隔离在临时目录）；project sessions →
-// 快照/恢复租赁；finishRun 收官回写并保证幂等。未初始化 → 拒绝启动。
-test("prepareAgentLaunch returns avenic runtime environment and scoped sessions", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-launch-"));
+// 启动准备复用 core 原语（与 `avenic claude` 同语义），而配置根的去留正是两种方法的
+// 分界：Account·Project 把子进程的配置根指向项目自己的 home（登录是 agent 自己做的，
+// Avenic 不发明凭据格式）；API 模式则一个字都不改——配置写在 agent 自己的原生文件里，
+// 环境必须照常被发现。project sessions → 快照/恢复租赁；finishRun 幂等。未初始化 → 拒绝启动。
+test("prepareAgentLaunch redirects the config root for a Project account and never for API", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-launch-"));
+  const dir = path.join(root, "project");
   try {
-    await assert.rejects(() => prepareAgentLaunch(dir, "claude"), /尚未初始化/);
-    await initialize(dir, "claude", "project", "project");
-    const prepared = await prepareAgentLaunch(dir, "claude");
-    assert.equal(prepared.definition.cwd, dir);
-    assert.equal(prepared.definition.command, "claude");
-    assert.ok(prepared.definition.name.includes("Claude Code"));
-    const configDir = prepared.definition.environment.CLAUDE_CONFIG_DIR;
-    assert.equal(!!configDir, true);
-    assert.equal(path.resolve(configDir!), path.resolve(dir, ".agents", "local", "claude"), "项目域认证环境指向项目内目录");
-    await prepared.finishRun();
-    await prepared.finishRun(); // 幂等：第二次 no-op
+    await mkdir(dir, { recursive: true });
+    await withAgentHomes(path.join(root, "home"), async () => {
+      await assert.rejects(() => prepareAgentLaunch(dir, "claude"), /尚未初始化/);
+      await initialize(dir, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+      const api = await prepareAgentLaunch(dir, "claude");
+      assert.equal(api.definition.cwd, dir);
+      assert.equal(api.definition.command, "claude");
+      assert.ok(api.definition.name.includes("Claude Code"));
+      assert.equal(api.definition.environment.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR, "API 模式不得重定向配置根");
+      assert.doesNotMatch(
+        JSON.stringify(api.definition.environment),
+        /\.agents[\\/]local/,
+        "API 模式下环境里不该出现指向项目内的配置根",
+      );
+      await api.finishRun();
+      await api.finishRun(); // 幂等：第二次 no-op
+
+      await initialize(dir, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+      const account = await prepareAgentLaunch(dir, "claude");
+      assert.equal(
+        account.definition.environment.CLAUDE_CONFIG_DIR,
+        path.join(dir, ".agents", "local", "claude"),
+        "Account·Project 的项目隔离就是配置根本身",
+      );
+      assert.notEqual(process.env.CLAUDE_CONFIG_DIR, path.join(dir, ".agents", "local", "claude"), "不得改写调用方自己的环境");
+      await account.finishRun();
+    });
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 
 test("prepareAgentLaunch commits a Shared native session through core on exit", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-shared-launch-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-shared-launch-"));
+  const dir = path.join(root, "project");
   try {
-    await initialize(dir, "claude", "project", "project");
-    const sessionId = "11111111-1111-4111-8111-111111111111";
-    const native = path.join(
-      dir,
-      ".agents",
-      "local",
-      "claude",
-      "projects",
-      path.resolve(dir).replace(/[^a-zA-Z0-9]/g, "-"),
-      `${sessionId}.jsonl`,
-    );
-    await mkdir(path.dirname(native), { recursive: true });
-    await writeFile(native, `${JSON.stringify({ type: "user", uuid: "u", sessionId, cwd: dir, timestamp: "2026-09-18T00:00:00.000Z", message: { role: "user", content: "A" } })}\n`);
-    const prepared = await prepareAgentLaunch(dir, "claude");
-    await prepared.finishRun();
-    assert.deepEqual((await listCanonicalSessions(dir)).map((session) => session.id), [`claude-${sessionId}`]);
+    await mkdir(dir, { recursive: true });
+    await withAgentHomes(path.join(root, "home"), async () => {
+      await initialize(dir, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+      const sessionId = "11111111-1111-4111-8111-111111111111";
+      // 原生存储住在这次启动真正使用的配置根里 —— Account·Project 下就是项目自己的
+      // `.agents/local/claude`，与启动注入的那个变量同一个答案。
+      const configRoot = path.join(dir, ".agents", "local", "claude");
+      const native = path.join(
+        configRoot,
+        "projects",
+        path.resolve(dir).replace(/[^a-zA-Z0-9]/g, "-"),
+        `${sessionId}.jsonl`,
+      );
+      await mkdir(path.dirname(native), { recursive: true });
+      await writeFile(native, `${JSON.stringify({ type: "user", uuid: "u", sessionId, cwd: dir, timestamp: "2026-09-18T00:00:00.000Z", message: { role: "user", content: "A" } })}\n`);
+      const prepared = await prepareAgentLaunch(dir, "claude");
+      assert.equal(prepared.definition.environment.CLAUDE_CONFIG_DIR, configRoot, "夹具路径必须就是启动注入的配置根");
+      await prepared.finishRun();
+      assert.deepEqual((await listCanonicalSessions(dir)).map((session) => session.id), [`claude-${sessionId}`]);
+    });
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -96,15 +128,17 @@ test("prepareAgentLaunch repairs missing shared skill links before launch", asyn
     await mkdir(dir, { recursive: true });
     await makeCatalogFixture(catalogDir);
     await select(catalogDir, env);
-    await initialize(dir, "claude", "project", "project");
-    await installPacks("project", ["common"], dir, env);
-    const shared = path.join(dir, ".claude", "skills", "alpha");
-    assert.equal(lstatSync(shared).isSymbolicLink(), true, "安装后共享目标是链接");
-    await rm(shared, { recursive: true, force: true });
-    assert.equal(existsSync(shared), false, "共享链接已删除");
-    const prepared = await prepareAgentLaunch(dir, "claude");
-    assert.equal(lstatSync(shared).isSymbolicLink(), true, "启动前补齐共享链接");
-    await prepared.finishRun();
+    await withAgentHomes(path.join(root, "home"), async () => {
+      await initialize(dir, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+      await installPacks("project", ["common"], dir, env);
+      const shared = path.join(dir, ".claude", "skills", "alpha");
+      assert.equal(lstatSync(shared).isSymbolicLink(), true, "安装后共享目标是链接");
+      await rm(shared, { recursive: true, force: true });
+      assert.equal(existsSync(shared), false, "共享链接已删除");
+      const prepared = await prepareAgentLaunch(dir, "claude");
+      assert.equal(lstatSync(shared).isSymbolicLink(), true, "启动前补齐共享链接");
+      await prepared.finishRun();
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -121,18 +155,33 @@ test("prepareAgentLaunch resolves even when repairLinks throws", async () => {
     await mkdir(dir, { recursive: true });
     await makeCatalogFixture(catalogDir);
     await select(catalogDir, env);
-    await initialize(dir, "claude", "project", "project");
-    await installPacks("project", ["common"], dir, env);
-    await writeFile(path.join(dir, ".avenic.lock.json"), "{ not json "); // 锁文件损坏 → managedSkillNames 必然抛
-    await assert.rejects(
-      () => repairLinks("project", dir, env),
-      /Cannot parse JSON/,
-      "构造必须真的让 repairLinks 抛错，否则本用例失去区分力",
-    );
-    const prepared = await prepareAgentLaunch(dir, "claude");
-    assert.equal(prepared.definition.cwd, dir);
-    await prepared.finishRun();
+    await withAgentHomes(path.join(root, "home"), async () => {
+      await initialize(dir, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+      await installPacks("project", ["common"], dir, env);
+      await writeFile(path.join(dir, ".avenic.lock.json"), "{ not json "); // 锁文件损坏 → managedSkillNames 必然抛
+      await assert.rejects(
+        () => repairLinks("project", dir, env),
+        /Cannot parse JSON/,
+        "构造必须真的让 repairLinks 抛错，否则本用例失去区分力",
+      );
+      const prepared = await prepareAgentLaunch(dir, "claude");
+      assert.equal(prepared.definition.cwd, dir);
+      await prepared.finishRun();
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// 释放的总结句：删除数不是全部事实。一个键的原值 Avenic 只存过 hash（用户自己
+// 写过、被 Avenic 覆盖），它给不回来——用户必须被告知，否则他以为一切都恢复了。
+test("a release summary names the keys that cannot be given back", () => {
+  const entry = { agentId: "claude", method: "api" as const, relative: ".claude/settings.json", home: null, conflicts: 0, deleted: false };
+  const summary = releaseSummary([{ ...entry, removed: 2, kept: 1 }]);
+  assert.match(summary, /已删除 .*2 个键/);
+  assert.match(summary, /1 个键的原值.*无法恢复/);
+  // 没有这种键时不多说一句，也不改变既有的两句。
+  const clean = releaseSummary([{ ...entry, removed: 2, kept: 0 }]);
+  assert.match(clean, /已删除 .*2 个键/);
+  assert.doesNotMatch(clean, /无法恢复/);
 });

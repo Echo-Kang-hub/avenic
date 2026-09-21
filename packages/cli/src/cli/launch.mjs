@@ -6,17 +6,17 @@
 // command dispatcher imports this module for it.
 import process from "node:process";
 import { getAgent } from "#core/runtime/agents.mjs";
-import { agentEnvironment, resolveEffectiveAgentRuntime } from "#core/runtime/agent-runtime.mjs";
-import { getSessionAdapter } from "#core/runtime/adapters/index.mjs";
+import { machineEnvironment, agentRuntimeEnvironment, launchMethodQuestion, launchMethodReadiness, resolveEffectiveAgentRuntime } from "#core/runtime/agent-runtime.mjs";
 import {
   effectiveAgentConfig,
   loadRuntime,
   projectConfig,
+  setLocalAuth,
 } from "#core/runtime/config.mjs";
 import { formatSessionDiagnostics } from "#core/runtime/diagnostics.mjs";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
 import { spawnExecutableSync } from "#core/runtime/process.mjs";
-import { finishLaunch, joinLaunchGroup } from "#core/runtime/session-interop.mjs";
+import { beginLaunch, finishLaunch } from "#core/runtime/session-interop.mjs";
 import { markLaunchClosing } from "#core/runtime/sessions.mjs";
 import { createInstallContext, managedSkillNames } from "#core/skills/install.mjs";
 import { ensureSkillLinks, formatLinkSummary, linkSummaryChanged, logConflicts } from "#core/skills/links.mjs";
@@ -80,15 +80,49 @@ export function reportSessionDiagnostics(diagnostics, options = {}) {
 export async function launchAgent(agentId, argumentsList, options = {}) {
   const agent = getAgent(agentId);
   const projectRoot = options.projectRoot ?? await timed("project", () => locateProjectRoot());
-  const state = await timed("config", () => loadRuntime(projectRoot));
-  const config = effectiveAgentConfig(state, agentId);
+  let state = await timed("config", () => loadRuntime(projectRoot));
+  let config = effectiveAgentConfig(state, agentId);
   if (!config) {
     throw new Error(`${agent.displayName} is not initialized. Run: avenic ${agentId} init`);
   }
-  const environment = options.environment ?? agentEnvironment(state, projectRoot, agentId);
-  const adapter = getSessionAdapter(agentId);
-  const portableSessions = config.sessions !== "global";
-  const sharedSessions = projectConfig(state).sessionInterop === "shared";
+  // A project that has not answered — a freshly migrated one, or one whose
+  // owner asked to be asked — is asked here, once, in one frame: which
+  // authentication this launch runs under. Answering "remember" writes that
+  // answer and nothing else. Reading only local state: no network, no model.
+  // An agent that manages its own authentication is never asked: for it the
+  // question does not exist, and there is no answer for a project to record.
+  let launchMethod = null;
+  if (!config.authMethod && !agent.managesOwnAuth) {
+    const prompts = options.prompts ?? {};
+    // Which of the two methods this project could already run under — a kept
+    // API configuration, an account that has signed in here — so the question
+    // says which are set up rather than offering two choices that look alike.
+    // Read from local files only, and only on the path that asks.
+    const question = launchMethodQuestion(agentId, await launchMethodReadiness(projectRoot, agentId, { config }));
+    // The question's layer is imported here rather than at the top: a launch
+    // that already knows its answer never draws a frame, and paying for the
+    // terminal layer on every ordinary launch would be a cost with no reader.
+    // The TTY test is the same one prompts.mjs makes, spelled inline for that
+    // reason alone.
+    const interactive = prompts.stdin !== undefined
+      ? prompts.stdin?.isTTY === true && prompts.stdout?.isTTY === true
+      : process.stdin.isTTY === true && process.stdout.isTTY === true;
+    if (interactive && !options.capture) {
+      const { confirm, singleSelect } = await import("./prompts.mjs");
+      launchMethod = await singleSelect({ ...prompts, title: question.title, options: question.options });
+      if (launchMethod === null || launchMethod === undefined) return 0; // Esc cancels the launch
+      if (await confirm({ ...prompts, title: question.rememberTitle, initial: false })) {
+        await setLocalAuth(projectRoot, agentId, { authMethod: launchMethod });
+        state = await loadRuntime(projectRoot);
+        config = effectiveAgentConfig(state, agentId);
+      }
+    } else {
+      launchMethod = "account";
+      console.log(`${agent.displayName} has no authentication method for this project; launching with its native account. Run \`avenic ${agentId} init\` to choose.`);
+    }
+  }
+  const environment = options.environment ?? machineEnvironment();
+  const sharedSessions = projectConfig(state).historyMode === "shared";
   // Recovery for sessions another agent left behind belongs to the explicit
   // `sessions` and `change` commands. A plain launch reaches the official TUI
   // first — a new conversation, no projection work, whatever the project's
@@ -99,27 +133,15 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
   // Sessions created during a run live only in the project: the first launch
   // of a project+agent group snapshots the native storage and the last exit
   // reverts it. Launches of the same project+agent may run concurrently.
-  // opencode's storage is managed by the official CLI, so it captures without
-  // snapshotting or reverting; the group is null for it.
-  const group = portableSessions ? await timed("launch-group", () => joinLaunchGroup(projectRoot, agentId, { environment })) : null;
-  if (portableSessions && !options.skipRestore) {
-    // Project session records take priority on launch: conflicting native
-    // copies are overwritten silently. Native storage is never written to
-    // proactively; only `avenic <agent> sessions writeback` writes project
-    // records back to native storage.
-    try {
-      await timed("restore", () => adapter.restore(projectRoot, { environment }));
-    } catch (error) {
-      if (group) {
-        // Leaving the group reverts native storage when this was the only
-        // launch in it.
-        try {
-          await group.release();
-        } catch {}
-      }
-      throw error;
-    }
-  }
+  // Both halves of that protocol — the group this launch joins and the capture
+  // its exit runs — are core's, shared with the VS Code extension.
+  // The run's native storage lives under the environment the agent itself will
+  // run in — for a Project account that is the project's own home, not the
+  // user's — so the snapshot, the watch and the exit capture all take this one
+  // value rather than the caller's environment.
+  const runtimeEnvironment = agentRuntimeEnvironment(projectRoot, agentId, config, environment);
+  const { portable: portableSessions, member } = await timed("launch-storage", () =>
+    beginLaunch(projectRoot, agentId, { config, environment: runtimeEnvironment, skipRestore: options.skipRestore }));
   if (portableSessions) {
     // Every project-scoped launch gets a durability watch, whether or not the
     // agent's native storage is isolated for the run. It starts *after* the
@@ -129,7 +151,7 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
     // a deletion. The agent cannot have written anything before it starts, so
     // nothing is left unguarded by waiting.
     try {
-      await timed("watchdog", () => spawnSessionWatchdog(agentId, projectRoot, group?.member ?? null, environment));
+      await timed("watchdog", () => spawnSessionWatchdog(agentId, projectRoot, member, runtimeEnvironment));
     } catch {}
   }
   // 启动补齐（spec §5.5）：会话适配器收尾之后、拉起 Agent 之前，按受管集合把缺席/失效的
@@ -165,6 +187,7 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
     state,
     environment,
     argumentsList: launchArguments,
+    launchMethod,
     io: console,
   }));
   if (runtime.note) console.log(runtime.note);
@@ -181,10 +204,10 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
       // The run is over: stop the detached durability watch before this
       // process starts its own exit sequence, so the two never capture the
       // same tree at once.
-      closeLaunchWatch(agentId, projectRoot, group?.member ?? null);
+      closeLaunchWatch(agentId, projectRoot, member);
       const captured = await finishLaunch(projectRoot, agentId, {
-        environment,
-        member: group?.member ?? null,
+        environment: runtimeEnvironment,
+        member,
         setActive: !options.skipCanonical && sharedSessions,
         // The continuation reader must still see the native session this run
         // produced, so it runs before the last member reinstates the snapshot.

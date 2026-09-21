@@ -46,17 +46,24 @@ export function codexRecord(sessionId, index, cwd) {
   });
 }
 
-async function writeRuntime(projectRoot, agents, sessionInterop) {
+// The canonical file, written as the wizard writes it: named answers, the
+// method's own scope, and the project's history mode. Fixtures speak the same
+// schema the product stores, so a test never passes because a migration
+// happened to run underneath it — migration has its own tests.
+async function writeRuntime(projectRoot, agents, historyMode) {
   await mkdir(path.join(projectRoot, ".agents"), { recursive: true });
   await writeFile(
     path.join(projectRoot, ".agents", "runtime.json"),
     `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       agents: Object.fromEntries(Object.entries(agents).map(([id, config]) => [id, { enabled: true, ...config }])),
-      sessionInterop,
+      historyMode,
     }, null, 2)}\n`,
   );
 }
+
+/** The answers a fixture project starts from unless a test says otherwise. */
+export const ACCOUNT_PROJECT_AGENT = { authMethod: "account", accountScope: "global", sessionScope: "project" };
 
 // The stand-in agent records what the project looked like at the instant the
 // official TUI would have appeared, so a launch test can assert what Avenic
@@ -158,9 +165,37 @@ const nativeList = () => {
   if (!root) return null;
   try { return readdirSync(root); } catch { return null; }
 };
+// The world the official CLI resolves its configuration from at startup: the
+// config root it was handed (or the user's own default), the credentials file
+// it would find there, and the project settings beside the cwd. A launch test
+// asks whether \`avenic claude\` hands Claude the same world \`claude\` sees.
+// Secret values are never recorded — only which names were present.
+const configDirValue = process.env.CLAUDE_CONFIG_DIR ?? null;
+const configRoot = configDirValue ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".claude");
+const observation = () => ({
+  argv: process.argv.slice(2),
+  cwd: process.cwd(),
+  canonical: snapshot(),
+  native: nativeList(),
+  configDir: configDirValue,
+  configRoot,
+  home: process.env.HOME ?? process.env.USERPROFILE ?? null,
+  credentials: existsSync(path.join(configRoot, ".credentials.json")),
+  settingsLocal: existsSync(path.join(process.cwd(), ".claude", "settings.local.json")),
+  settings: existsSync(path.join(process.cwd(), ".claude", "settings.json")),
+  // The provider environment the launch actually handed over. The fixture's
+  // own environment carries no ANTHROPIC_* of the host's (it strips them), so
+  // anything visible here was put there by the launch path under test.
+  provider: {
+    model: process.env.ANTHROPIC_MODEL ?? null,
+    baseUrl: process.env.ANTHROPIC_BASE_URL ?? null,
+  },
+  secretsSeen: Object.fromEntries(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"]
+    .map((name) => [name, process.env[name] !== undefined])),
+});
 if (probe) {
   mkdirSync(path.dirname(probe), { recursive: true });
-  writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), native: nativeList(), startedAt }));
+  writeFileSync(probe, JSON.stringify({ ...observation(), startedAt }));
 }
 // AVENIC_AGENT_WRITE lets a test drive a live agent: the file a working agent
 // is appending to, how many records, and how long to stay alive afterwards.
@@ -179,7 +214,7 @@ if (process.env.AVENIC_AGENT_WRITE) {
   }
   appendFileSync(file, \`\${lines.join("\\n")}\\n\`);
   if (sleepMs) {
-    if (probe) writeFileSync(probe, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), canonical: snapshot(), startedAt, wroteAt: Date.now() }));
+    if (probe) writeFileSync(probe, JSON.stringify({ ...observation(), startedAt, wroteAt: Date.now() }));
     await new Promise((resolve) => setTimeout(resolve, sleepMs));
   }
 }
@@ -412,8 +447,8 @@ export async function withOpenCodeProject(run, options = {}) {
 export async function withClaudeProject(run, options = {}) {
   const sessions = options.sessions ?? 2;
   const records = options.records ?? 4;
-  const agents = options.agents ?? { claude: { auth: "global", sessions: "project" } };
-  const sessionInterop = options.sessionInterop ?? "shared";
+  const agents = options.agents ?? { claude: { ...ACCOUNT_PROJECT_AGENT } };
+  const historyMode = options.historyMode ?? "shared";
   // A real machine holds other workspaces' history too. Those sessions must be
   // recognised as foreign, which is the only part of discovery whose cost grows
   // with the size of the machine rather than the size of this project.
@@ -432,8 +467,15 @@ export async function withClaudeProject(run, options = {}) {
   for (const name of ["claude", "codex", "opencode"]) await writeFakeAgent(bin, name);
 
   const inheritedPath = process.env.PATH ?? process.env.Path ?? "";
+  // 宿主自己的 provider/model 变量不属于夹具世界：开发机常常正跑在某个自定义端点上
+  // （本机就是这样），留着它们，"这次启动注入/覆盖了什么"的断言就会随机器漂移。
+  // 剥离 ANTHROPIC_*/CLAUDE_*——含 CLAUDE_CONFIG_DIR，下面显式指回夹具——与
+  // packages/vscode/test/model-launch.test.ts 的 HOST_MODEL_ENV 同一规则。
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !/^(?:ANTHROPIC_|CLAUDE_)/.test(key)),
+  );
   const environment = {
-    ...process.env,
+    ...inherited,
     HOME: home,
     USERPROFILE: home,
     CLAUDE_CONFIG_DIR: claudeHome,
@@ -466,7 +508,7 @@ export async function withClaudeProject(run, options = {}) {
       );
     }
   }
-  await writeRuntime(projectRoot, agents, sessionInterop);
+  await writeRuntime(projectRoot, agents, historyMode);
 
   const helpers = {
     root,
@@ -578,6 +620,28 @@ export async function withClaudeProject(run, options = {}) {
           }
         },
       };
+    },
+
+    /**
+     * Run the official agent itself, with no Avenic wrapper — the "direct
+     * `claude`" leg of a parity test. Same fixture environment, same cwd; the
+     * only difference is what the wrapper does on the way to the spawn.
+     */
+    async directAgent(argumentsList = [], overrides = {}) {
+      const probe = path.join(projectRoot, ".agent-probe-direct.json");
+      await rm(probe, { force: true });
+      const windows = process.platform === "win32";
+      const executable = path.join(bin, windows ? "claude.cmd" : "claude");
+      const result = spawnSync(
+        windows ? `"${executable}" ${argumentsList.join(" ")}` : executable,
+        windows ? [] : argumentsList,
+        { cwd: projectRoot, env: { ...environment, ...overrides, AVENIC_AGENT_PROBE: probe }, encoding: "utf8", shell: windows },
+      );
+      let observed = null;
+      try {
+        observed = JSON.parse(await readFile(probe, "utf8"));
+      } catch {}
+      return { ...result, probe: observed };
     },
 
     /**

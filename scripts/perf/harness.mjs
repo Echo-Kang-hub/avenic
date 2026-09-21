@@ -10,10 +10,43 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { percentile } from "./fixture.mjs";
+import { getAgent } from "../../packages/core/src/index.mjs";
 
 export const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 export const cliEntry = path.join(repoRoot, "packages", "cli", "scripts", "skills.mjs");
 export const budget = { median: 300, p95: 500 };
+
+/**
+ * The commands that configure a project for `agents`, in the shape the model
+ * actually has: the agents Avenic configures answer one method question
+ * together, and an agent that manages its own authentication answers only
+ * where its sessions live. Handing that one `--auth` is refused — and since a
+ * refused init configures nothing at all, a harness that spells the command
+ * itself silently measures "not initialized" error exits instead of launches.
+ * Derived from the agents, so a capability change moves these commands too.
+ */
+export function configureCommands(agents) {
+  const managed = agents.filter((agent) => !getAgent(agent).managesOwnAuth);
+  const native = agents.filter((agent) => getAgent(agent).managesOwnAuth);
+  return [
+    ...(managed.length > 0
+      ? [["init", "--agents", managed.join(","), "--auth", "account", "--scope", "global", "--sessions", "project", "--history", "shared"]]
+      : []),
+    ...native.map((agent) => [agent, "init", "--sessions", "project"]),
+  ];
+}
+
+/** Run them in order, and let the first refusal fail with what it printed. */
+export function configureProject({ projectRoot, environment, agents }) {
+  const commands = configureCommands(agents);
+  // No agents is not a configured project: a harness that measured from here
+  // would report an empty case list as a clean run.
+  if (commands.length === 0) throw new Error("no agents to configure — pass --agents");
+  for (const argumentsList of commands) {
+    const result = spawnSync(process.execPath, [cliEntry, ...argumentsList], { cwd: projectRoot, env: environment, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`avenic ${argumentsList.join(" ")} failed: ${result.stderr || result.stdout}`);
+  }
+}
 
 // A 95th percentile of a handful of samples is the largest sample wearing a
 // statistic's name, and on a busy machine that is a report of the bus, not of

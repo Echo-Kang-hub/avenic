@@ -14,6 +14,31 @@ export function testEnv(stateDir?: string): Record<string, string | undefined> {
   return env;
 }
 
+// prepareAgentLaunch / initialize 读真实 process.env（与生产一致），所以夹具把
+// Agent 的配置根临时指向临时目录并在结束时还原。1.8.4 之前这件事由启动自己完成
+// （project auth 把 CLAUDE_CONFIG_DIR 重定向进项目）——那个重定向正是被修复的 P0，
+// 隔离从此必须显式：不隔离，原生快照/还原会落到开发机真实的 ~/.claude。
+export async function withAgentHomes<T>(home: string, run: () => Promise<T>): Promise<T> {
+  const variables: Record<string, string> = {
+    CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
+    CODEX_HOME: path.join(home, ".codex"),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+  };
+  const saved = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(variables)) {
+    saved.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 export async function makeCatalogFixture(root: string): Promise<void> {
   await mkdir(path.join(root, "packs"), { recursive: true });
   await mkdir(path.join(root, "skills", "demo", "alpha"), { recursive: true });

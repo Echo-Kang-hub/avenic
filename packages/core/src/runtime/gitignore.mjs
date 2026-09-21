@@ -1,16 +1,25 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-// 单向依赖：model/gitignore.mjs 不得反向导入本模块（否则成环）。
-import { MODEL_RULES } from "../model/gitignore.mjs";
 
+// Every path Avenic creates on a machine rather than for the repository, and
+// nothing else. An API configuration carries a credential and is written by the
+// wizard or not at all; the ledger beside it records what Avenic wrote there so
+// removal can give the user their own values back. Neither belongs in a commit,
+// and a project that never picks API mode is unaffected by the rules for them.
 const REQUIRED_RULES = [
   ".claude/skills/",
+  ".claude/settings.local.json",
+  // The temporary a whole-file write renames into place: it lives beside its
+  // target for a moment, and one left behind by a kill can carry a credential.
+  "*.avenic-tmp",
   ".agents/skills/",
   ".agents/local/",
   ".agents/tmp/",
   ".agents/direct/",
   ".agents/licenses/",
+  ".agents/api/",
+  ".agents/projection.json",
 ];
 const SESSIONS_RULE = ".agents/sessions/";
 
@@ -54,20 +63,25 @@ export async function setSessionsGitIgnored(projectRoot, ignored) {
 export async function removeRuntimeGitignore(projectRoot, options = {}) {
   const { content, file } = await readGitignore(projectRoot);
   if (!content) return false;
-  const removable = new Set([".agents/local/", ".agents/tmp/"]);
+  const removable = new Set([".agents/tmp/", "*.avenic-tmp"]);
   if (options.sessions) removable.add(SESSIONS_RULE);
-  // 模型配置：只有对应文件真的不存在时才允许移除（否则密钥文件会变成可提交）；spec §12 第 4 条。
-  // 锁文件平时毫秒级存在、正常路径必被删除，所以它通常会被移除——这是正确的。
-  const modelCandidates = [
-    [".agents/model.json", path.join(projectRoot, ".agents", "model.json")],
+  // A rule may only be dropped when the thing it protects is really gone: a
+  // credential file left behind by a command that forgot its own rule is one
+  // `git add -A` away from being committed. `.agents/local/` survives `deinit`
+  // (the agent's own sign-in lives there), so its rule goes only with the
+  // directory; the API configuration and its ledger are Avenic's, so their
+  // rules go when Avenic's files do.
+  const guarded = [
+    [".agents/local/", path.join(projectRoot, ".agents", "local")],
+    [".agents/api/", path.join(projectRoot, ".agents", "api")],
+    [".agents/projection.json", path.join(projectRoot, ".agents", "projection.json")],
     [".claude/settings.local.json", path.join(projectRoot, ".claude", "settings.local.json")],
-    [".agents/model.lock", path.join(projectRoot, ".agents", "model.lock")],
   ];
-  for (const [rule, target] of modelCandidates) {
+  for (const [rule, target] of guarded) {
     if (!existsSync(target)) removable.add(rule);
   }
   let lines = content.split(/\r?\n/).filter((line) => !removable.has(line.trim()));
-  const managedRules = new Set([...REQUIRED_RULES, SESSIONS_RULE, ...MODEL_RULES]);
+  const managedRules = new Set([...REQUIRED_RULES, SESSIONS_RULE]);
   if (!lines.some((line) => managedRules.has(line.trim()))) {
     lines = lines.filter((line) => line.trim() !== "# Agent Runtime");
   }

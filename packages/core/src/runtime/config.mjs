@@ -1,18 +1,43 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getAgent } from "./agents.mjs";
+import { CREDENTIAL_FILE, getAgent } from "./agents.mjs";
+import { apiTarget, removeApiConfiguration, writeApiConfiguration } from "./api-config.mjs";
 import { ensureRuntimeGitignore, removeRuntimeGitignore } from "./gitignore.mjs";
 
-const AUTH_MODES = new Set(["global", "project"]);
-const SESSIONS_MODES = new Set(["global", "project"]);
-const SESSION_INTEROP_MODES = new Set(["shared", "isolated"]);
+// One question per axis, and no axis answered by an implication of another:
+//
+//   authMethod    account | api          how the agent authenticates
+//   accountScope  global | project       which account state (account only)
+//   configScope   global | project       which native config file (api only)
+//   sessionScope  global | project       where Avenic keeps its session records
+//   historyMode   shared | isolated      project-wide: one conversation or many
+//
+// An answered method is the only thing that makes `accountScope`/`configScope`
+// meaningful, so only the one that belongs to the answer is stored. A missing
+// `authMethod` is not "unset": it is the project saying it does not know, and a
+// plain launch asks (see `agent-runtime.mjs`) instead of guessing.
+const AUTH_METHODS = new Set(["account", "api"]);
+const SCOPES = new Set(["global", "project"]);
+const HISTORY_MODES = new Set(["shared", "isolated"]);
+// 2.x stored one `auth: "global"|"project"` per agent plus a project-wide
+// `sessionInterop`; 3 is the converged model above. `loadRuntime` upgrades a
+// legacy file once, in place, and keeps nothing of the old spelling.
+const SCHEMA_VERSION = 3;
 
 async function readJsonIfExists(file, fallback) {
   if (!existsSync(file)) {
     return fallback;
   }
-  return JSON.parse((await readFile(file, "utf8")).replace(/^\uFEFF/, ""));
+  try {
+    return JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""));
+  } catch {
+    // A file that cannot be read is not a file that is not there: saying which
+    // one, and what to do, beats a parser's position report with no filename in
+    // it. Nothing is written over the damaged file — its bytes are the only
+    // remaining copy of what the project answered.
+    throw new Error(`Refusing to read ${file}: it is not valid JSON — repair or remove the file, then run the command again`);
+  }
 }
 
 async function writeJsonIfChanged(file, value) {
@@ -27,22 +52,22 @@ async function writeJsonIfChanged(file, value) {
   return true;
 }
 
-export function validateAuthMode(authMode) {
-  if (!AUTH_MODES.has(authMode)) {
-    throw new Error(`Authentication must be global or project: ${authMode}`);
+export function validateAuthMethod(method) {
+  if (!AUTH_METHODS.has(method)) {
+    throw new Error(`Authentication method must be account or api: ${method}`);
   }
-  return authMode;
+  return method;
 }
 
-export function validateSessionsMode(sessionsMode) {
-  if (!SESSIONS_MODES.has(sessionsMode)) {
-    throw new Error(`Sessions must be global or project: ${sessionsMode}`);
+export function validateScope(scope, what = "Scope") {
+  if (!SCOPES.has(scope)) {
+    throw new Error(`${what} must be global or project: ${scope}`);
   }
-  return sessionsMode;
+  return scope;
 }
 
-export function validateSessionInteropMode(mode) {
-  if (!SESSION_INTEROP_MODES.has(mode)) {
+export function validateHistoryMode(mode) {
+  if (!HISTORY_MODES.has(mode)) {
     throw new Error(`Session history must be shared or isolated: ${mode}`);
   }
   return mode;
@@ -59,6 +84,14 @@ export function runtimePaths(projectRoot) {
   };
 }
 
+// The project-local home a Project-scope account lives in: the agent's own
+// config and auth directory, moved under the project by the agent's own
+// configuration-root variable (never by Avenic inventing a credential format).
+// It is not session storage — sessions stay under `.agents/sessions`.
+export function agentHomeRoot(projectRoot, agentId) {
+  return path.join(runtimePaths(projectRoot).localRoot, agentId);
+}
+
 // Where one agent's portable session copies live inside the project. Every
 // adapter and the import path derive it, and a mistyped join would silently
 // grow a second history.
@@ -66,39 +99,162 @@ export function agentSessionsRoot(projectRoot, agentId) {
   return path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
 }
 
+// A released version projected a provider configuration into the agent's own
+// *native* project file — for Claude, `.claude/settings.local.json`, which is
+// the file the projection wrote and the only one it wrote. That file is the
+// evidence that turns a legacy `auth` into an API configuration; an agent with
+// no native project file (Codex) has none to find, and a project that never
+// used the released projection has none either. Without usable content the
+// entry keeps the sign-in axis it recorded instead. Read-only: migration never
+// writes, moves or deletes a user file.
+async function usableOverlay(projectRoot, agentId) {
+  const target = apiTarget(projectRoot, agentId, "project");
+  if (!target?.native || !existsSync(target.file)) return false;
+  try {
+    const parsed = JSON.parse((await readFile(target.file, "utf8")).replace(/^﻿/, ""));
+    const env = parsed?.env;
+    if (env === null || typeof env !== "object" || Array.isArray(env)) return false;
+    return Object.values(env).some((value) => typeof value === "string" && value.length > 0);
+  } catch {
+    return false;
+  }
+}
+
+// The canonical form of one agent entry. Idempotent by construction: a file
+// that is already canonical maps to itself, so `writeJsonIfChanged` turns the
+// second read into no write at all.
+async function canonicalEntry(projectRoot, agentId, entry) {
+  const sessionScope = SCOPES.has(entry.sessionScope) ? entry.sessionScope
+    : SCOPES.has(entry.sessions) ? entry.sessions : "project";
+  const base = entry.enabled === undefined ? {} : { enabled: Boolean(entry.enabled) };
+  // OpenCode answers for its own authentication and provider: Avenic records a
+  // session choice, nothing else.
+  if (agentId === "opencode") {
+    return { ...base, sessionScope };
+  }
+  if (AUTH_METHODS.has(entry.authMethod)) {
+    return entry.authMethod === "account"
+      ? { ...base, authMethod: "account", accountScope: SCOPES.has(entry.accountScope) ? entry.accountScope : "global", sessionScope }
+      : { ...base, authMethod: "api", configScope: SCOPES.has(entry.configScope) ? entry.configScope : "global", sessionScope };
+  }
+  // The released axis said where the sign-in lived, and it maps one to one:
+  // `global` is the machine's own account and `project` a sign-in the agent
+  // keeps in the project's own home — which is what the run did then and what
+  // it does now. A provider projection is the one thing that is not a sign-in,
+  // so it wins over the axis it was written beside; it is also the only case
+  // where the entry becomes API.
+  if (entry.auth === "project" && await usableOverlay(projectRoot, agentId)) {
+    return { ...base, authMethod: "api", configScope: "project", sessionScope };
+  }
+  if (entry.auth === "project") {
+    return { ...base, authMethod: "account", accountScope: "project", sessionScope };
+  }
+  if (entry.auth === "global") {
+    return { ...base, authMethod: "account", accountScope: "global", sessionScope };
+  }
+  return { ...base, sessionScope };
+}
+
+async function canonicalRuntime(projectRoot, runtime) {
+  const agents = {};
+  for (const [agentId, entry] of Object.entries(runtime.agents ?? {})) {
+    if (entry === null || typeof entry !== "object") continue;
+    agents[agentId] = await canonicalEntry(projectRoot, agentId, entry);
+  }
+  const { sessionInterop, auth, sessions, ...rest } = runtime;
+  return {
+    ...rest,
+    schemaVersion: SCHEMA_VERSION,
+    agents,
+    historyMode: HISTORY_MODES.has(runtime.historyMode) ? runtime.historyMode
+      : HISTORY_MODES.has(sessionInterop) ? sessionInterop : "shared",
+  };
+}
+
+// The per-developer override answers one question — which method applies here —
+// so an override that no longer answers it is not kept as an empty shell.
+async function canonicalLocal(projectRoot, local) {
+  const agents = {};
+  for (const [agentId, entry] of Object.entries(local.agents ?? {})) {
+    if (entry === null || typeof entry !== "object" || agentId === "opencode") continue;
+    if (AUTH_METHODS.has(entry.authMethod)) {
+      agents[agentId] = entriesForMethod(entry.authMethod, entry);
+    } else if (entry.auth === "project" && await usableOverlay(projectRoot, agentId)) {
+      agents[agentId] = { authMethod: "api", configScope: "project" };
+    }
+  }
+  return { schemaVersion: SCHEMA_VERSION, agents };
+}
+
+function entriesForMethod(authMethod, entry) {
+  return authMethod === "account"
+    ? { authMethod, accountScope: SCOPES.has(entry.accountScope) ? entry.accountScope : "global" }
+    : { authMethod, configScope: SCOPES.has(entry.configScope) ? entry.configScope : "global" };
+}
+
+/**
+ * The project's runtime state, upgraded to the canonical schema on the way in.
+ * A legacy file is rewritten exactly once — the rewrite is the migration, and
+ * a canonical file maps to its own bytes — and nothing outside Avenic's two
+ * config files is read or written.
+ */
 export async function loadRuntime(projectRoot) {
   const paths = runtimePaths(projectRoot);
-  const runtime = await readJsonIfExists(paths.runtimeFile, { schemaVersion: 1, agents: {} });
-  const local = await readJsonIfExists(paths.localRuntimeFile, { schemaVersion: 1, agents: {} });
+  const hadRuntime = existsSync(paths.runtimeFile);
+  const hadLocal = existsSync(paths.localRuntimeFile);
+  const rawRuntime = await readJsonIfExists(paths.runtimeFile, { schemaVersion: SCHEMA_VERSION, agents: {} });
+  const rawLocal = await readJsonIfExists(paths.localRuntimeFile, { schemaVersion: SCHEMA_VERSION, agents: {} });
+  const runtime = await canonicalRuntime(projectRoot, rawRuntime);
+  const local = await canonicalLocal(projectRoot, rawLocal);
+  if (hadRuntime) await writeJsonIfChanged(paths.runtimeFile, runtime);
+  if (hadLocal) await writeJsonIfChanged(paths.localRuntimeFile, local);
   return { paths, runtime, local };
 }
 
 // The persisted file is deliberately small: credentials stay in their native
-// locations and only the user-selected scopes and session policy live here.
-// Legacy projects had canonical sessions before an explicit policy existed;
-// treating that absence as shared preserves their released behavior.
+// locations and only the user's answers live here.
 export function projectConfig(state) {
   const agents = {};
   for (const [agentId, config] of Object.entries(state.runtime.agents ?? {})) {
     if (!config?.enabled) continue;
-    agents[agentId] = {
-      auth: config.auth ?? "global",
-      sessions: config.sessions ?? "project",
-    };
+    agents[agentId] = viewOf(config);
   }
   return {
     agents,
-    sessionInterop: state.runtime.sessionInterop ?? "shared",
+    historyMode: HISTORY_MODES.has(state.runtime.historyMode) ? state.runtime.historyMode : "shared",
   };
+}
+
+// What one entry answers, with the method's own scope and nothing of the other
+// method's. Used for the persisted config, for the wizard's draft and for every
+// surface that reports what a launch will do.
+export function viewOf(config) {
+  const view = { sessionScope: SCOPES.has(config?.sessionScope) ? config.sessionScope : "project" };
+  if (config?.authMethod === "account") {
+    view.authMethod = "account";
+    view.accountScope = SCOPES.has(config.accountScope) ? config.accountScope : "global";
+  } else if (config?.authMethod === "api") {
+    view.authMethod = "api";
+    view.configScope = SCOPES.has(config.configScope) ? config.configScope : "global";
+  }
+  return view;
 }
 
 function normalizedAgents(agents) {
   const result = {};
   for (const [agentId, config] of Object.entries(agents ?? {})) {
     getAgent(agentId);
-    const auth = validateAuthMode(config?.auth ?? "global");
-    const sessions = validateSessionsMode(config?.sessions ?? "project");
-    result[agentId] = { enabled: true, auth, sessions };
+    const sessionScope = validateScope(config?.sessionScope ?? "project", "Sessions");
+    if (agentId === "opencode") {
+      result[agentId] = { enabled: true, sessionScope };
+      continue;
+    }
+    if (config?.authMethod === undefined || config?.authMethod === null) {
+      result[agentId] = { enabled: true, sessionScope };
+    } else {
+      validateAuthMethod(config.authMethod);
+      result[agentId] = { enabled: true, ...entriesForMethod(config.authMethod, config), sessionScope };
+    }
   }
   return result;
 }
@@ -106,26 +262,41 @@ function normalizedAgents(agents) {
 // Apply a complete project draft in one write. Callers build the draft in
 // memory first, so cancelling an init/change wizard cannot leave half-configured
 // state on disk. Omitting `agents` changes only the requested project policy.
-export async function configureProject(projectRoot, draft = {}) {
-  if (draft.sessionInterop !== undefined) validateSessionInteropMode(draft.sessionInterop);
+export async function configureProject(projectRoot, draft = {}, options = {}) {
+  if (draft.historyMode !== undefined) validateHistoryMode(draft.historyMode);
   const state = await loadRuntime(projectRoot);
   const nextAgents = draft.agents === undefined
     ? (state.runtime.agents ?? {})
     : normalizedAgents(draft.agents);
-  const nextInterop = draft.sessionInterop ?? state.runtime.sessionInterop ?? "shared";
+  const nextHistory = draft.historyMode ?? state.runtime.historyMode ?? "shared";
   state.runtime = {
     ...state.runtime,
-    schemaVersion: Math.max(2, state.runtime.schemaVersion ?? 1),
+    schemaVersion: SCHEMA_VERSION,
     agents: nextAgents,
-    sessionInterop: nextInterop,
+    historyMode: nextHistory,
   };
   const directories = [];
   for (const [agentId, config] of Object.entries(nextAgents)) {
-    directories.push(path.join(state.paths.sessionsRoot, agentId));
-    if (config.auth === "project") directories.push(path.join(state.paths.localRoot, agentId));
+    directories.push(agentSessionsRoot(projectRoot, agentId));
+    // Only a project-scope account needs a home for the agent's own login;
+    // an API configuration lives in the agent's native config file, and its
+    // directory is the native writer's to create.
+    if (config.authMethod === "account" && config.accountScope === "project") {
+      directories.push(agentHomeRoot(projectRoot, agentId));
+    }
   }
   for (const directory of directories) await mkdir(directory, { recursive: true });
   const configChanged = await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
+  // The API half of a draft, written where each agent natively reads it: after
+  // the runtime file, so a native write that fails still leaves a project that
+  // knows what it answered. Only an agent whose draft answer *is* API is
+  // written — leaving API mode is the explicit keep/remove step, never a side
+  // effect of choosing something else.
+  for (const [agentId, fields] of Object.entries(draft.api ?? {})) {
+    const entry = nextAgents[agentId];
+    if (entry?.authMethod !== "api" || !fields) continue;
+    await writeApiConfiguration(projectRoot, agentId, entry.configScope ?? "global", fields, options);
+  }
   const gitignoreChanged = Object.keys(nextAgents).length > 0
     ? await ensureRuntimeGitignore(projectRoot)
     : false;
@@ -151,68 +322,103 @@ export async function setActiveCanonicalSession(projectRoot, canonicalSessionId)
   return canonicalSessionId;
 }
 
-export async function initializeAgent(projectRoot, agentId, authMode, sessionsMode) {
+export async function initializeAgent(projectRoot, agentId, entry = {}) {
   getAgent(agentId);
-  if (authMode) {
-    validateAuthMode(authMode);
+  // The answers are named, not positional: a caller that passes a bare string
+  // would otherwise spread it into the entry and write a runtime file of single
+  // characters, so it is refused here instead.
+  if (entry === null || typeof entry !== "object") {
+    throw new Error("Agent configuration must be an object of named answers");
   }
-  if (sessionsMode) {
-    validateSessionsMode(sessionsMode);
+  if (entry.authMethod !== undefined && entry.authMethod !== null) {
+    validateAuthMethod(entry.authMethod);
+  }
+  if (entry.sessionScope !== undefined) {
+    validateScope(entry.sessionScope, "Sessions");
   }
   const state = await loadRuntime(projectRoot);
-  const previous = state.runtime.agents?.[agentId] ?? {};
-  const effectiveAuthMode = authMode ?? previous.auth ?? "global";
-  const effectiveSessionsMode = sessionsMode ?? previous.sessions ?? "project";
-  const sessionDirectory = path.join(state.paths.sessionsRoot, agentId);
-  const localDirectory = path.join(state.paths.localRoot, agentId);
+  const previous = viewOf(state.runtime.agents?.[agentId] ?? {});
+  const next = { ...previous, ...entry };
+  // The method's own scope, defaulted and narrowed by the same function that
+  // writes the file: naming a method without naming its scope is choosing the
+  // default, and the other method's scope is not carried over as a stale answer.
+  if (AUTH_METHODS.has(next.authMethod)) {
+    Object.assign(next, entriesForMethod(next.authMethod, next));
+  }
+  const sessionDirectory = agentSessionsRoot(projectRoot, agentId);
+  const homeDirectory = agentHomeRoot(projectRoot, agentId);
   const missingStructure = [sessionDirectory];
-  if (effectiveAuthMode === "project") {
-    missingStructure.push(localDirectory);
+  if (next.authMethod === "account" && next.accountScope === "project") {
+    missingStructure.push(homeDirectory);
   }
   const structureRepaired = missingStructure.some((directory) => !existsSync(directory));
   for (const directory of missingStructure) {
     await mkdir(directory, { recursive: true });
   }
   const draft = projectConfig(state);
-  draft.agents[agentId] = { auth: effectiveAuthMode, sessions: effectiveSessionsMode };
+  draft.agents[agentId] = next;
   const configured = await configureProject(projectRoot, draft);
   return {
     ...configured,
-    authMode: effectiveAuthMode,
-    sessionsMode: effectiveSessionsMode,
+    // The entry as it was written, not as it was assembled: one method's scope
+    // and no trace of the other's.
+    entry: viewOf(next),
     configChanged: configured.configChanged,
     gitignoreChanged: configured.gitignoreChanged,
     structureRepaired,
   };
 }
 
-// Environment overrides that scope an agent's credentials and configuration to
-// the project (stored under .agents/local/, which is always gitignored).
-export function projectAuthEnvironment(agentId, projectRoot) {
-  getAgent(agentId);
-  const localRoot = runtimePaths(projectRoot).localRoot;
-  switch (agentId) {
-    case "claude":
-      return { CLAUDE_CONFIG_DIR: path.join(localRoot, "claude") };
-    case "codex":
-      return { CODEX_HOME: path.join(localRoot, "codex") };
-    case "opencode":
-      return { XDG_CONFIG_HOME: path.join(localRoot, "opencode") };
-    default:
-      throw new Error(`Unknown Agent: ${agentId}`);
+// 留下一个 home 里的登录文件本身、清掉其余内容；没有登录文件就整个删掉。返回是否
+// 留下了文件，让调用方说得出来留下的是哪一个。
+async function purgeHomeKeepingCredential(homeDirectory, credentialName) {
+  if (credentialName === undefined || !existsSync(path.join(homeDirectory, credentialName))) {
+    await rm(homeDirectory, { recursive: true, force: true });
+    return false;
   }
+  for (const entry of await readdir(homeDirectory)) {
+    if (entry === credentialName) continue;
+    await rm(path.join(homeDirectory, entry), { recursive: true, force: true });
+  }
+  return true;
+}
+
+// `--purge` 说的是清掉 Avenic 的数据。`.agents/local/<agent>/` 里住的不是它：那是
+// agent 自己的账号家目录，Account · Project 的登录就在这里、用 agent 自己的格式写
+// （release 路径正因为同一条理由拒绝删它）。所以默认只清 Avenic 的痕迹、留下登录
+// 文件；连它一起删要用户第二次明说（purgeCredentials）。
+async function purgeAgentHome(homeDirectory, agentId, options) {
+  if (!options.purgeCredentials) return purgeHomeKeepingCredential(homeDirectory, CREDENTIAL_FILE[agentId]);
+  await rm(homeDirectory, { recursive: true, force: true });
+  return false;
+}
+
+// 整个 `.agents/local` 的清理守同一条规则：每个 agent 的 home 只留下它自己的登录
+// 文件（或整目录删掉），一个文件都没留下才把目录本身删掉。
+async function purgeAgentHomes(localRoot, options) {
+  if (!existsSync(localRoot)) return;
+  if (options.purgeCredentials) {
+    await rm(localRoot, { recursive: true, force: true });
+    return;
+  }
+  let kept = false;
+  for (const agentId of await readdir(localRoot)) {
+    kept = await purgeHomeKeepingCredential(path.join(localRoot, agentId), CREDENTIAL_FILE[agentId]) || kept;
+  }
+  if (!kept) await rm(localRoot, { recursive: true, force: true });
 }
 
 export async function deinitializeAgent(projectRoot, agentId, options = {}) {
   const agent = getAgent(agentId);
   const state = await loadRuntime(projectRoot);
+  const homeDirectory = agentHomeRoot(projectRoot, agentId);
   if (!state.runtime.agents?.[agentId]) {
-    const sessionDirectory = path.join(state.paths.sessionsRoot, agentId);
-    const localDirectory = path.join(state.paths.localRoot, agentId);
-    const purged = Boolean(options.purge && (existsSync(sessionDirectory) || existsSync(localDirectory)));
+    const sessionDirectory = agentSessionsRoot(projectRoot, agentId);
+    const purged = Boolean(options.purge && (existsSync(sessionDirectory) || existsSync(homeDirectory)));
     if (options.purge) {
       await rm(sessionDirectory, { recursive: true, force: true });
-      await rm(localDirectory, { recursive: true, force: true });
+      // 每个 home 守同一条规则：留下登录文件、清掉其余；一个都没留下才删 localRoot。
+      await purgeAgentHomes(state.paths.localRoot, options);
       if (Object.keys(state.runtime.agents ?? {}).length === 0) {
         await removeRuntimeGitignore(projectRoot, { sessions: true });
       }
@@ -221,10 +427,23 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       agent,
       changed: purged,
       purged,
+      keptCredential: options.purge && existsSync(path.join(homeDirectory, CREDENTIAL_FILE[agentId]))
+        ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/")
+        : null,
       remaining: Object.keys(state.runtime.agents ?? {}).length,
     };
   }
 
+  // Avenic's own API configuration goes with the answer that asked for it:
+  // deinit is the user saying this project no longer configures that agent, and
+  // a credential Avenic wrote, left behind in a file the agent still reads, is
+  // the configuration outliving its own removal. Ownership-bounded like every
+  // other release — only what the ledger proves Avenic wrote, and never a
+  // value it cannot give back.
+  const entry = state.runtime.agents[agentId];
+  if (entry.authMethod === "api") {
+    await removeApiConfiguration(projectRoot, agentId, entry.configScope ?? "global", options);
+  }
   delete state.runtime.agents[agentId];
   if (Object.keys(state.runtime.agents).length === 0) {
     await rm(state.paths.runtimeFile, { force: true });
@@ -240,14 +459,15 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       await writeJsonIfChanged(state.paths.localRuntimeFile, state.local);
     }
   }
+  let kept = false;
   if (options.purge) {
-    await rm(path.join(state.paths.localRoot, agentId), { recursive: true, force: true });
-    await rm(path.join(state.paths.sessionsRoot, agentId), { recursive: true, force: true });
+    await rm(agentSessionsRoot(projectRoot, agentId), { recursive: true, force: true });
+    kept = await purgeAgentHome(homeDirectory, agentId, options);
   }
   const remaining = Object.keys(state.runtime.agents).length;
   if (remaining === 0) {
     if (options.purge) {
-      await rm(state.paths.localRoot, { recursive: true, force: true });
+      await purgeAgentHomes(state.paths.localRoot, options);
       await rm(path.join(projectRoot, ".agents", "tmp"), { recursive: true, force: true });
     }
     await removeRuntimeGitignore(projectRoot, { sessions: Boolean(options.purge) });
@@ -257,25 +477,28 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     changed: true,
     purged: Boolean(options.purge),
     remaining,
+    keptCredential: kept ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/") : null,
   };
 }
 
-export async function setLocalAuth(projectRoot, agentId, authMode) {
+export async function setLocalAuth(projectRoot, agentId, choice) {
   const agent = getAgent(agentId);
-  validateAuthMode(authMode);
+  if (agentId === "opencode") {
+    throw new Error(`${agent.displayName} manages its own authentication and provider configuration`);
+  }
+  const authMethod = validateAuthMethod(choice?.authMethod);
+  const entry = entriesForMethod(authMethod, choice ?? {});
+  validateScope(entry.accountScope ?? entry.configScope, "Scope");
   const state = await loadRuntime(projectRoot);
   if (!state.runtime.agents?.[agentId]?.enabled) {
     throw new Error(`${agent.displayName} is not initialized`);
   }
-  state.local.schemaVersion ??= 1;
+  state.local.schemaVersion = SCHEMA_VERSION;
   state.local.agents ??= {};
-  state.local.agents[agentId] = {
-    ...(state.local.agents[agentId] ?? {}),
-    auth: authMode,
-  };
+  state.local.agents[agentId] = entry;
   await mkdir(state.paths.localRoot, { recursive: true });
-  if (authMode === "project") {
-    await mkdir(path.join(state.paths.localRoot, agentId), { recursive: true });
+  if (entry.accountScope === "project") {
+    await mkdir(agentHomeRoot(projectRoot, agentId), { recursive: true });
   }
   await writeJsonIfChanged(state.paths.localRuntimeFile, state.local);
   await ensureRuntimeGitignore(projectRoot);
@@ -300,32 +523,37 @@ export async function clearLocalAuth(projectRoot, agentId) {
   return effectiveAgentConfig(state, agentId);
 }
 
+// The one answer a launch, a status line and a wizard prefill all ask for: what
+// this agent runs under here, after the per-developer override, and where that
+// answer came from. `authMethod` missing means the project has not decided.
 export function effectiveAgentConfig(state, agentId) {
   const configured = state.runtime.agents?.[agentId];
-  const override = state.local.agents?.[agentId];
   if (!configured) {
     return null;
   }
+  const override = state.local.agents?.[agentId] ?? null;
+  const view = viewOf({ ...configured, ...(override ?? {}) });
   return {
-    ...configured,
-    ...override,
-    configuredAuth: configured.auth ?? "global",
-    localAuth: override?.auth ?? null,
+    ...view,
+    source: override?.authMethod ? "local" : view.authMethod ? "project" : null,
+    local: override,
+    configured,
   };
 }
 
-// Shared status shape for CLI and VS Code. Auth and session storage are
-// intentionally independent dimensions; callers can switch either one.
+// Shared status shape for CLI and VS Code. Authentication and session storage
+// are independent dimensions; either one can be switched on its own.
 export async function getAgentRuntimeMode(projectRoot, agentId) {
   const state = await loadRuntime(projectRoot);
   const effective = effectiveAgentConfig(state, agentId);
   if (!effective) return null;
   return {
     auth: {
-      default: effective.configuredAuth,
-      localOverride: effective.localAuth,
-      effective: effective.auth,
+      method: effective.authMethod ?? null,
+      scope: effective.authMethod === "account" ? effective.accountScope ?? "global"
+        : effective.authMethod === "api" ? effective.configScope ?? "global" : null,
+      source: effective.source,
     },
-    sessions: { mode: effective.sessions ?? "project" },
+    sessions: { scope: effective.sessionScope },
   };
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const HANDOFF_SCHEMA_VERSION = 1;
+const HANDOFF_SCHEMA_VERSION = 1;
 // Keep rehydration prompts bounded even when a legacy project has thousands
 // of canonical events. The append-only canonical store remains complete; only
 // the model-visible semantic handoff is compacted.

@@ -18,13 +18,13 @@ import {
 import { stateRoot } from "./paths.mjs";
 import { detectSkillRoot, discoverSourceSkills } from "./sources.mjs";
 
-export function directRoot(context) {
+function directRoot(context) {
   return context.global
     ? path.join(stateRoot(context.environment), "direct")
     : path.join(context.root, ".agents", "direct");
 }
 
-export function directLicensesRoot(context) {
+function directLicensesRoot(context) {
   return context.global
     ? path.join(stateRoot(context.environment), "licenses")
     : path.join(context.root, ".agents", "licenses");
@@ -38,7 +38,7 @@ export async function readDirectState(context) {
   return { directSources: lock.directSources ?? [] };
 }
 
-export async function writeDirectState(context, state) {
+async function writeDirectState(context, state) {
   await mkdir(path.dirname(context.lockFile), { recursive: true });
   const previousLock = existsSync(context.lockFile) ? await readJson(context.lockFile) : {};
   const lock = {

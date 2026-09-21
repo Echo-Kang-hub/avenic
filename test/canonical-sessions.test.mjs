@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,8 +7,10 @@ import {
   appendCanonicalEvents,
   createCanonicalSession,
   formatSessionDiagnostics,
+  findCanonicalSessionForNative,
   getSessionAdapter,
   importProjectSessions,
+  listCanonicalSessionRecords,
   readCanonicalSession,
   syncNativeMapping,
 } from "../packages/core/src/index.mjs";
@@ -85,6 +87,59 @@ test("native mappings retain stable projection identity and revision hashes", as
     assert.equal(stored.mappings.projections.opencode.nativeSessionId, "ses_123");
     assert.equal(stored.mappings.projections.opencode.nativeRevision, "native-hash-2");
     assert.equal(Object.keys(stored.mappings.projections).length, 1);
+  });
+});
+
+test("a session named after its first turn takes the name its store gains later", async () => {
+  await withStore(async (projectRoot) => {
+    const claudeHome = path.join(projectRoot, "claude-config");
+    const native = path.join(claudeHome, "projects", getSessionAdapter("claude").claudeProjectKey(projectRoot), "rename-me.jsonl");
+    await mkdir(path.dirname(native), { recursive: true });
+    const turn = JSON.stringify({ type: "user", uuid: "u", sessionId: "rename-me", cwd: projectRoot, timestamp: "2026-09-16T00:00:00.000Z", message: { role: "user", content: "what does this project do" } });
+
+    // The first capture happens before the conversation has a name of its own,
+    // so it is named after the first thing the user said.
+    await writeFile(native, `${turn}\n`);
+    await importProjectSessions(projectRoot, "claude", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
+    assert.equal((await readCanonicalSession(projectRoot, "claude-rename-me")).session.title, "what does this project do");
+
+    // The user renames the conversation in the agent itself: the transcript
+    // gains a summary record, which is where that store keeps the name. That
+    // name is the authority for this session, and it must reach the shared
+    // record — a session named by an early capture could otherwise never take
+    // the name its own store gained, and the dashboard would keep showing the
+    // first sentence forever.
+    await writeFile(native, `${JSON.stringify({ type: "summary", summary: "Project orientation", sessionId: "rename-me" })}\n${turn}\n`);
+    await importProjectSessions(projectRoot, "claude", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
+    assert.equal((await readCanonicalSession(projectRoot, "claude-rename-me")).session.title, "Project orientation");
+  });
+});
+
+test("a corrupt session record does not take its neighbours down with it", async () => {
+  await withStore(async (projectRoot) => {
+    const kept = await createCanonicalSession(projectRoot, { id: "aaaa-kept", title: "Kept session", source: "claude" });
+    const broken = await createCanonicalSession(projectRoot, { id: "zzzz-broken", title: "Broken session", source: "claude" });
+    // What a half-written file, a full disk, or an edit outside Avenic leaves
+    // behind: the record is there and it is not JSON. One such file must cost
+    // its own session and nothing else — a list that throws shows the user no
+    // shared history at all, which is how a single bad file becomes every bad
+    // file. Both files are corrupted so the assertion does not depend on the
+    // order the directory happens to come back in.
+    const canonicalRoot = path.join(projectRoot, ".agents", "sessions", "canonical");
+    await writeFile(path.join(canonicalRoot, broken.id, "session.json"), "{ not json", "utf8");
+    await writeFile(path.join(canonicalRoot, broken.id, "mappings.json"), "{ not json", "utf8");
+    // A mapping an import would ask about, written where the finder looks.
+    await writeFile(path.join(canonicalRoot, kept.id, "mappings.json"), JSON.stringify({
+      schemaVersion: 1,
+      canonicalSessionId: kept.id,
+      projections: { claude: { nativeSessionId: "native-kept" } },
+    }), "utf8");
+
+    const records = await listCanonicalSessionRecords(projectRoot);
+    assert.deepEqual(records.map((record) => record.id), [kept.id]);
+    // The capture path asks a question of the same tree: a corrupt mappings
+    // file next door must not stop it finding the mapping that is there.
+    assert.equal(await findCanonicalSessionForNative(projectRoot, "claude", "native-kept"), kept.id);
   });
 });
 

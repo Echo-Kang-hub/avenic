@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, chmod, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,7 +13,6 @@ import {
   effectiveAgentConfig,
   initializeAgent,
   loadRuntime,
-  projectAuthEnvironment,
   setLocalAuth,
 } from "../packages/core/src/runtime/config.mjs";
 import {
@@ -98,15 +97,16 @@ async function withTempProject(run) {
 
 test("initialization is incremental and idempotent", async () => {
   await withTempProject(async (projectRoot) => {
-    await initializeAgent(projectRoot, "claude", "project");
-    await initializeAgent(projectRoot, "codex", "global");
+    await initializeAgent(projectRoot, "claude", { authMethod: "account", accountScope: "project" });
+    await initializeAgent(projectRoot, "codex", { authMethod: "account" });
     const repeated = await initializeAgent(projectRoot, "claude");
     const state = await loadRuntime(projectRoot);
 
     assert.equal(repeated.configChanged, false);
-    assert.equal(state.runtime.agents.claude.auth, "project");
-    assert.equal(state.runtime.agents.codex.auth, "global");
-    assert.equal(state.runtime.agents.claude.sessions, "project");
+    assert.equal(state.runtime.agents.claude.authMethod, "account");
+    assert.equal(state.runtime.agents.claude.accountScope, "project");
+    assert.equal(state.runtime.agents.codex.accountScope, "global");
+    assert.equal(state.runtime.agents.claude.sessionScope, "project");
     assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "claude")), true);
     assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "codex")), false);
   });
@@ -115,52 +115,86 @@ test("initialization is incremental and idempotent", async () => {
 test("applyProjectConfiguration owns same-mode project configuration", async () => {
   await withTempProject(async (projectRoot) => {
     const result = await applyProjectConfiguration(projectRoot, {
-      agents: { codex: { auth: "global", sessions: "project" } },
-      sessionInterop: "isolated",
+      agents: { codex: { authMethod: "account", accountScope: "global", sessionScope: "project" } },
+      historyMode: "isolated",
     });
     assert.equal(result.previous, "shared");
     assert.equal(result.mode, "isolated");
     const repeated = await applyProjectConfiguration(projectRoot, {
-      agents: { codex: { auth: "project", sessions: "project" } },
-      sessionInterop: "isolated",
+      agents: { codex: { authMethod: "api", configScope: "project", sessionScope: "project" } },
+      historyMode: "isolated",
     });
     assert.deepEqual(repeated.imported, []);
-    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.auth, "project");
+    const stored = (await loadRuntime(projectRoot)).runtime.agents.codex;
+    assert.equal(stored.authMethod, "api");
+    assert.equal(stored.configScope, "project");
+  });
+});
+
+test("a draft that changes the history mode still writes the answers it carries", async () => {
+  await withTempProject(async (projectRoot) => {
+    // The mode decides how history is imported, never whether the rest of the
+    // draft reaches its files. The same draft decides Keep/Remove for the
+    // previous configuration, so a dropped write would leave the project with
+    // neither the old configuration nor the new one.
+    const result = await applyProjectConfiguration(projectRoot, {
+      agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
+      api: {
+        claude: {
+          provider: "Fixture Provider",
+          baseUrl: "https://provider.fixture.invalid/v1",
+          model: "fixture-model",
+          credential: "fixture-token-not-a-real-secret",
+        },
+      },
+      historyMode: "isolated",
+    });
+    assert.equal(result.mode, "isolated");
+    const written = JSON.parse(await readFile(path.join(projectRoot, ".claude", "settings.local.json"), "utf8"));
+    assert.equal(written.env.ANTHROPIC_MODEL, "fixture-model");
+    assert.equal((await loadRuntime(projectRoot)).runtime.agents.claude.authMethod, "api");
   });
 });
 
 test("local authentication overrides project defaults", async () => {
   await withTempProject(async (projectRoot) => {
-    await initializeAgent(projectRoot, "claude", "global");
-    await setLocalAuth(projectRoot, "claude", "project");
+    await initializeAgent(projectRoot, "claude", { authMethod: "account", accountScope: "global" });
+    await setLocalAuth(projectRoot, "claude", { authMethod: "api", configScope: "project" });
     const state = await loadRuntime(projectRoot);
     const effective = effectiveAgentConfig(state, "claude");
 
-    assert.equal(effective.configuredAuth, "global");
-    assert.equal(effective.localAuth, "project");
-    assert.equal(effective.auth, "project");
+    assert.equal(state.runtime.agents.claude.authMethod, "account");
+    assert.equal(effective.authMethod, "api");
+    assert.equal(effective.configScope, "project");
+    assert.equal(effective.source, "local");
 
     const reset = await clearLocalAuth(projectRoot, "claude");
-    assert.equal(reset.localAuth, null);
-    assert.equal(reset.auth, "global");
+    assert.equal(reset.authMethod, "account");
+    assert.equal(reset.accountScope, "global");
+    assert.equal(reset.source, "project");
   });
 });
 
 test("global initialization does not create a credential directory", async () => {
   await withTempProject(async (projectRoot) => {
-    await initializeAgent(projectRoot, "codex", "global");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global" });
     assert.equal(existsSync(path.join(projectRoot, ".agents", "local")), false);
     assert.equal(existsSync(path.join(projectRoot, ".agents", "sessions", "codex")), true);
   });
 });
 
-test("deinitialization is reversible and purge is explicit", async () => {
+// purge 说的是「清掉 Avenic 的数据」。`.agents/local/<agent>/` 里住的不是它：那是
+// agent 自己的账号家目录，Account · Project 的登录就在里面、是 agent 自己写的 ——
+// release 路径正因为同一个理由拒绝删它。所以默认留下登录文件本身（其余清掉），
+// 连它一起删要用户第二次明说（purgeCredentials）。
+test("deinitialization is reversible, and purge keeps the agent's own sign-in unless asked twice", async () => {
   await withTempProject(async (projectRoot) => {
-    await initializeAgent(projectRoot, "codex", "project");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "project" });
     const sessionFile = path.join(projectRoot, ".agents", "sessions", "codex", "session.jsonl");
     const credentialFile = path.join(projectRoot, ".agents", "local", "codex", "auth.json");
     await writeFile(sessionFile, "session\n");
     await writeFile(credentialFile, "credential\n");
+    await writeFile(path.join(projectRoot, ".agents", "local", "codex", "config.toml"), "model = 'x'\n");
 
     const removed = await deinitializeAgent(projectRoot, "codex");
     assert.equal(removed.changed, true);
@@ -168,14 +202,25 @@ test("deinitialization is reversible and purge is explicit", async () => {
     assert.equal(existsSync(credentialFile), true);
     assert.equal(effectiveAgentConfig(await loadRuntime(projectRoot), "codex"), null);
 
-    await initializeAgent(projectRoot, "codex", "project");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "project" });
     const purged = await deinitializeAgent(projectRoot, "codex", { purge: true });
     assert.equal(purged.purged, true);
-    assert.equal(existsSync(path.dirname(sessionFile)), false);
-    assert.equal(existsSync(path.dirname(credentialFile)), false);
+    assert.equal(existsSync(path.dirname(sessionFile)), false, "Avenic 的会话数据被清掉");
+    assert.equal(existsSync(credentialFile), true, "agent 自己的登录不是 Avenic 写的，--purge 不动它");
+    assert.equal(await readFile(credentialFile, "utf8"), "credential\n");
+    assert.equal(purged.keptCredential, ".agents/local/codex/auth.json", "报告里点名留下的是哪一个文件");
+    assert.deepEqual(await readdir(path.join(projectRoot, ".agents", "local", "codex")), ["auth.json"], "home 里其余内容照清");
     const gitignore = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
-    assert.doesNotMatch(gitignore, /\.agents\/local\//);
+    assert.match(gitignore, /\.agents\/local\//, "登录文件还在，保护它的规则就不能撤");
     assert.doesNotMatch(gitignore, /\.agents\/tmp\//);
+    assert.doesNotMatch(gitignore, /\.agents\/sessions\//);
+
+    // 第二次明说：连登录一起删，并撤回保护规则。
+    const cleared = await deinitializeAgent(projectRoot, "codex", { purge: true, purgeCredentials: true });
+    assert.equal(existsSync(path.dirname(credentialFile)), false);
+    assert.equal(cleared.keptCredential, null);
+    const after = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
+    assert.doesNotMatch(after, /\.agents\/local\//);
 
     const repeated = await deinitializeAgent(projectRoot, "codex", { purge: true });
     assert.equal(repeated.changed, false);
@@ -196,7 +241,7 @@ test("gitignore rules are added once", async () => {
 test("session Git sync can be disabled without deleting sessions", async () => {
   await withTempProject(async (projectRoot) => {
     spawnSync("git", ["init", "--quiet"], { cwd: projectRoot });
-    await initializeAgent(projectRoot, "codex", "global");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global" });
     const sessionFile = path.join(projectRoot, ".agents", "sessions", "codex", "session.jsonl");
     await writeFile(sessionFile, "session\n");
     spawnSync("git", ["add", "--force", ".agents/sessions"], { cwd: projectRoot });
@@ -221,7 +266,7 @@ test("session Git sync can be disabled without deleting sessions", async () => {
 test("project root falls back to runtime markers", async () => {
   await withTempProject(async (projectRoot) => {
     await mkdir(path.join(projectRoot, "src", "nested"), { recursive: true });
-    await initializeAgent(projectRoot, "opencode", "global");
+    await initializeAgent(projectRoot, "opencode", {});
     assert.equal(locateProjectRoot(path.join(projectRoot, "src", "nested")), projectRoot);
   });
 });
@@ -239,8 +284,8 @@ test("project root falls back to project config markers (.avenic.json primary, l
 
 test("full and short commands share one runtime configuration", async () => {
   await withTempProject(async (projectRoot) => {
-    const full = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "global"]);
-    const short = runCli(projectRoot, "skills.mjs", ["codex", "init", "--auth", "project"]);
+    const full = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account"]);
+    const short = runCli(projectRoot, "skills.mjs", ["codex", "init", "--auth", "api", "--scope", "project"]);
     const status = runCli(projectRoot, "skills.mjs", ["claude", "status"]);
 
     assert.equal(full.status, 0, full.stderr);
@@ -248,14 +293,15 @@ test("full and short commands share one runtime configuration", async () => {
     assert.equal(status.status, 0, status.stderr);
     assert.match(status.stdout, /Claude Code/);
     const state = await loadRuntime(projectRoot);
-    assert.equal(state.runtime.agents.claude.auth, "global");
-    assert.equal(state.runtime.agents.codex.auth, "project");
+    assert.equal(state.runtime.agents.claude.authMethod, "account");
+    assert.equal(state.runtime.agents.codex.authMethod, "api");
+    assert.equal(state.runtime.agents.codex.configScope, "project");
   });
 });
 
 test("repeated init is a no-op when the project structure is intact", async () => {
   await withTempProject(async (projectRoot) => {
-    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "project"]);
+    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account", "--scope", "project"]);
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /Configuration   Updated/);
 
@@ -272,14 +318,14 @@ test("repeated init is a no-op when the project structure is intact", async () =
     assert.match(second.stdout, /Already up to date/);
     assert.equal(await readFile(runtimeFile, "utf8"), runtimeBefore);
     assert.equal(await readFile(gitignoreFile, "utf8"), gitignoreBefore);
-    assert.match(second.stdout, /Authentication  project/);
+    assert.match(second.stdout, /Authentication  Account · Project/);
     assert.match(second.stdout, /Sessions        Project/);
   });
 });
 
 test("init incrementally repairs missing directories without touching existing state", async () => {
   await withTempProject(async (projectRoot) => {
-    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "project"]);
+    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account", "--scope", "project"]);
     assert.equal(first.status, 0, first.stderr);
 
     const sessionsDir = path.join(projectRoot, ".agents", "sessions", "claude");
@@ -309,7 +355,7 @@ test("init incrementally repairs missing directories without touching existing s
 
 test("init reports the created structure and how to use it", async () => {
   await withTempProject(async (projectRoot) => {
-    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "project"]);
+    const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account", "--scope", "project"]);
     assert.equal(first.status, 0, first.stderr);
     assert.match(first.stdout, /Changed:/);
     assert.match(first.stdout, /\.agents\/runtime\.json/);
@@ -329,7 +375,7 @@ test("init is fully decoupled from the catalog and network", async () => {
     const emptyBin = path.join(projectRoot, "empty-bin");
     await mkdir(emptyBin);
     const environment = { ...process.env, PATH: emptyBin, Path: emptyBin };
-    const init = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "project"], environment);
+    const init = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account"], environment);
     assert.equal(init.status, 0, init.stderr);
     assert.match(init.stdout, /Changed:/);
     assert.doesNotMatch(`${init.stdout}${init.stderr}`, /catalog|Unable to fetch|git failed/i);
@@ -340,7 +386,7 @@ test("help works from the main and agent positions", async () => {
   await withTempProject(async (projectRoot) => {
     const main = runCli(projectRoot, "skills.mjs", ["--help"]);
     assert.equal(main.status, 0, main.stderr);
-    assert.match(main.stdout, /avenic <claude\|codex\|opencode> init/);
+    assert.match(main.stdout, /avenic <claude\|codex> init/);
     assert.match(main.stdout, /shorthand: ave/);
     assert.match(main.stdout, /self-update/);
     const agent = runCli(projectRoot, "skills.mjs", ["claude", "--help"]);
@@ -354,7 +400,7 @@ test("Claude sessions import and restore across project paths", async () => {
   const targetRoot = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-target-"));
   const claudeHome = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-claude-"));
   try {
-    await initializeAgent(sourceRoot, "claude", "global");
+    await initializeAgent(sourceRoot, "claude", { authMethod: "account", accountScope: "global", sessionScope: "project" });
     const sourceNative = path.join(claudeHome, "projects", claudeSessions.claudeProjectKey(sourceRoot));
     await mkdir(sourceNative, { recursive: true });
     await writeFile(
@@ -385,7 +431,7 @@ test("Codex sessions only import the current project", async () => {
   await withTempProject(async (projectRoot) => {
     const codexHome = await mkdtemp(path.join(os.tmpdir(), "agent-runtime-codex-"));
     try {
-      await initializeAgent(projectRoot, "codex", "global");
+      await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global", sessionScope: "project" });
       const sessionRoot = path.join(codexHome, "sessions", "2026", "09", "05");
       await mkdir(sessionRoot, { recursive: true });
       await writeFile(
@@ -623,7 +669,7 @@ test("shared native capture commits an unmapped Codex rollout idempotently witho
   await withTempProject(async (projectRoot) => {
     const codexHome = path.join(projectRoot, "codex-observe-home");
     const rollout = path.join(codexHome, "sessions", "2026", "09", "18", "rollout.jsonl");
-    await initializeAgent(projectRoot, "codex", "global");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global", sessionScope: "project" });
     await mkdir(path.dirname(rollout), { recursive: true });
     await writeFile(rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "new-rollout", cwd: projectRoot } })}\n${JSON.stringify({ timestamp: "2026-09-18T00:00:00.000Z", type: "response_item", payload: { id: "message-a", type: "message", role: "user", content: [{ type: "input_text", text: "A" }] } })}\n`);
     const environment = { CODEX_HOME: codexHome };
@@ -738,42 +784,72 @@ test("OpenCode uses native export and imports each portable version once", async
 
 test("sessions location is selectable per agent", async () => {
   await withTempProject(async (projectRoot) => {
-    await initializeAgent(projectRoot, "codex", "global", "global");
-    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.sessions, "global");
-    await initializeAgent(projectRoot, "codex", undefined, "project");
-    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.sessions, "project");
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", sessionScope: "global" });
+    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.sessionScope, "global");
+    await initializeAgent(projectRoot, "codex", { sessionScope: "project" });
+    assert.equal((await loadRuntime(projectRoot)).runtime.agents.codex.sessionScope, "project");
     await assert.rejects(
-      initializeAgent(projectRoot, "codex", undefined, "machine"),
+      initializeAgent(projectRoot, "codex", { sessionScope: "machine" }),
       /Sessions must be global or project/,
     );
   });
 });
 
-test("project auth maps each agent to a project-local config home", async () => {
-  await withTempProject(async (projectRoot) => {
-    const local = path.join(projectRoot, ".agents", "local");
-    assert.deepEqual(projectAuthEnvironment("claude", projectRoot), { CLAUDE_CONFIG_DIR: path.join(local, "claude") });
-    assert.deepEqual(projectAuthEnvironment("codex", projectRoot), { CODEX_HOME: path.join(local, "codex") });
-    assert.deepEqual(projectAuthEnvironment("opencode", projectRoot), { XDG_CONFIG_HOME: path.join(local, "opencode") });
-  });
-});
-
-test("project auth launches the agent with a project-scoped config home", async () => {
+test("a global account launch hands the agent the user's own config homes", async () => {
+  // 1.8.3 的 P0 没有被推翻，只是被收窄了：选 Account 时作用域是「哪一份账号
+  // 状态」，global 就是这台机器自己的登录——重定向 Agent 的配置发现去一个没有凭据
+  // 的空世界，会变成一次「请重新登录」。只有 project 作用域才把 Agent 自己的配置
+  // 家指进项目，而且那是它自己写入的登录，不是 Avenic 发明的凭据格式。
   await withTempProject(async (projectRoot) => {
     const binDirectory = await fakeAgentBinary(projectRoot, "claude");
     const outFile = path.join(projectRoot, "launch.txt");
+    const userConfig = path.join(projectRoot, "user-config");
     const environment = {
       ...process.env,
       PATH: `${binDirectory}${path.delimiter}${process.env.PATH}`,
       OUT_FILE: outFile,
+      CLAUDE_CONFIG_DIR: path.join(userConfig, "claude"),
+      CODEX_HOME: path.join(userConfig, "codex"),
+      XDG_CONFIG_HOME: path.join(userConfig, "opencode"),
     };
-    const initialized = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "project"], environment);
+    const initialized = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account"], environment);
     assert.equal(initialized.status, 0, initialized.stderr);
     const launched = runCli(projectRoot, "skills.mjs", ["claude", "-p", "hello"], environment);
     assert.equal(launched.status, 0, launched.stderr);
     const output = await readFile(outFile, "utf8");
-    const expected = path.join(projectRoot, ".agents", "local", "claude");
-    assert.match(output, new RegExp(`CLAUDE_CONFIG_DIR=${expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME"]) {
+      const value = environment[name].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      assert.match(output, new RegExp(`^${name}=${value}$`, "m"), `${name} must stay the user's own`);
+    }
+    assert.doesNotMatch(output, /\.agents[\\/]local/, "a global account redirects no config root");
+  });
+});
+
+test("a project-scope account points only that agent's own config home into the project", async () => {
+  await withTempProject(async (projectRoot) => {
+    const binDirectory = await fakeAgentBinary(projectRoot, "claude");
+    const outFile = path.join(projectRoot, "launch.txt");
+    const userConfig = path.join(projectRoot, "user-config");
+    const environment = {
+      ...process.env,
+      PATH: `${binDirectory}${path.delimiter}${process.env.PATH}`,
+      OUT_FILE: outFile,
+      CLAUDE_CONFIG_DIR: path.join(userConfig, "claude"),
+      CODEX_HOME: path.join(userConfig, "codex"),
+      XDG_CONFIG_HOME: path.join(userConfig, "opencode"),
+    };
+    const initialized = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account", "--scope", "project"], environment);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const launched = runCli(projectRoot, "skills.mjs", ["claude", "-p", "hello"], environment);
+    assert.equal(launched.status, 0, launched.stderr);
+    const output = await readFile(outFile, "utf8");
+    const home = path.join(projectRoot, ".agents", "local", "claude");
+    assert.match(output, new RegExp(`^CLAUDE_CONFIG_DIR=${home.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    // Every other agent's own configuration discovery is none of this agent's
+    // business, and neither is OpenCode's.
+    for (const name of ["CODEX_HOME", "XDG_CONFIG_HOME"]) {
+      assert.match(output, new RegExp(`^${name}=${environment[name].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+    }
   });
 });
 
@@ -856,7 +932,7 @@ test("isolated history mode captures native project sessions without auto-sharin
       CODEX_HOME: path.join(projectRoot, "codex-home"),
       PROJECT_ROOT: projectRoot,
     };
-    const initialized = runCli(projectRoot, "skills.mjs", ["init", "--agents", "codex", "--auth", "global", "--sessions", "project", "--history", "isolated"], environment);
+    const initialized = runCli(projectRoot, "skills.mjs", ["init", "--agents", "codex", "--auth", "account", "--sessions", "project", "--history", "isolated"], environment);
     assert.equal(initialized.status, 0, initialized.stderr);
     const launched = runCli(projectRoot, "skills.mjs", ["codex", "exec"], environment);
     assert.equal(launched.status, 0, launched.stderr);

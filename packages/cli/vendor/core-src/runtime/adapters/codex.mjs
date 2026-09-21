@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import { agentSessionsRoot } from "../config.mjs";
+import { environmentHome } from "../environment.mjs";
 import { agentCursors, cachedFileHead, loadCursors, saveCursors } from "../cursors.mjs";
 import {
   hashContent,
@@ -266,7 +266,7 @@ export async function hasProjectCopy(projectRoot, nativeSessionId, options = {})
 }
 
 function locations(projectRoot, environment = process.env) {
-  const codexHome = environment.CODEX_HOME || path.join(homedir(), ".codex");
+  const codexHome = environment.CODEX_HOME || path.join(environmentHome(environment), ".codex");
   return {
     codexHome,
     nativeSessions: path.join(codexHome, "sessions"),

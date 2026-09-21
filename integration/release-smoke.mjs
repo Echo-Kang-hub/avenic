@@ -183,13 +183,17 @@ async function main() {
   assert.equal(version, `Avenic ${cliMetadata.version}`, "version must come from package.json");
 
   // Set up the project the way the wizard would, non-interactively.
-  const initialized = avenic(["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "shared"], environment);
+  const initialized = avenic(["init", "--agents", "claude,codex", "--auth", "account", "--scope", "global", "--sessions", "project", "--history", "shared"], environment);
   const runtimeFile = path.join(projectRoot, ".agents", "runtime.json");
   const runtime = JSON.parse(await readFile(runtimeFile, "utf8"));
-  assert.equal(runtime.sessionInterop, "shared");
+  assert.equal(runtime.historyMode, "shared");
   assert.deepEqual(Object.keys(runtime.agents).sort(), ["claude", "codex"]);
-  assert.equal(runtime.agents.claude.auth, "global");
-  assert.equal(runtime.agents.claude.sessions, "project");
+  // The method and the scope of *that* method: Account answers with accountScope,
+  // and only the named method's scope is written.
+  assert.equal(runtime.agents.claude.authMethod, "account");
+  assert.equal(runtime.agents.claude.accountScope, "global");
+  assert.equal(runtime.agents.claude.configScope, undefined);
+  assert.equal(runtime.agents.claude.sessionScope, "project");
 
   const status = avenic(["status"], environment).stdout;
   // `avenic status` is one page of blocks: the section is its own line and the
@@ -233,11 +237,12 @@ async function main() {
 
   // Isolated: each agent keeps its own history, and the shared workspace is
   // left alone until the user asks for it.
-  avenic(["change", "--auth", "project", "--sessions", "project", "--history", "isolated"], environment);
+  avenic(["change", "--auth", "account", "--scope", "project", "--sessions", "project", "--history", "isolated"], environment);
   const isolated = JSON.parse(await readFile(runtimeFile, "utf8"));
-  assert.equal(isolated.sessionInterop, "isolated");
-  assert.equal(isolated.agents.claude.auth, "project");
-  assert.equal(isolated.agents.claude.sessions, "project");
+  assert.equal(isolated.historyMode, "isolated");
+  assert.equal(isolated.agents.claude.authMethod, "account");
+  assert.equal(isolated.agents.claude.accountScope, "project");
+  assert.equal(isolated.agents.claude.sessionScope, "project");
 
   const codexSession = "22222222-3333-4444-5555-000000000002";
   const codexLaunch = avenic(["codex"], { ...environment, AVENIC_SMOKE_SESSION: codexSession });

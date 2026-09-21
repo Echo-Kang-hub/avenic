@@ -10,7 +10,7 @@ import {
   loadRuntime,
   projectConfig,
   setActiveCanonicalSession,
-  setSessionInteropMode,
+  setHistoryMode,
 } from "../packages/core/src/index.mjs";
 import { runCli } from "../packages/cli/src/cli/dispatcher.mjs";
 import { FakeTTY, fakeStdout, keys, visible } from "./helpers/fake-tty.mjs";
@@ -43,7 +43,7 @@ async function withSessionsProject(run) {
   const realLog = console.log;
   try {
     await mkdir(path.join(projectRoot, ".agents"), { recursive: true });
-    await setSessionInteropMode(projectRoot, "shared");
+    await setHistoryMode(projectRoot, "shared");
     await createCanonicalSession(projectRoot, { id: "alpha", title: "alpha" });
     await setActiveCanonicalSession(projectRoot, "alpha");
     // The menu lists the most recently updated session first; beta is created
@@ -60,8 +60,8 @@ async function withSessionsProject(run) {
         const stdout = fakeStdout();
         return { stdin, stdout, promise: runCli({ argumentsList: ["sessions"], prompts: { stdin, stdout }, projectRootOverride: projectRoot }) };
       },
-      async interop() {
-        return projectConfig(await loadRuntime(projectRoot)).sessionInterop;
+      async historyMode() {
+        return projectConfig(await loadRuntime(projectRoot)).historyMode;
       },
     }));
   } finally {
@@ -134,8 +134,8 @@ test("the Sessions menu reads one shared conversation as a timeline", async () =
 });
 
 test("the Sessions menu offers the isolated→shared switch and Esc leaves mode alone", async () => {
-  await withSessionsProject(async ({ projectRoot, menu, interop }) => {
-    await setSessionInteropMode(projectRoot, "isolated");
+  await withSessionsProject(async ({ projectRoot, menu, historyMode }) => {
+    await setHistoryMode(projectRoot, "isolated");
     const { stdin, stdout, promise } = menu();
     await waitFor(() => /◆ {2}Sessions \(isolated\)/.test(visible(stdout.text())), "the sessions menu");
     assert.ok(stdout.text().includes("Switch to Shared"));
@@ -143,6 +143,6 @@ test("the Sessions menu offers the isolated→shared switch and Esc leaves mode 
     assert.ok(!stdout.text().includes("Set active session"), "an isolated project has no active shared session");
     keys(stdin, "\x1b");
     assert.equal(await promise, 0);
-    assert.equal(await interop(), "isolated");
+    assert.equal(await historyMode(), "isolated");
   });
 });

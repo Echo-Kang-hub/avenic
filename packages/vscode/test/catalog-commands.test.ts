@@ -93,21 +93,14 @@ test("packStructure resolves the source-grouped skill layers of a pack (cache-fi
   }
 });
 
-test("manifest registers the five catalog command ids with pack-row and title menus", async () => {
+test("manifest declares the five catalog command ids", async () => {
+  // Hub 这个词只出现在面板与命令面板里：Catalog 树随旧界面一起删掉了，这些命令
+  // 仍然存在并且仍然要做完自己的事（Hub 的添加/选择/默认/同步、装 Pack）。
+  // 命令↔注册的双向校验在 manifest.test.ts；这里钉的是这一组的名字。
   const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const manifest = JSON.parse(await readFile(path.join(pkgDir, "package.json"), "utf8"));
   const ids = manifest.contributes?.commands ?? [];
   for (const id of ["avenic.catalog.add", "avenic.catalog.select", "avenic.catalog.default", "avenic.catalog.sync", "avenic.catalog.installPack"]) {
     assert.ok(ids.some((c: { command: string }) => c.command === id), id);
-  }
-  // installPack：Catalog 树 Pack 行右键 + 悬停 inline 键
-  const contextMenus: Array<{ command: string; when: string; group?: string }> = manifest.contributes?.menus?.["view/item/context"] ?? [];
-  const packBinding = "view == avenic.catalog && viewItem == catalog-pack";
-  assert.ok(contextMenus.some((m) => m.command === "avenic.catalog.installPack" && m.when === packBinding && m.group === "inline@1"), "pack 行悬停键位");
-  assert.ok(contextMenus.some((m) => m.command === "avenic.catalog.installPack" && m.when === packBinding && m.group === undefined), "pack 行右键菜单");
-  // Catalog 标题栏三键位
-  const titleMenus: Array<{ command: string; when: string }> = manifest.contributes?.menus?.["view/title"] ?? [];
-  for (const id of ["avenic.catalog.add", "avenic.catalog.select", "avenic.catalog.sync"]) {
-    assert.ok(titleMenus.some((m) => m.command === id && m.when === "view == avenic.catalog"), id);
   }
 });

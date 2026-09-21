@@ -13,7 +13,7 @@ export function assertSafeSkillName(value) {
   }
 }
 
-export function assertSafeRelativePath(value, label) {
+function assertSafeRelativePath(value, label) {
   const normalized = value?.replace(/\\/g, "/");
   if (
     !normalized ||

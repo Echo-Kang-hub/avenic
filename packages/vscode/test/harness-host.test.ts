@@ -1,0 +1,170 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repo = path.resolve(pkgDir, "..", "..");
+
+// Imported by URL rather than statically: both are entry scripts, and an import
+// that inlined one would run its body (each guards its run by comparing
+// import.meta.url with argv[1], which bundling rewrites to this test file). The
+// decisions below are the ones that were prose-only, so they are asserted here
+// where they cost nothing to run — no editor, no window, no desktop.
+const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.mjs")).href)) as {
+  verdict: (run: unknown) => { pass: boolean; reasons: string[] };
+  wbWait: (find: () => Promise<unknown>, tries: number, gap: number) => Promise<unknown>;
+};
+const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify-artifacts.mjs")).href)) as {
+  installVerdict: (attempt: unknown) => { status: string; detail: string };
+};
+
+const SKILLS = { label: "Skills", changed: true, mutations: 2 };
+const SESSION = { sessionsActive: true, turns: 4 };
+const HEADER = { overlaps: [] as string[] };
+const SCREEN = { name: "01-dashboard-open.png", occluded: false, surface: false };
+const SURFACE = { name: "01-dashboard-open.window.png", surface: true, captured: true };
+
+const run = (over: Record<string, unknown> = {}) =>
+  host.verdict({ steps: [SKILLS], row: SESSION, header: HEADER, shots: [SCREEN, SURFACE], errors: [], ...over });
+
+// The report used to record all of this and exit 0, so a run that clicked
+// nothing and opened nothing was as green as one that worked.
+test("a run where every click landed and the session opened passes", () => {
+  assert.deepEqual(run(), { pass: true, reasons: [] });
+});
+
+// A window that has painted its workbench is not yet a window whose extension host
+// has loaded anything. Two runs looked for the activity bar container and then for
+// the launcher's first row a fixed 2.5s after the click, and threw on the miss —
+// each miss was only "not yet", and the run was red for a window that was still
+// starting. Extracted as a decision so the difference is pinned: an answer of "no"
+// is asked again, and giving up takes the whole bounded wait.
+test("a question asked before the window was ready is asked again, not answered 'no'", async () => {
+  let calls = 0;
+  const hit = await host.wbWait(async () => (++calls === 3 ? { x: 24, y: 299 } : null), 5, 1);
+  assert.deepEqual(hit, { x: 24, y: 299 });
+  assert.equal(calls, 3);
+});
+
+test("a thing that never arrives ends as a miss after the bounded wait", async () => {
+  let calls = 0;
+  const hit = await host.wbWait(async () => { calls++; return null; }, 4, 1);
+  assert.equal(hit, null);
+  assert.equal(calls, 4);
+});
+
+test("a click that left the page unchanged fails the run", () => {
+  const result = run({ steps: [{ label: "Skills", changed: false, mutations: 1 }] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /Skills/);
+});
+
+// Refresh 的活儿是重新读一遍同一个项目：项目没变时，它正确的样子就是再画一遍同一段
+// 字。用「字变了没有」判它，会把一次成功的重读判成失败——它该被问的是「面板动了吗」。
+test("a refresh that repainted the same words still counts as the panel reacting", () => {
+  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 1, expectText: false }] });
+  assert.deepEqual(result, { pass: true, reasons: [] });
+});
+
+test("a refresh that repainted nothing at all still fails", () => {
+  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 0, expectText: false }] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /mutation/i);
+});
+
+test("a click that caused no DOM mutation fails the run even if the text differs", () => {
+  const result = run({ steps: [{ label: "Refresh", changed: true, mutations: 0 }] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /mutation/i);
+});
+
+test("a session row that was never found fails the run", () => {
+  const result = run({ row: null });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /session row/);
+});
+
+// 头部的三段（标题、路径、状态块）在参考图里各就各位；窗口窄下来之后，长路径会把
+// 状态块压过去，两行字叠在一起。这一条是那一场的检查：叠了就算失败，
+// 而不是等人去看截图时才发现。
+test("a project path painted over the status block fails the run", () => {
+  const result = run({ header: { overlaps: [".proj-path"] } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /proj-path/);
+});
+
+test("a header whose three parts each stay in their own column passes", () => {
+  assert.deepEqual(run({ header: { overlaps: [] } }), { pass: true, reasons: [] });
+});
+
+// 没有这次测量与「没有重叠」不是一回事：量不到的时候不能算通过。
+test("a run that never measured the header fails", () => {
+  const result = run({ header: null });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /header/i);
+});
+
+// The row click has to open the conversation: a title that only repaints would
+// satisfy "the body text changed" while showing the list it was already showing.
+test("a session click that did not leave Sessions active with a transcript fails", () => {
+  const result = run({ row: { sessionsActive: false, turns: 0 } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /Sessions/);
+  assert.match(result.reasons.join("\n"), /transcript/);
+});
+
+test("a screen read of somebody else's window fails the run", () => {
+  const result = run({ shots: [{ name: "01-dashboard-open-occluded.png", occluded: true, byPid: 4242 }, SURFACE] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /01-dashboard-open-occluded\.png/);
+});
+
+test("a run whose compositor fallback never worked fails", () => {
+  const result = run({ shots: [SCREEN, { name: "(no surface capture for 01-dashboard-open.png)", surface: true, captured: false }] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /surface/);
+});
+
+test("an error in the extension's own log fails the run", () => {
+  const result = run({ errors: [String.raw`logs\20260921T001717\window1\exthost\exthost.log: 2026-09-21 00:17:19.313 [error] Avenic: command 'avenic.dashboard.open' failed`] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /avenic\.dashboard\.open/);
+});
+
+// `code` refusing the VSIX and `code` not being on this machine are different
+// facts. One branch that means both is how a package no editor will accept gets
+// reported as "no editor here", with the install check skipped and the run green.
+const EXPECTED = "echokang.avenic-agent-manager@0.5.5";
+const attempt = (over: Record<string, unknown> = {}) =>
+  artifacts.installVerdict({ editor: "C:/bin/code.cmd", install: { status: 0, stdout: "installing", stderr: "" }, listed: `${EXPECTED}\n`, expected: EXPECTED, ...over });
+
+test("an editor that refuses the VSIX is a failure, not a skip", () => {
+  const result = attempt({ install: { status: 1, stdout: "", stderr: "Unable to install extension: not a valid extension" } });
+  assert.equal(result.status, "failed");
+  assert.match(result.detail, /not a valid extension/);
+});
+
+test("no editor on PATH is the one branch that skips", () => {
+  const result = attempt({ editor: null, install: null, listed: "" });
+  assert.equal(result.status, "skipped");
+  assert.match(result.detail, /no editor on PATH/);
+});
+
+test("an editor that exited 0 without installing anything fails", () => {
+  const result = attempt({ listed: "ms-python.python@2026.1.0\n" });
+  assert.equal(result.status, "failed");
+  assert.match(result.detail, /avenic/i);
+});
+
+test("an editor that installed another version than the one packaged fails", () => {
+  const result = attempt({ listed: "echokang.avenic-agent-manager@0.4.9\n" });
+  assert.equal(result.status, "failed");
+  assert.match(result.detail, /0\.4\.9/);
+});
+
+test("the version the editor lists is the version that was verified", () => {
+  const result = attempt({ listed: "EchoKang.Avenic-Agent-Manager@0.5.5\n" });
+  assert.equal(result.status, "installed");
+  assert.match(result.detail, /0\.5\.5/);
+});

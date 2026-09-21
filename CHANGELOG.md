@@ -1,5 +1,229 @@
 # Changelog
 
+## 1.8.4 / 1.6.5 / 0.5.5 - 2026-09-20
+
+- **Authentication and model configuration are now two questions, and each one
+  has exactly one owner.** A project answers **Authentication** for each agent —
+  `Account` or `API` — and that answer decides the rest. `Account` means the
+  agent signs in with its own account: Avenic configures no model, stores no
+  credential, and invents no credential format. `API` means Avenic writes the
+  provider, endpoint, model and credential into the agent's *own* configuration.
+  The method carries its own scope (`Account` → global/project, `API` →
+  global/project) and the two never coexist as separate truths: only the named
+  method's scope is written, so a runtime file can no longer say `api` and
+  `account` at the same time. A bare `auth: global|project` from 1.8.3 is
+  migrated once, and a legacy project-auth file with usable content becomes that
+  agent's API configuration rather than being thrown away.
+- **The extension is one window now: a dashboard drawn from the same answers as
+  `avenic status`.** The webview shows the project in a single panel — the
+  Avenic mark, a fixed sidebar (Overview, Configure, Agents, Sessions, Skills,
+  Quick Actions; Documentation and Settings at its foot, with the extension's
+  own version and a readiness dot), a project header (name,
+  the project's real root, configured or not, last updated, Refresh,
+  Reconfigure), three agent cards, shared and per-agent sessions, skills, quick
+  actions and recent activity. Every cell is a value core answered for *this*
+  project: a field core cannot answer is not drawn rather than filled in, a
+  session title is the one core recorded (native summary, then first user
+  message, then a short id — never a UUID), a stored title that is itself a
+  session id — bare, or written as the canonical id — is answered as no title
+  at all rather than displayed, and no path, count or badge is a
+  placeholder. The extension also stops keeping a tree that repeats what the
+  panel already says: the activity bar holds one short list that opens the
+  panel, and a command that names a destination ("Sessions") opens the panel on
+  that section. Configure and Agents are the same three cards asked two
+  different questions, so the two entries are not one entry with two names.
+- **The window never waits on the project, and a slow read says so.** The shell
+  is static markup and paints before any data arrives; the placeholder blocks
+  are replaced when the answers land; and a refresh that takes longer than half
+  a second draws a `Reading the project…` status line *above* the content it is
+  waiting to replace instead of blanking the panel. Measured in a cold browser
+  at the reference size: shell 15–28 ms, data 18–24 ms, both far inside the
+  100 ms / 300 ms budgets. Reading is only ever a read: no network check, no
+  model call, no login attempt.
+- **The dashboard is held to a rendered reference, not to a description.** A
+  headless harness renders the panel with real core data in both themes, at
+  four window sizes, on every section, with the slow-read line drawn and with a
+  tab strip driven by the arrow key — 22 views, each checked for clipped or
+  overlapping text, icons without a glyph, controls with no accessible name,
+  tab roles that do not match their state, text below WCAG AA, a wait line that
+  drew when nothing was slow, and a wait line that failed to draw when
+  something was. The checks have been shown to fail: removing the rule that
+  lets a select shrink breaks the 1280 render, replacing the content with the
+  wait line breaks two, and forcing the arrow key to do nothing breaks the
+  keyboard one. Geometry is compared against the reference screenshot's own
+  edges (47 anchors, ±2px) on every run. Two real defects came out of it and
+  are fixed here: a render that threw left an empty page that passed every
+  other check unnoticed, and the light theme's badge labels measured 4.08–4.37:1
+  against the page behind them.
+- **One supplied mark, carried in the package.** The extension icon, the
+  activity-bar icon and the mark in the panel's own header are one asset, at
+  three sizes, transparency preserved and never redrawn; the panel loads it
+  through the webview's own URI, under a CSP that allows no other source, and
+  `npm run release:verify` now reads the VSIX's table of contents and fails if
+  any of the three files, or the manifest field that names them, is missing.
+- **Project-scoped Account isolates the agent's own login — in the agent's own
+  home.** Choosing Account + Project points the agent's own configuration-root
+  variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) at
+  `<project>/.agents/local/<agent>` for that project, and nothing else: the
+  agent's own `login` writes its own files there, in its own format, and the
+  working directory stays the project root. Your `~/.claude` and `~/.codex` are
+  not read into that home, never written, and never deleted. This is the one
+  case that moves a configuration root, and it is the case that means to — an
+  earlier cut of this round refused any redirection and left project sign-in
+  with nowhere honest to live. A launch, its capture and its durability watch
+  all take the environment from the same core function
+  (`agentRuntimeEnvironment`), so the run that writes to the project's home and
+  the code that reads it back can no longer disagree about where it is.
+- **API mode writes the agent's own file, and can give back exactly what it
+  wrote.** Claude's project scope prefers `.claude/settings.local.json` —
+  Claude's own project settings — written key by key through an ownership
+  ledger: keys you wrote are preserved byte-for-byte, a key you change after
+  Avenic wrote it is reported as a conflict and kept, and re-applying the same
+  answers does not churn the file. Codex has no project-scoped configuration
+  file, so it receives the project's answer the way Codex documents for a single
+  run: `-c model=…` / `-c model_provider=…` / `-c model_providers.<id>.*` on
+  that launch. A credential is reported as present or absent and never printed, never
+  written into canonical history, launch state, status JSON or logs. Editing an API
+  project re-opens the questions on the answers it already has: provider, endpoint
+  and model are read back from the file Avenic wrote, and the credential field is
+  deliberately left empty — a secret is never echoed, so it can never be retyped,
+  and an answer set that does not name it keeps it rather than removing it. Running
+  `avenic change` (or Configure Project) and pressing Enter through the questions
+  therefore changes nothing at all, byte for byte.
+- **The device-level model library is gone.** Provider profiles, the machine
+  library at `~/.config/avenic/models.json`, project bindings
+  (`.agents/model.json` and its projection ledger), endpoint presets,
+  `avenic model add|list|use|test|clear` and the extension's model panel are
+  removed, not deprecated: a model configuration belongs to a project and lives
+  in the agent's own configuration file, and Avenic ships no provider catalogue
+  of its own. Nothing is hardcoded — no default provider, endpoint or model id
+  anywhere in the product — and a stale `~/.config/avenic/models.json` or
+  `.agents/model.json` in your project is simply never read again; deleting
+  either is safe.
+- **One wizard, in core, drawn by both hosts.** `avenic init`, `avenic change`
+  and the extension's Configure Project walk the same questions in the same
+  order from the same source: select agents → per agent **Authentication**
+  (Account / API) → that method's scope → the API fields when API was chosen →
+  session storage → OpenCode is asked about sessions only → shared/isolated
+  history → the keep/remove question below → summary and apply. Answered steps
+  stay on screen in dim grey, the current step expands, `Shift+Tab` goes back,
+  and `Esc`/`Ctrl+C` cancels with nothing written — verified for both hosts, and
+  the CLI's own dispatcher no longer keeps a second copy of the step list.
+- **Switching method keeps the old configuration unless you say otherwise.**
+  After the new answers are collected and before anything is written, the wizard
+  asks `Existing Account/API configuration detected. Keep previous configuration?`
+  with **Keep** as the default. Choosing Remove happens *after* the new
+  configuration is written, is limited to what Avenic provably wrote for this
+  project (the ledger, or an Avenic-owned key) and asks for confirmation before
+  destroying anything. It never deletes a user's global account, never touches
+  `~/.claude` or `~/.codex`, never touches another project, and never removes
+  `.claude/settings.local.json` merely because you switched to Account.
+  Switching an agent back to its previous method does not even ask.
+- **Status says the method, the scope, and where that state actually is.** An
+  Account reports its home and whether a sign-in has happened — read from the
+  agent's own credential file, reported as `signed-in` / `not-signed-in` /
+  `unknown` — and an API configuration reports which file carries it, the
+  selected provider and model, or says that the file holds nothing Avenic wrote
+  when it has not been written yet.
+  Nothing is probed: no network check, no model call, no login attempt on your
+  behalf, from `init`, `change`, `status`, the dashboard or a launch. A fact the
+  reader cannot establish is reported as unknown rather than guessed.
+- **"Avenic wrote this" and "this is still in the file" are answered
+  separately.** A configuration you edit or delete outside Avenic keeps its
+  ledger record — that record is what proves which keys were Avenic's, and what
+  a later removal gives back — but it is no longer reported as the
+  configuration you are running under: `avenic status`, the auth page, the
+  dashboard and a launch's own note all say the file no longer holds what
+  Avenic wrote (or holds a provider configuration Avenic did not write, which
+  is a different sentence and a different situation) — the CLI names the
+  command that repairs it, the panel points at Change, and the launch note
+  carries the command itself. A method is offered as `already written` only when the
+  values are actually there, so a launch cannot be pointed at a configuration
+  that no longer exists.
+- **A removal says what it could not give back.** Releasing a previous
+  configuration reports three outcomes instead of a single number: keys
+  removed, keys kept because you changed them after Avenic wrote them — a value
+  Avenic did not set is not Avenic's to delete — and the one that asks you to
+  act: keys whose earlier value the ledger only ever held as a hash, which
+  cannot be restored, named so you can re-enter them. The CLI and the extension
+  report the same three facts, from the same core result.
+- **`deinit --purge` keeps the agent's own sign-in unless asked twice.** A
+  Project-scope Account home (`.agents/local/<agent>/`) holds a credential the
+  agent wrote itself, so purging a project deletes Avenic's own data
+  (`.agents/sessions/<agent>/`) and reports the one sign-in file it left in
+  place, by path. Deleting that too is `--purge-credentials`, which means
+  nothing on its own: the sign-in is never destroyed as a side effect of a flag
+  that did not ask for it, and when it is deleted the command says the next
+  launch will ask you to sign in again.
+- **A launch asks only when the project has not answered, and says what is
+  already here.** If the method is genuinely unanswered the launch asks once,
+  with an optional `Remember for this project?` (default No) that writes the
+  method and nothing else. The two options report the state a local read can
+  establish — `already signed in here`, or which file is `already written` — so a
+  project that kept an Account and an API configuration at the same time offers
+  two choices that say which is which instead of two that look alike. Neither
+  question appears once the project has answered. Readiness is read from the
+  agent's own credential file and the ownership ledger: no probe, no network.
+- **OpenCode stays entirely OpenCode's.** `avenic opencode init` asks about
+  session storage only, `avenic opencode` launches straight into OpenCode's own
+  flow, and no surface offers it an authentication or provider question —
+  OpenCode's auth, provider and model are its own.
+- **A method switch asks before it writes, and names what it would remove.**
+  `avenic claude auth api` is a switch, not a fresh answer, and it now goes
+  through the same policy the wizard uses: it asks whether to keep what the
+  previous method left, names the file it would take back out when the answer
+  is Remove (with a second confirmation, defaulting to no), and Esc or Ctrl+C
+  cancels with nothing written at all and no result page. The order is
+  ask → write → release, so a cancelled switch cannot leave a half-switched
+  project, and the release removes only the keys Avenic itself wrote.
+- **A Global API answer follows the environment it is given.** Where a Global
+  account home is read and where a Global API configuration is written are
+  decided by the `HOME` / `USERPROFILE` the caller passes in, never by the
+  process's own: a host or a fixture that directs home gets that home, so no
+  run can read or edit the developer's real `~/.claude/settings.json` by
+  accident.
+- **`npm test` checks this machine's own agent configuration.** The suite ends
+  by scanning `~/.claude/settings.json` and `~/.codex/config.toml` for the
+  fixtures' markers and failing the run if they appear, so a test that leaks
+  made-up configuration into a real home is caught instead of passing quietly.
+  A first full run of it found three such keys, left by the suite before this
+  round; they were removed by hand, key by key, with every other key preserved.
+- **A draft that changes the history mode writes everything it carries.** The
+  mode decides how history is imported, never whether the project's answers
+  reach their files: a pass that both moves an API configuration and flips
+  Shared/Isolated writes the new one before the release takes the old one back,
+  and can no longer leave a project with neither. The second, destructive
+  keep/remove question opens on **Keep** in both hosts — the answer to the
+  question before it is never what a bare Enter repeats. Reading native history
+  follows the same rule as writing it: the snapshot, the exit capture and the
+  mode-change import resolve `CLAUDE_CONFIG_DIR` / `CODEX_HOME` — and, failing
+  those, the home — from the environment they are handed, so an Account ·
+  Project run is imported from the project's own home and a machine-wide
+  `~/.claude` or `~/.codex` is never read into its place.
+- **Less code, not more.** Production source across the three `src` trees (tests,
+  vendored copies and build output excluded) is 17,544 lines in 81 files,
+  against 17,962 in 103 files at 1.8.3: **−418 lines net and 22 files fewer**,
+  with the model library, both hosts' private wizard copies and the overlays
+  they needed deleted rather than layered. Counted where it is written, the
+  extension's presentation shrank too: three webviews' 2,418 lines of script
+  and style (overview, sessions, model) became one panel's 1,985, **−433**,
+  while the panel gained the sections the three used to split between them. No
+  dependency was added — no framework, no bundler runtime, no icon package (the
+  glyphs are the font VS Code already ships) — and the `@avenic/core` barrel
+  exposes 245 names against 300: 55 fewer, while gaining the canonical
+  API-configuration module (584 lines) and the shared project wizard (353).
+- **Upgrading.** A runtime file from 1.8.3 is migrated on first read: the method
+  is derived from what the project actually said — a legacy project-auth file
+  with usable content becomes API, an unambiguous `auth` scope becomes the
+  matching method — and an ambiguous record is left unanswered so the launch
+  asks instead of guessing. If you ran 1.8.3 with Project scope, the
+  substitution it performed may have left `.agents/local/<agent>/` holding that
+  run's files; under 1.8.4 that directory is the project's Account home, so
+  treat what is in it as the project's own and clear it if you did not put it
+  there. Existing `.claude/settings.local.json`, `settings.json` and
+  `.agents/model.json` files are never rewritten, and `deinit` (without
+  `--purge`) keeps them.
+
 ## 1.8.3 / 1.6.4 / 0.5.4 - 2026-09-19
 
 - **A plain launch is a new conversation — every time.** `avenic claude` used to

@@ -89,9 +89,17 @@ test("avenic init writes exactly what the wizard asked for", async () => {
     const { stdin, stdout, promise } = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
     keys(stdin, " ", DOWN, " ", ENTER); // Claude Code, then Codex
-    for (const title of ["Claude Code authentication", "Claude Code session storage", "Codex authentication", "Codex session storage", "Session history"]) {
+    // Each agent answers its method, then that method's own scope, then session
+    // storage; the two scopes belong to different questions and are asked
+    // separately. Enter takes the offered answer every time: Account (its own
+    // sign-in), Global account state, project sessions, shared history.
+    for (const title of [
+      "Claude Code authentication", "Claude Code account scope", "Claude Code sessions",
+      "Codex authentication", "Codex account scope", "Codex sessions",
+      "Session history",
+    ]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
-      keys(stdin, ENTER); // the offered default: Global auth, project sessions, shared history
+      keys(stdin, ENTER);
     }
     await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
     keys(stdin, ENTER); // Yes is the offered answer
@@ -99,9 +107,12 @@ test("avenic init writes exactly what the wizard asked for", async () => {
 
     const written = await config();
     assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex"]);
-    assert.deepEqual(written.agents.claude, { auth: "global", sessions: "project" });
-    assert.deepEqual(written.agents.codex, { auth: "global", sessions: "project" });
-    assert.equal(written.sessionInterop, "shared");
+    assert.deepEqual(written.agents.claude, { authMethod: "account", accountScope: "global", sessionScope: "project" });
+    assert.deepEqual(written.agents.codex, { authMethod: "account", accountScope: "global", sessionScope: "project" });
+    assert.equal(written.historyMode, "shared");
+    // Account mode configures no model and no credential: the entry says who
+    // signs in and nothing about a provider.
+    assert.ok(!("configScope" in written.agents.claude), "the method that was not chosen leaves no field behind");
     // The wizard is its own result page: the rail carries every answer once,
     // and the settled frame ends with the outcome instead of a second summary.
     const settled = frame(stdout);
@@ -146,12 +157,12 @@ test("Shift+Tab re-opens the previous step with its previous answer, and does no
 
     keys(stdin, " ", ENTER); // Claude Code
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
-    keys(stdin, DOWN, ENTER); // Project
-    await waitFor(() => /◆ {2}Claude Code session storage/.test(frame(stdout)), "session storage");
+    keys(stdin, DOWN, ENTER); // API — the method, not a scope
+    await waitFor(() => /◆ {2}Claude Code API configuration/.test(frame(stdout)), "the API configuration the method asks for");
 
     keys(stdin, BACK);
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the previous step re-opened");
-    assert.match(frame(stdout), /▸ ◉ {2}Project/, `the answer it already has is selected:\n${frame(stdout)}`);
+    assert.match(frame(stdout), /▸ ◉ {2}API/, `the answer it already has is selected:\n${frame(stdout)}`);
     assert.match(frame(stdout), /↑↓ move · enter confirm · shift\+tab back · esc cancel/, "the frame says how to go back");
 
     keys(stdin, BACK);
@@ -167,27 +178,30 @@ test("modifying an answer and moving forward submits the new one", async () => {
     const { stdin, stdout, promise } = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
     keys(stdin, " ", DOWN, " ", ENTER); // Claude Code + Codex
-    keys(stdin, ENTER); // Claude Code authentication: Global
-    keys(stdin, ENTER); // Claude Code session storage: Project is the offered default
+    keys(stdin, ENTER); // Claude Code authentication: Account
+    keys(stdin, ENTER); // Claude Code account scope: Global
+    keys(stdin, ENTER); // Claude Code sessions: Project
     await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
-    keys(stdin, DOWN, ENTER); // Project
-    await waitFor(() => /◆ {2}Codex session storage/.test(frame(stdout)), "Codex session storage");
+    keys(stdin, ENTER); // Account
+    await waitFor(() => /◆ {2}Codex account scope/.test(frame(stdout)), "Codex account scope");
+    keys(stdin, ENTER); // Global
+    await waitFor(() => /◆ {2}Codex sessions/.test(frame(stdout)), "Codex sessions");
 
-    // Back into Codex authentication and change the answer.
+    // Back into Codex's scope and change the answer.
     keys(stdin, BACK);
-    await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication again");
-    assert.match(frame(stdout), /▸ ◉ {2}Project/);
-    keys(stdin, UP, ENTER); // back to Global
-    await waitFor(() => /◆ {2}Codex session storage/.test(frame(stdout)), "forward again");
-    keys(stdin, ENTER); // Codex session storage: Project
+    await waitFor(() => /◆ {2}Codex account scope/.test(frame(stdout)), "Codex account scope again");
+    assert.match(frame(stdout), /▸ ◉ {2}Global/, `the answer it already has is selected:\n${frame(stdout)}`);
+    keys(stdin, DOWN, ENTER); // Project — a project-only account
+    await waitFor(() => /◆ {2}Codex sessions/.test(frame(stdout)), "forward again");
+    keys(stdin, ENTER); // Codex sessions: Project
     keys(stdin, ENTER); // Session history: Shared
     await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
     keys(stdin, ENTER);
     assert.equal(await promise, 0);
 
     const written = await config();
-    assert.deepEqual(written.agents.codex, { auth: "global", sessions: "project" }, "the changed answer is the one written");
-    assert.deepEqual(written.agents.claude, { auth: "global", sessions: "project" }, `and the untouched answers are intact: ${JSON.stringify(written.agents)}`);
+    assert.deepEqual(written.agents.codex, { authMethod: "account", accountScope: "project", sessionScope: "project" }, "the changed answer is the one written");
+    assert.deepEqual(written.agents.claude, { authMethod: "account", accountScope: "global", sessionScope: "project" }, `and the untouched answers are intact: ${JSON.stringify(written.agents)}`);
   });
 });
 
@@ -196,38 +210,44 @@ test("a deselected agent's answers stay in memory but are not submitted, and com
     const { stdin, stdout, promise } = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
     keys(stdin, " ", DOWN, " ", ENTER); // Claude Code + Codex
-    keys(stdin, ENTER); // Claude Code authentication: Global
-    keys(stdin, ENTER); // Claude Code session storage: Project
+    keys(stdin, ENTER); // Claude Code authentication: Account
+    keys(stdin, ENTER); // Claude Code account scope: Global
+    keys(stdin, ENTER); // Claude Code sessions: Project
     await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
+    keys(stdin, ENTER); // Account
+    await waitFor(() => /◆ {2}Codex account scope/.test(frame(stdout)), "Codex account scope");
     keys(stdin, DOWN, ENTER); // Project — this answer has to survive the detour
+    await waitFor(() => /◆ {2}Codex sessions/.test(frame(stdout)), "Codex sessions");
 
     // Back to the agent list and drop Codex.
-    keys(stdin, BACK, BACK, BACK, BACK); // Codex sessions → auth → Claude sessions → auth → agents
+    keys(stdin, BACK, BACK, BACK, BACK, BACK, BACK); // sessions → scope → auth → Claude sessions → scope → auth → agents
     await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker again");
     assert.match(frame(stdout), /▸ ◉ {2}Codex/, "the cursor is on Codex, where it was left");
     keys(stdin, " "); // uncheck Codex
     keys(stdin, ENTER);
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the steps that remain");
-    keys(stdin, ENTER, ENTER); // Claude Code's two answers
+    keys(stdin, ENTER, ENTER, ENTER); // Claude Code's three answers
     await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "history, with no Codex step in between");
     assert.ok(!frame(stdout).includes("Codex authentication"), "a disabled agent is no longer asked about");
 
     // Back in, enable Codex again: its earlier answer is still there.
-    keys(stdin, BACK, BACK, BACK); // history → sessions → auth → agents
+    keys(stdin, BACK, BACK, BACK, BACK); // history → sessions → scope → auth → agents
     await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker once more");
     keys(stdin, " "); // check Codex again
     keys(stdin, ENTER);
-    keys(stdin, ENTER, ENTER); // Claude Code's two answers
+    keys(stdin, ENTER, ENTER, ENTER); // Claude Code's three answers
     await waitFor(() => /◆ {2}Codex authentication/.test(frame(stdout)), "Codex authentication");
+    keys(stdin, ENTER); // Account
+    await waitFor(() => /◆ {2}Codex account scope/.test(frame(stdout)), "Codex account scope");
     assert.match(frame(stdout), /▸ ◉ {2}Project/, "the answer it had before is still selected");
-    keys(stdin, ENTER, ENTER, ENTER); // Codex sessions, history, Apply
+    keys(stdin, ENTER, ENTER, ENTER, ENTER); // Codex scope, sessions, history, Apply
     await waitFor(() => /Apply configuration\?/.test(frame(stdout)), "the confirmation");
     keys(stdin, ENTER);
     assert.equal(await promise, 0);
 
     const written = await config();
     assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex"]);
-    assert.deepEqual(written.agents.codex, { auth: "project", sessions: "project" });
+    assert.deepEqual(written.agents.codex, { authMethod: "account", accountScope: "project", sessionScope: "project" });
   });
 });
 
@@ -260,7 +280,7 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
     const interrupted = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(interrupted.stdout)), "the agent picker");
     keys(interrupted.stdin, " ", ENTER);
-    for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(interrupted.stdout)), title);
       keys(interrupted.stdin, ENTER);
     }
@@ -273,7 +293,7 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
     const escapedAtEnd = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(escapedAtEnd.stdout)), "the agent picker");
     keys(escapedAtEnd.stdin, " ", ENTER);
-    for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(escapedAtEnd.stdout)), title);
       keys(escapedAtEnd.stdin, ENTER);
     }
@@ -287,7 +307,7 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
 test("avenic change adds an agent and switches history mode from the wizard", async () => {
   await withWizardProject(async ({ projectRoot, wizard, config }) => {
     const initialized = await runCli({
-      argumentsList: ["init", "--agents", "claude,codex", "--auth", "global", "--sessions", "project", "--history", "shared"],
+      argumentsList: ["init", "--agents", "claude,codex", "--auth", "account", "--sessions", "project", "--history", "shared"],
       projectRootOverride: projectRoot,
     });
     assert.equal(initialized, 0);
@@ -296,9 +316,15 @@ test("avenic change adds an agent and switches history mode from the wizard", as
     await waitFor(() => /◆ {2}Select enabled agents/.test(frame(stdout)), "the enabled-agent picker");
     // The enabled agents are already selected: two steps down is OpenCode.
     keys(stdin, DOWN, DOWN, " ", ENTER);
-    for (const title of ["Claude Code authentication", "Claude Code session storage", "Codex authentication", "Codex session storage", "OpenCode authentication", "OpenCode session storage"]) {
+    // OpenCode is asked about session storage and nothing else — its
+    // authentication and provider configuration are its own.
+    for (const title of [
+      "Claude Code authentication", "Claude Code account scope", "Claude Code sessions",
+      "Codex authentication", "Codex account scope", "Codex sessions",
+      "OpenCode sessions",
+    ]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
-      keys(stdin, ENTER);
+      keys(stdin, ENTER); // the answers the project already has
     }
     await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "the history mode");
     keys(stdin, DOWN, ENTER); // Shared → Isolated
@@ -308,9 +334,55 @@ test("avenic change adds an agent and switches history mode from the wizard", as
 
     const written = await config();
     assert.deepEqual(Object.keys(written.agents).sort(), ["claude", "codex", "opencode"]);
-    assert.equal(written.sessionInterop, "isolated");
+    assert.deepEqual(written.agents.opencode, { sessionScope: "project" }, "OpenCode records a session choice and no method");
+    assert.equal(written.historyMode, "isolated");
     const settled = frame(stdout);
     assert.match(settled, /◇ {2}Configuration updated/);
     assert.match(settled, /◇ {2}Session history\n│ {2}Isolated/, "the settled rail carries the new mode once");
+  });
+});
+
+test("editing a project that already has an API configuration offers it back, and keeping it changes nothing", async () => {
+  await withWizardProject(async ({ projectRoot, wizard }) => {
+    // The configuration is already there before the wizard opens, written the
+    // way the project would have written it.
+    const { initializeAgent, writeApiConfiguration } = await import("../packages/core/src/index.mjs");
+    await initializeAgent(projectRoot, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+    await writeApiConfiguration(projectRoot, "claude", "project", {
+      provider: "Fixture Provider",
+      baseUrl: "https://provider.fixture.invalid/v1",
+      model: "fixture-model",
+      credential: "fixture-credential-not-a-real-secret",
+    });
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    const { readFile } = await import("node:fs/promises");
+    const before = await readFile(file, "utf8");
+
+    const { stdin, stdout, promise } = wizard("change");
+    await waitFor(() => /◆ {2}Select enabled agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, ENTER); // Keep the agents that are enabled
+    // Every API question opens on the answer the project already gave — the
+    // provider and the endpoint included. Enter takes each of them as it is.
+    for (const title of [
+      "Claude Code authentication", "Claude Code API configuration",
+      "Claude Code provider", "Claude Code base URL", "Claude Code model",
+      "Claude Code API credential", "Claude Code sessions", "Session history",
+    ]) {
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
+      keys(stdin, ENTER);
+    }
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER); // Yes
+    assert.equal(await promise, 0);
+
+    // Pressing Enter through an edit is not an answer that takes the
+    // configuration away: every value, the secret included, is still there.
+    assert.equal(await readFile(file, "utf8"), before);
+    const { readApiConfiguration } = await import("../packages/core/src/index.mjs");
+    const read = await readApiConfiguration(projectRoot, "claude", "project");
+    assert.equal(read.owned, true);
+    assert.equal(read.provider, "Fixture Provider");
+    assert.equal(read.model, "fixture-model");
+    assert.equal(read.credentialSet, true);
   });
 });

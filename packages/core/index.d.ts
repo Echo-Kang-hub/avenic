@@ -47,19 +47,40 @@ export function latestPublishedVersion(agentId: string, options?: { packageSpec?
 
 // ---- runtime: config ----
 
+export type AuthMethod = "account" | "api";
+export type Scope = "global" | "project";
+
+/**
+ * One agent's stored answers. Authentication and model configuration are
+ * different questions, so an entry carries the method and *only that method's*
+ * scope: `accountScope` says whose sign-in this is, `configScope` says which of
+ * the agent's own configuration files carries the provider. The other method's
+ * key is absent rather than empty — a half-written entry cannot claim both.
+ * OpenCode manages its own authentication and provider, so it stores its
+ * session scope and nothing else.
+ */
 export interface AgentRuntimeConfig {
   enabled?: boolean;
-  auth?: "global" | "project";
-  sessions?: "global" | "project";
+  authMethod?: AuthMethod;
+  accountScope?: Scope;
+  configScope?: Scope;
+  sessionScope?: Scope;
   [key: string]: unknown;
 }
 
-export interface EffectiveAgentConfig {
-  enabled?: boolean;
-  auth: "global" | "project";
-  sessions: "global" | "project";
-  configuredAuth: "global" | "project";
-  localAuth: "global" | "project" | null;
+/** What one entry answers, with the method's own scope and nothing of the other's. */
+export interface AgentConfigView {
+  sessionScope: Scope;
+  authMethod?: AuthMethod;
+  accountScope?: Scope;
+  configScope?: Scope;
+}
+
+export interface EffectiveAgentConfig extends AgentConfigView {
+  /** "local" when a per-project override is what a launch reads, "project" when the stored entry is. */
+  source: "local" | "project" | null;
+  local: AgentRuntimeConfig | null;
+  configured: AgentRuntimeConfig;
 }
 
 export interface RuntimePaths {
@@ -69,21 +90,31 @@ export interface RuntimePaths {
   sessionsRoot: string;
 }
 
-export interface RuntimeState {
-  paths: RuntimePaths;
-  runtime: { schemaVersion?: number; activeCanonicalSessionId?: string; sessionInterop?: "shared" | "isolated"; agents?: Record<string, AgentRuntimeConfig> };
-  local: { schemaVersion?: number; agents?: Record<string, { auth?: "global" | "project" }> };
+export type HistoryMode = "shared" | "isolated";
+
+/** The runtime file's shape, canonical schema v3. No derived fields are stored beside it. */
+export interface RuntimeFile {
+  schemaVersion?: number;
+  activeCanonicalSessionId?: string;
+  historyMode?: HistoryMode;
+  agents?: Record<string, AgentRuntimeConfig>;
 }
 
-export function validateAuthMode(authMode: unknown): "global" | "project";
-export function validateSessionsMode(sessionsMode: unknown): "global" | "project";
-export function validateSessionInteropMode(mode: unknown): "shared" | "isolated";
+export interface RuntimeState {
+  paths: RuntimePaths;
+  runtime: RuntimeFile;
+  local: { schemaVersion?: number; agents?: Record<string, AgentRuntimeConfig> };
+}
+
+export function validateAuthMethod(method: unknown): AuthMethod;
+export function validateScope(scope: unknown, what?: string): Scope;
+export function validateHistoryMode(mode: unknown): HistoryMode;
 export interface ProjectConfig {
-  agents: Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
-  sessionInterop: "shared" | "isolated";
+  agents: Record<string, AgentConfigView>;
+  historyMode: HistoryMode;
 }
 export function projectConfig(state: RuntimeState): ProjectConfig;
-export function configureProject(projectRoot: string, draft?: Partial<ProjectConfig>): Promise<RuntimeState & { configChanged: boolean; gitignoreChanged: boolean; config: ProjectConfig }>;
+export function configureProject(projectRoot: string, draft?: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode }): Promise<RuntimeState & { configChanged: boolean; gitignoreChanged: boolean; config: ProjectConfig }>;
 
 // ---- the project-setup questions, shared by every host UI ----
 //
@@ -92,12 +123,25 @@ export function configureProject(projectRoot: string, draft?: Partial<ProjectCon
 // in core; a host only decides how to draw a step.
 export interface ProjectDraft {
   selected: string[];
-  agents: Record<string, { auth: "global" | "project"; sessions: "global" | "project" }>;
-  sessionInterop: "shared" | "isolated";
+  agents: Record<string, AgentConfigView>;
+  /**
+   * What the project said before this run. A step that merely arrives at an
+   * answer and one that *replaces* it look identical in `agents`, so the
+   * difference — the only thing worth asking about — is kept here, and
+   * `applyProjectDraft` releases the previous method from this copy, never
+   * from a re-read of a file a concurrent edit may have moved.
+   */
+  stored: Record<string, AgentConfigView>;
+  /** The API fields each agent answered, held apart from the stored scope. */
+  api: Record<string, ApiFields>;
+  historyMode: HistoryMode;
+  /** The answer to the keep/remove question; absent until it is asked. */
+  switchMode?: "keep" | "remove";
 }
 export interface ProjectWizardChoice<T = unknown> {
   value: T;
   label: string;
+  description?: string;
 }
 /**
  * `D` is the draft a step reads and writes. Core's own steps draft a
@@ -106,31 +150,97 @@ export interface ProjectWizardChoice<T = unknown> {
  */
 export interface ProjectWizardStep<D = ProjectDraft> {
   id: string;
-  kind: "single" | "multi";
+  kind: "single" | "multi" | "text";
   title: string;
   description?: string;
-  options: ProjectWizardChoice[];
+  /** single/multi: the choices. A text step asks for free text instead. */
+  options?: ProjectWizardChoice[];
+  /**
+   * Consecutive steps sharing a group are one question to the user: a host
+   * folds them into a single answered line, titled by the group's first step.
+   */
+  group?: string;
   /** multi: the currently chosen values. */
   values?: (draft: D) => string[];
   minSelected?: number;
   emptyMessage?: string;
-  /** single: the currently chosen value. */
+  /** single/text: the currently chosen value. */
   value?: (draft: D) => unknown;
+  /** text: a step whose answer must not be echoed back (a credential). */
+  mask?: boolean;
+  /**
+   * text: an empty answer is still an answer. True for the credential step:
+   * the field is never filled in for the reader, so leaving it empty means
+   * "keep the credential that is already written".
+   */
+  optional?: boolean;
+  placeholder?: string;
   write?: (draft: D, value: unknown) => void;
   /** One dim line: what this step's answer was, for an answered step. */
   summary?: (draft: D) => string;
   apply?: boolean;
   appliedTitle?: string;
+  /** A host's own line under the step (key hints, a reminder). */
+  footer?: string;
 }
 export function agentChoices(): ProjectWizardChoice<string>[];
-export function projectDraft(config: ProjectConfig): ProjectDraft;
+export function projectDraft(config: ProjectConfig, options?: { api?: Record<string, ApiFields> }): ProjectDraft;
 export function projectWizardSteps(draft: ProjectDraft, editing?: boolean): ProjectWizardStep<ProjectDraft>[];
-export function projectDraftSubmission(draft: ProjectDraft): Pick<ProjectConfig, "agents" | "sessionInterop">;
+export function projectDraftSubmission(draft: ProjectDraft): { agents: Record<string, AgentRuntimeConfig>; api: Record<string, ApiFields>; historyMode: HistoryMode };
 export function applyProjectDraft(
   projectRoot: string,
   draft: ProjectDraft,
-  options?: { environmentForAgent?: (agentId: string) => Record<string, string | undefined> },
-): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
+  options?: {
+    environment?: ProcessEnvLike;
+    environmentForAgent?: (agentId: string) => Record<string, string | undefined>;
+    /** The machine home a Global configuration is read from and written to. */
+    homeDir?: string;
+  },
+): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig; released: ReleasedMethod[] }>;
+
+// ---- the keep/remove question: which answers replace which, and what "remove" may touch ----
+/**
+ * The agents whose new answer is a *different method* than the stored one —
+ * the only situation the wizard's keep/remove question is about. Either
+ * direction counts, and an agent that did not previously answer at all is not
+ * a switch: there is nothing to keep or remove.
+ */
+export function methodSwitches(draft: ProjectDraft): Array<{ agentId: string; before: AuthMethod; after: AuthMethod }>;
+/**
+ * What a removal would name: the switches where "Remove" has something of
+ * Avenic's own to delete — a previous Account is an agent's own sign-in and is
+ * never deleted, so a host asks the destructive question only when this is
+ * non-empty — and the file each one lives in, named once for every host.
+ */
+export function removalTargets(draft: ProjectDraft): Array<{ agentId: string; name: string; relative: string }>;
+/** What releasing one agent's previous method did, for a host to report. */
+export interface ReleasedMethod {
+  agentId: string;
+  /**
+   * The method that was released — null when the caller had no previous answer
+   * to release, so no method was there to name.
+   */
+  method: AuthMethod | null;
+  /** The native file the release touched, or null (an Account keeps its home). */
+  relative: string | null;
+  /** The home a Project Account leaves in place, forward-slashed, or null. */
+  home: string | null;
+  removed: number;
+  conflicts: number;
+  /**
+   * Keys Avenic overwrote whose earlier value the ledger never held (only a
+   * hash of it), so it cannot be given back. The one release outcome a host
+   * must report: silence would leave the user with a silently destroyed value.
+   */
+  kept: number;
+  deleted: boolean;
+}
+export function releasePreviousMethod(
+  projectRoot: string,
+  agentId: string,
+  previous: AgentConfigView | undefined,
+  options?: { environment?: ProcessEnvLike; homeDir?: string },
+): Promise<ReleasedMethod>;
 export function runtimePaths(projectRoot: string): RuntimePaths;
 export function loadRuntime(projectRoot: string): Promise<RuntimeState>;
 export function getActiveCanonicalSessionId(projectRoot: string): Promise<string | null>;
@@ -138,45 +248,179 @@ export function setActiveCanonicalSession(projectRoot: string, canonicalSessionI
 export function initializeAgent(
   projectRoot: string,
   agentId: string,
-  authMode?: "global" | "project",
-  sessionsMode?: "global" | "project",
-): Promise<RuntimeState & { authMode: string; sessionsMode: string; configChanged: boolean; gitignoreChanged: boolean; structureRepaired: boolean }>;
-export function projectAuthEnvironment(agentId: string, projectRoot: string): Record<string, string>;
+  /** Named answers, never positional: a bare string would spread into single characters. */
+  entry?: AgentRuntimeConfig,
+): Promise<RuntimeState & { configChanged: boolean; gitignoreChanged: boolean; structureRepaired: boolean }>;
 export function deinitializeAgent(
   projectRoot: string,
   agentId: string,
-  options?: { purge?: boolean },
-): Promise<{ agent: Agent; changed: boolean; purged: boolean; remaining: number }>;
-export function setLocalAuth(projectRoot: string, agentId: string, authMode: "global" | "project"): Promise<EffectiveAgentConfig>;
+  options?: {
+    /** Remove Avenic's data for this agent: portable sessions and its own files. */
+    purge?: boolean;
+    /**
+     * Also remove the agent's own sign-in (`purge` required). Avenic never
+     * writes that file, so deleting it is a separate, explicit answer rather
+     * than part of "purge": default purges keep it and report it in
+     * `keptCredential`.
+     */
+    purgeCredentials?: boolean;
+  },
+): Promise<{
+  agent: Agent;
+  changed: boolean;
+  purged: boolean;
+  remaining: number;
+  /** The sign-in a purge kept, project-relative; null when nothing was kept. */
+  keptCredential: string | null;
+}>;
+export function setLocalAuth(projectRoot: string, agentId: string, choice: { authMethod: AuthMethod; accountScope?: Scope; configScope?: Scope }): Promise<EffectiveAgentConfig>;
 export function clearLocalAuth(projectRoot: string, agentId: string): Promise<EffectiveAgentConfig>;
 export function effectiveAgentConfig(state: RuntimeState, agentId: string): EffectiveAgentConfig | null;
 export interface AgentRuntimeMode {
-  auth: {
-    default: "global" | "project";
-    localOverride: "global" | "project" | null;
-    effective: "global" | "project";
-  };
-  sessions: { mode: "global" | "project" };
+  auth: { method: AuthMethod | null; scope: Scope | null; source: "local" | "project" | null };
+  sessions: { scope: Scope };
 }
 export function getAgentRuntimeMode(projectRoot: string, agentId: string): Promise<AgentRuntimeMode | null>;
+/** What one launch will actually do, after the local override and the method's own scope. */
 export interface EffectiveAgentRuntime {
   executable: string;
-  authScope: "global" | "project";
-  provider: string | null;
-  endpoint: string | null;
-  model: string | null;
+  authMethod: AuthMethod;
+  /** The scope the chosen method owns. */
+  scope: Scope;
   config: EffectiveAgentConfig;
-  profile: unknown;
   argumentsList: string[];
+  /** By identity when the launch adds nothing, so "changed nothing" is checkable. */
   environment: ProcessEnvLike;
   note: string | null;
 }
-export function agentEnvironment(state: RuntimeState, projectRoot: string, agentId: string): ProcessEnvLike;
+/** The base every launch starts from: this process's own environment. */
+export function machineEnvironment(): ProcessEnvLike;
+/**
+ * The environment an agent's own process runs in — and therefore the root its
+ * native session storage lives under. A Project-scope account is isolated by
+ * pointing the agent's configuration-home variable at `.agents/local/<agent>`,
+ * so everything that reads or restores native storage around a launch must be
+ * handed this value rather than the caller's environment.
+ */
+export function agentRuntimeEnvironment(
+  projectRoot: string,
+  agentId: string,
+  config: { authMethod?: AuthMethod; accountScope?: Scope } | null | undefined,
+  environment?: ProcessEnvLike,
+): ProcessEnvLike;
+/**
+ * The composition above, resolved from the project's own configuration: the
+ * environment one project's runs of one agent read and write their own storage
+ * under. Every session path that touches native storage uses this, so the home
+ * a conversation was written to and the home it is read from agree.
+ */
+export function effectiveAgentEnvironment(
+  projectRoot: string,
+  agentId: string,
+  environment?: ProcessEnvLike,
+): Promise<ProcessEnvLike>;
 export function resolveEffectiveAgentRuntime(
   projectRoot: string,
   agentId: string,
-  options?: { state?: RuntimeState; environment?: ProcessEnvLike; argumentsList?: string[]; io?: Io },
+  options?: {
+    state?: RuntimeState;
+    environment?: ProcessEnvLike;
+    argumentsList?: string[];
+    /** The method a host resolved interactively, for an entry that names none. */
+    launchMethod?: AuthMethod;
+    launchMethodFor?: (agentId: string) => AuthMethod | null;
+    io?: Io;
+  },
 ): Promise<EffectiveAgentRuntime>;
+
+// ---- runtime: API configuration ----
+// API mode writes the provider, endpoint, model and credential into the
+// agent's *own* configuration file, in the agent's own shape: Claude's
+// `env` block, Codex's `model_provider` table. There is no Avenic model
+// catalog and no Avenic credential format — only the fields Avenic wrote,
+// recorded in a ledger so a later removal can prove what is its own.
+export interface ApiFields {
+  /** A label the user chose for this endpoint; never validated against a list. */
+  provider?: string;
+  baseUrl?: string;
+  model?: string;
+  /** A secret for Claude, an environment-variable *name* for Codex. */
+  credential?: string;
+}
+
+/** The one credential variable an agent's API configuration speaks. */
+export interface ApiCredential {
+  key: string;
+  /** Whether the value is a secret a host must not echo back. */
+  secret: boolean;
+  label: string;
+  hint: string;
+}
+export function apiCredential(agentId: string): ApiCredential;
+/** The agents whose API configuration Avenic can write. */
+export function apiAgents(): string[];
+/** The provider id a Codex provider table is keyed by: derived from the label, never asked. */
+export function providerIdFor(provider: string): string;
+export function codexWireApi(baseUrl: string): "responses" | "chat";
+export interface ApiTarget {
+  file: string;
+  /** The path as a host prints it, with `~` for the home scope. */
+  relative: string;
+  format: string;
+  native: boolean;
+}
+export function apiTarget(projectRoot: string | null, agentId: string, scope: Scope, options?: { homeDir?: string; projectRoot?: string }): ApiTarget | null;
+/** The same path as a host prints it, without needing a project root. */
+export function apiRelative(agentId: string, scope: Scope): string;
+/** The key paths one agent's API configuration owns, in its file's shape. */
+export function apiEntries(agentId: string, fields?: ApiFields): Array<{ path: string[]; value: unknown }>;
+/** What one scope's API configuration currently says. Never a secret — only whether one is set. */
+export interface ApiConfiguration {
+  relative: string;
+  exists: boolean;
+  /** Whether the keys present are the ones Avenic wrote, per the ledger. */
+  owned: boolean;
+  /**
+   * Whether the file still holds those keys with the values Avenic wrote. A
+   * user who deletes or edits a key outside Avenic leaves `owned` true — the
+   * ledger can still prove what is Avenic's — and `present` false: provider
+   * and model are then the past, not the configuration in effect, and a
+   * surface must not show them as the latter.
+   */
+  present: boolean;
+  provider: string | null;
+  baseUrl: string | null;
+  model: string | null;
+  credentialSet: boolean;
+}
+export function readApiConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ApiConfiguration | null>;
+/**
+ * Where a project's API questions start: for each agent whose answer is API,
+ * the fields to show, read from the file Avenic wrote — with `credentialSet`
+ * saying a secret is already there, never what it is. Without this an edit
+ * would open on empty fields, and applying them would take the configuration
+ * away.
+ */
+export function apiPrefill(
+  projectRoot: string,
+  agents: Record<string, { authMethod?: AuthMethod; configScope?: Scope }>,
+  options?: { homeDir?: string; environment?: ProcessEnvLike },
+): Promise<Record<string, ApiFields & { credentialSet: boolean }>>;
+export function writeApiConfiguration(projectRoot: string, agentId: string, scope: Scope, fields?: ApiFields, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<unknown>;
+/**
+ * Remove only the keys the ledger proves Avenic wrote; a key the user has
+ * since changed is a conflict, counted and left alone. `deleted` is true only
+ * when the whole file was Avenic's own creation and is now empty.
+ */
+export function removeApiConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<{ relative: string | null; removed: number; conflicts: number; kept: number; deleted: boolean }>;
+export function codexLaunchArguments(record: ApiFields): string[];
+export function readCodexProjectConfig(projectRoot: string): Promise<ApiFields | null>;
+
+// ---- project-local agent home: an agent's own config and auth, under the project ----
+// The directory a Project-scope Account signs in to, reached by the agent's own
+// configuration-root variable. It is not session storage — sessions stay under
+// `.agents/sessions`.
+export function agentHomeRoot(projectRoot: string, agentId: string): string;
 
 // ---- runtime: gitignore / project-root / process / sessions / adapters ----
 
@@ -189,6 +433,9 @@ export function setSessionsGitIgnored(projectRoot: string, ignored: boolean): Pr
 
 export function locateProjectRoot(startDirectory?: string): string;
 export function enclosingProjectRoot(startDirectory?: string, options?: { includeStart?: boolean }): string | null;
+// One command line for a shell to run — the quoting rule the launcher's `.cmd`
+// branch and the extension's terminal `sendText` both must use.
+export function quoteShellLine(executable: string, argumentsList: string[]): string;
 export function spawnExecutableSync(
   executable: string,
   argumentsList: string[],
@@ -238,16 +485,11 @@ export function processAlive(pid: number): boolean;
 // it was handed.
 export function durableEnvironment(environment?: ProcessEnvLike): ProcessEnvLike;
 export function samePath(left: string, right: string): boolean;
-export function normalizeProjectIdentity(value: string): string | null;
 export function hashContent(content: string): string;
 export function readFirstJsonLine(file: string): Promise<unknown | null>;
 export function listFiles(sourcePath: string): Promise<string[]>;
-export function snapshotFiles(sourceRoot: string, relativeFiles: string[], destination: string, transform?: (content: string) => string): Promise<unknown>;
 export function snapshotInto(source: string, destination: string): Promise<unknown>;
 export function revertFrom(snapshot: string, source: string): Promise<unknown>;
-export function replaceDirectory(destination: string, build: (destination: string) => Promise<unknown>): Promise<unknown>;
-export function mergeFiles(sourceRoot: string, relativeFiles: string[], destinationRoot: string, transform?: (content: string) => string, options?: { filter?: (relativePath: string) => boolean }): Promise<unknown>;
-export function transformJsonLines(content: string, transform: (value: unknown) => unknown): string;
 
 // ---- runtime: canonical sessions ----
 
@@ -275,6 +517,9 @@ export interface ContinuationResult {
   diagnostics?: unknown[];
 }
 export function createCanonicalSession(projectRoot: string, input?: Record<string, unknown>): Promise<{ id: string; created: boolean }>;
+// `title` is the title to show, never a raw session id: a session whose file
+// still carries the id an earlier import named it after is listed under a short
+// id, and the next import replaces that with what the conversation is about.
 export function listCanonicalSessions(projectRoot: string): Promise<Array<{ id: string; title?: string; updatedAt?: string }>>;
 // The session records themselves, newest first, without reading any event log:
 // same directories as listCanonicalSessions, but carrying the counts a status
@@ -282,6 +527,7 @@ export function listCanonicalSessions(projectRoot: string): Promise<Array<{ id: 
 // they were stored; countCanonicalEvents fills that in for one session).
 export interface CanonicalSessionRecord {
   id: string;
+  /** The display title. See listCanonicalSessions; never a raw session id. */
   title?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -290,6 +536,14 @@ export interface CanonicalSessionRecord {
   [key: string]: unknown;
 }
 export function listCanonicalSessionRecords(projectRoot: string): Promise<CanonicalSessionRecord[]>;
+// Everything about a session except its events: the record and its native
+// mappings. A host that has to show which agents a conversation belongs to asks
+// with this, because the answer is in the mappings and opening the event log to
+// find it means reading a conversation to draw a badge.
+export function readCanonicalSessionRecord(projectRoot: string, id: string): Promise<{
+  session: CanonicalSessionRecord;
+  mappings: { schemaVersion: number; canonicalSessionId: string; projections: Record<string, NativeSessionMapping> };
+}>;
 export function countCanonicalEvents(projectRoot: string, id: string): Promise<number>;
 export function observeSharedNativeSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
 export function formatSessionDiagnostics(diagnostics?: unknown[]): { warnings: string[]; notes: string[] };
@@ -298,6 +552,17 @@ export interface LaunchGroup {
   release: () => Promise<unknown>;
 }
 export function joinLaunchGroup(projectRoot: string, agentId: string, options?: { environment?: ProcessEnvLike }): Promise<LaunchGroup | null>;
+export function beginLaunch(
+  projectRoot: string,
+  agentId: string,
+  options?: {
+    /** The agent's effective configuration; only `sessionScope` is read. */
+    config?: { sessionScope?: Scope } | null;
+    environment?: ProcessEnvLike;
+    /** Skips handing the agent the project's records (`sessions continue` reads native storage itself). */
+    skipRestore?: boolean;
+  },
+): Promise<{ portable: boolean; member: string | null }>;
 export function finishLaunch(
   projectRoot: string,
   agentId: string,
@@ -312,13 +577,12 @@ export function finishLaunch(
 ): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
 export function recoverSharedNativeSessions(projectRoot: string, agentIds: string[], options?: Record<string, unknown>): Promise<Array<{ agentId: string; changed: boolean; diagnostic?: string }>>;
 export function importProjectSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ count: number; changed: boolean; discovered: number; imported: number; unchanged: number; failed: number; diagnostics: string[] }>;
-export function setSessionInteropMode(projectRoot: string, mode: "shared" | "isolated", options?: { agents?: ProjectConfig["agents"]; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
-export function applyProjectConfiguration(projectRoot: string, draft: Pick<ProjectConfig, "agents" | "sessionInterop">, options?: { environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: "shared" | "isolated"; mode: "shared" | "isolated"; imported: unknown[]; config: ProjectConfig }>;
+export function applyProjectConfiguration(projectRoot: string, draft: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode; api?: Record<string, ApiFields> }, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
+/** `session.title` is the display title — see listCanonicalSessions — and the stored file is not rewritten to produce it. */
 export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
 // One canonical conversation, read as a timeline. Both hosts render this and
 // neither computes a second answer: a turn belongs to the agent that produced
 // it, and "You" is only ever the person at the keyboard.
-export const TRANSCRIPT_SCHEMA_VERSION: number;
 export interface TranscriptTool {
   kind: "call" | "result";
   name: string;
@@ -347,6 +611,7 @@ export interface TranscriptProjection {
 export interface TranscriptSummary {
   schemaVersion: number;
   id: string | null;
+  /** The display title: the session's own name, the first thing the user said, or a short id. Never a uuid. */
   title: string;
   revision: string | null;
   createdAt: string | null;
@@ -382,13 +647,51 @@ export function reconcileCanonicalSession(projectRoot: string, canonicalId: stri
   environment?: ProcessEnvLike;
   environmentForAgent?: (agentId: string) => ProcessEnvLike;
 }): Promise<Array<{ agentId: string; stale?: boolean; nativeSessionId?: string; added?: number; duplicate?: number }>>;
+/** What a continuation's `capture` hook is told about the launch it belongs to. */
+export interface ContinuationCaptureContext {
+  /** The prepared projection or handoff: which agent, how it opens, and the argv. */
+  continuation?: {
+    agentId?: string;
+    mode?: string;
+    nativeSessionId?: string | null;
+    launch?: { argumentsList?: string[]; input?: string } | null;
+    handoff?: { markdown?: string } | null;
+  };
+  /** Whatever the host's own `launch` hook returned, echoed back for the "after" capture. */
+  launched?: {
+    nativeSessionId?: string;
+    nativeRevision?: string;
+    /** A read taken inside the launch itself, reused instead of reading the same file twice. */
+    capturedDuringLaunch?: NativeCanonicalRead | null;
+  } & Record<string, unknown>;
+}
+/**
+ * One continuation, start to finish: capture the target's current state, prepare the
+ * projection or handoff, launch, capture what the launch produced, and record the
+ * mapping. The host supplies the two ends core cannot reach — how to read the agent's
+ * own session, and how to launch it — and the return value is what actually happened.
+ */
 export function continueCanonicalSession(options: {
   projectRoot: string;
   canonicalId: string;
   targetAgent: string;
-  capture(stage: "before" | "after", context?: unknown): Promise<{ nativeSessionId?: string; nativeRevision?: string; events?: CanonicalEvent[] } | null>;
-  launch(continuation: unknown): Promise<ContinuationResult>;
-}): Promise<unknown>;
+  environment?: ProcessEnvLike;
+  /** Repair stale native mappings out of canonical history before the "before" capture. */
+  captureKnown?: () => Promise<void>;
+  /** Rebuild the target's projection up front instead of waiting for a merge to need it. */
+  materialize?: boolean;
+  /** Skip a resume the caller already knows is stale. Implied when the "before" capture says so. */
+  forceBootstrap?: boolean;
+  /** `null` when the target has no native session to read at that moment. */
+  capture(stage: "before" | "after", context?: ContinuationCaptureContext): Promise<NativeCanonicalRead | null>;
+  launch(continuation: unknown): Promise<ContinuationResult & { capturedDuringLaunch?: NativeCanonicalRead | null }>;
+}): Promise<{
+  continuation: unknown;
+  launched: ContinuationResult & { capturedDuringLaunch?: NativeCanonicalRead | null };
+  captured: NativeCanonicalRead | null;
+  mapping: NativeSessionMapping;
+  diagnostics: string[];
+}>;
 
 export interface SessionAdapterResult {
   count: number;
@@ -397,14 +700,28 @@ export interface SessionAdapterResult {
   updated?: number;
   conflicts?: number;
 }
+/** One native conversation, read back in the canonical shape — what a capture hook returns. */
+export interface NativeCanonicalRead {
+  nativeSessionId: string;
+  title: string | null;
+  events: CanonicalEvent[];
+  revision: string | null;
+  diagnostics?: unknown[];
+}
 export interface SessionAdapter {
   capture(projectRoot: string, options?: { environment?: ProcessEnvLike }): Promise<SessionAdapterResult>;
   restore(projectRoot: string, options?: { environment?: ProcessEnvLike }): Promise<SessionAdapterResult>;
   status(projectRoot: string, options?: { environment?: ProcessEnvLike }): Promise<{ count: number }>;
   snapshotNative?: (projectRoot: string, snapshotRoot: string, options?: { environment?: ProcessEnvLike }) => Promise<void>;
   revertNative?: (snapshotRoot: string, projectRoot: string, options?: { environment?: ProcessEnvLike }) => Promise<void>;
+  /** The target's own record of one conversation, or a thrown error when it is gone. */
+  readCanonical(projectRoot: string, nativeSessionId: string, options?: { environment?: ProcessEnvLike; canonicalSessionId?: string; revision?: string }): Promise<NativeCanonicalRead>;
+  /** The session the agent just created, for a launch that had no native id to resume. */
+  discoverNativeSession(projectRoot: string, options?: { environment?: ProcessEnvLike; notBefore?: number }): Promise<string>;
 }
 export function getSessionAdapter(agentId: string): SessionAdapter;
+/** The argv one prepared continuation is launched with, projection first and handoff second. */
+export function continuationLaunchArguments(continuation?: Record<string, unknown>): { argumentsList: string[]; input?: string };
 
 // ---- util ----
 
@@ -424,7 +741,6 @@ export function assertSafeId(value: string, label?: string): string;
 export function assertSafeSkillName(value: string): string;
 export function assertSafeSkillPath(value: string): string;
 export function assertSafeSkillRoot(value: string): string;
-export function assertSafeRelativePath(value: string): string;
 
 // ---- skills: paths ----
 
@@ -521,8 +837,6 @@ export function registerSource(catalogRoot: string, sourceConfig: SourcesConfig,
 export function findSource(sourceConfig: SourcesConfig, reference: string): Source | null;
 export function detectSkillRoot(cloneDirectory: string): Promise<string>;
 export function discoverSourceSkills(source: Source, cloneDirectory: string, options?: unknown): Promise<{ names: string[]; mappingsChanged: boolean }>;
-export function readSkill(skillDirectory: string, requireMatchingFolder?: boolean): Promise<{ name: string; directory: string }>;
-export function parseFrontmatterName(content: string, file: string): string;
 export function stageSource(source: Source, cloneDirectory: string, stageDirectory: string, skillNames: string[]): Promise<unknown>;
 export interface CatalogSkill {
   name: string;
@@ -562,9 +876,7 @@ export function parsePackArguments(argumentsList: string[]): string[];
 export function normalizePackIds(packIds: string[]): string[];
 export function resolvePack(catalog: Catalog, sourceConfig: SourcesConfig, pack: Pack): { groups: SkillGroup[]; names: string[]; pack: Pack };
 export function resolvePacks(catalog: Catalog, sourceConfig: SourcesConfig, packs: Map<string, Pack>, requestedPackIds: string[]): ResolvedPacks;
-export function packContainsSkill(pack: Pack, sourceId: string, skillName: string): boolean;
 export function skillCoveredByPacks(packs: Map<string, Pack>, packIds: string[], sourceId: string, skillName: string): boolean;
-export function catalogReferences(packs: Map<string, Pack>): Set<string>;
 export function addSkillsToPacks(catalogRoot: string, packIds: string[], sourceId: string, skillNames: string[]): Promise<{ added: Array<{ packId: string; skillName: string }>; inherited: string[] }>;
 export function pruneCatalogSkills(catalogRoot: string, sourceConfig: SourcesConfig, packs: Map<string, Pack>, candidates: Array<{ sourceId: string; skillName: string }>): Promise<{ removed: Array<{ sourceId: string; skillName: string }>; removedSources: string[] }>;
 
@@ -594,8 +906,6 @@ export function canonicalTargets(context: InstallContext): InstallTarget[];
 export function shareTargets(context: InstallContext): InstallTarget[];
 // 这个 scope 上次选定的落链目标（锁文件记的）；null = 还没选过，全部适用。
 export function linkTargetPreference(context: InstallContext): Promise<string[] | null>;
-export function normalizeLinkTarget(linkPath: string, rawTarget: string): string;
-export function readLinkTarget(linkPath: string): Promise<string | null>;
 export function createSkillLink(canonicalPath: string, linkPath: string): Promise<void>;
 export function removeLinkSafely(linkPath: string): Promise<boolean>;
 export type ShareEntryState = "absent" | "linked" | "repair" | "real-directory" | "conflict";
@@ -636,7 +946,6 @@ export function ensureSkillLinks(
 export function formatLinkSummary(counts: LinkCounts): string;
 export function linkSummaryChanged(counts: LinkCounts): boolean;
 export function logConflicts(io: Io, conflicts: LinkConflict[]): void;
-export function resolveInstallPacks(context: InstallContext, explicitPacks: string[]): Promise<string[]>;
 export function previousManagedState(context: InstallContext): Promise<Map<string, { sourceId: string; revision: string }>>;
 export function managedSkillNames(context: InstallContext): Promise<Set<string>>;
 export function installedPackIds(context: InstallContext): Promise<string[] | null>;
@@ -710,192 +1019,18 @@ export interface DirectSourceState {
   // 与 Pack 安装共用同一个「落链目标」记忆（见 linkTargetPreference）。
   targets?: string[];
 }
-export function directRoot(context: InstallContext): string;
-export function directLicensesRoot(context: InstallContext): string;
 export function readDirectState(context: InstallContext): Promise<DirectSourceState>;
-export function writeDirectState(context: InstallContext, state: DirectSourceState): Promise<unknown>;
 export function addDirectSkills(context: InstallContext, sourceReference: string, skillNames: string[], options?: { io?: Io; targets?: string[]; createLink?: (canonicalPath: string, linkPath: string) => Promise<void> }): Promise<{ names: string[]; sourceId: string; revision: string; alreadyInstalled?: boolean }>;
 // 克隆并列出直装源发布的 Skill，不安装任何东西（Add 流程的发现步骤）。
 export function discoverDirectSkills(context: InstallContext, sourceReference: string): Promise<{ sourceId: string; revision: string; skillRoot: string | undefined; names: string[] }>;
 export function removeDirectSkills(context: InstallContext, skillNames: string[]): Promise<string[]>;
 export function removeExternalSkills(context: InstallContext, skillNames: string[], options?: { io?: Io }): Promise<{ directRemoved: string[]; removedDirectories: number }>;
 
-// ---- model: paths & schema ----
-export const PROJECT_MODEL_FILE: string;
-export const CLAUDE_SETTINGS_FILE: string;
-export const LIBRARY_SCHEMA_VERSION: number;
-export const PROJECT_SCHEMA_VERSION: number;
-export const MODEL_ROLES: readonly ModelRole[];
-// 这两个清单就是各自的合法取值集合（runtime 是数组，元素与下面的字面量类型一一对应）。
-export const API_TYPES: readonly ApiType[];
-export const AUTH_FIELDS: readonly string[];
-// Codex reasoningEffort 的合法取值（面板下拉框的唯一来源；不在表内 core 会静默落到 medium）。
-export const CODEX_EFFORTS: readonly string[];
-export const TOGGLE_KEYS: readonly (keyof ProfileToggles)[];
-// 有 `ANTHROPIC_DEFAULT_<SUFFIX>_MODEL` 别名的角色 → 别名后缀。面板据此决定哪几行提供
-// 「显示名」输入框（display 只会被投影成这几个角色的 `_MODEL_NAME`），以及每行实际写哪个键。
-export const ROLE_KEYS: Readonly<Record<string, string>>;
-export type ApiType = "anthropic" | "openai-chat" | "openai-responses";
-export type ModelRole = "main" | "opus" | "sonnet" | "haiku" | "fable" | "subagent";
-export interface ModelRow { id: string; display?: string; longContext?: boolean }
-export interface EndpointConfig { baseUrl: string; api: ApiType; authField: string; apiKey: string }
-// normalizeProfile 的入参形态：只有 baseUrl 是必填，其余由 normalizeEndpoint 补默认值
-// （api → "anthropic"、authField → "ANTHROPIC_AUTH_TOKEN"、apiKey → ""）。这里写成 Partial
-// 才和运行时一致 —— 旧的 `Partial<ModelProfile>` 是浅的，会逼调用方编一份假的完整 endpoint。
-export interface EndpointInput { baseUrl: string; api?: ApiType; authField?: string; apiKey?: string }
-export interface ProfileOverrides { codex?: EndpointConfig & { providerId?: string }; opencode?: EndpointConfig & { providerId?: string } }
-export interface ProfileToggles { teams?: boolean; toolSearch?: boolean; maxEffort?: boolean; noNonessentialTraffic?: boolean; noAutoUpdate?: boolean; hideAttribution?: boolean }
-export interface ModelProfile {
-  id: string;
-  name: string;
-  endpoint: EndpointConfig;
-  overrides: ProfileOverrides;
-  models: Partial<Record<ModelRole, ModelRow>>;
-  toggles: ProfileToggles;
-  env: Record<string, string>;
-  claude: { settings: Record<string, unknown> };
-  codex: { providerId: string; envKey: string; reasoningEffort: "minimal" | "low" | "medium" | "high" };
-  opencode: { providerId: string; npmAdapter: string };
-  createdAt: string;
-  updatedAt: string;
-}
-export function modelsFile(environment?: ProcessEnvLike): string;
-export function modelsTempRoot(environment?: ProcessEnvLike): string;
-export function projectModelFile(projectRoot: string): string;
-export function projectTempRoot(projectRoot: string): string;
-export function claudeSettingsFile(projectRoot: string): string;
-export function emptyLibrary(): { schemaVersion: number; revision: number; profiles: Record<string, ModelProfile> };
-export type ModelProfileInput = Partial<Omit<ModelProfile, "id" | "endpoint" | "overrides" | "toggles" | "codex" | "opencode">> & {
-  id: string;
-  endpoint: EndpointInput;
-  // 覆盖只有 codex/opencode 两个，且 baseUrl 之外的字段都能省略（缺省继承主端点）。
-  overrides?: Partial<Record<"codex" | "opencode", EndpointInput & { providerId?: string }>>;
-  // 只有 TOGGLE_KEYS 里的开关会被读（`input.toggles?.[key] === true`），其余键被丢弃。
-  toggles?: ProfileToggles;
-  // codex / opencode 的字段全部可省：runtime 用 `??` 兜底（providerId → `avenic_<id>` 等）。
-  codex?: Partial<ModelProfile["codex"]>;
-  opencode?: Partial<ModelProfile["opencode"]>;
-};
-export function normalizeProfile(input: ModelProfileInput, options?: { now?: string; existing?: ModelProfile | null }): ModelProfile;
-export function validateBaseUrl(value: string): string;
-export function validateProviderId(value: string): string;
-export function validateEnvKey(value: string): string;
-export function validateModelId(value: string): string;
-export function maskSecret(value: unknown): string;
-export function canonicalJson(value: unknown): string;
-export function libraryFingerprint(profile: ModelProfile): string;
-
-// ---- model: transaction & library ----
-export interface ModelLibrary { schemaVersion: number; revision: number; profiles: Record<string, ModelProfile>; exists: boolean; file: string }
-export interface TransactOptions<T> {
-  read: () => Promise<{ revision: number; value: T }>;
-  build: (current: { revision: number; value: T }) => T | null;
-  stage: (next: T, directory: string) => Promise<Array<{ relativePath: string; staged?: string; target: string; remove?: boolean }>>;
-  tempRoot: string;
-  attempts?: number;
-  rename?: (from: string, to: string) => Promise<unknown>;
-  commit?: (replacements: Array<{ relativePath: string; staged?: string; target: string; remove?: boolean }>, directory: string) => Promise<void>;
-}
-export function transact<T>(options: TransactOptions<T>): Promise<{ changed: boolean; value: T; revision: number }>;
-export function readLibrary(environment?: ProcessEnvLike): Promise<ModelLibrary>;
-export function listProfiles(environment?: ProcessEnvLike): Promise<ModelProfile[]>;
-export function getProfile(environment: ProcessEnvLike | undefined, id: string): Promise<ModelProfile | null>;
-export function upsertProfile(environment: ProcessEnvLike | undefined, input: Partial<ModelProfile> & { id: string }, io?: Io): Promise<{ changed: boolean; revision: number; value: unknown }>;
-export function removeProfile(environment: ProcessEnvLike | undefined, id: string, io?: Io): Promise<{ changed: boolean; revision: number; value: unknown }>;
-
-export interface LedgerEntry { path: string[]; before: { exists: boolean; value?: unknown }; written: unknown }
-export interface RollbackConflict { path: string[]; current: unknown }
-// [开关 id, 实际写入的路径, 写入值]——面板据此显示「实际写入的键名」（设计 §9.3），
-// 不在插件里维护第二份表（§9.7）。
-export const TOGGLE_ENTRIES: ReadonlyArray<readonly [keyof ProfileToggles, string[], unknown]>;
-export function buildClaudeEntries(profile: ModelProfile): Array<{ path: string[]; value: unknown }>;
-export function readPath(object: unknown, path: string[]): { exists: boolean; value?: unknown };
-export function writePath(object: Record<string, unknown>, path: string[], value: unknown): void;
-export function deletePath(object: Record<string, unknown>, path: string[]): void;
-export function mergeClaudeSettings(existing: Record<string, unknown> | null, entries: Array<{ path: string[]; value: unknown }>): { content: Record<string, unknown>; ledger: LedgerEntry[]; created: boolean };
-export function rollbackClaudeSettings(existing: Record<string, unknown> | null, ledger: LedgerEntry[]): { content: Record<string, unknown>; conflicts: RollbackConflict[] };
-
-// ---- model: project binding ----
-
-export interface ProjectBinding {
-  schemaVersion: number;
-  revision: number;
-  activeProfileId: string | null;
-  overrides: Record<string, unknown>;
-  projection: {
-    claude?: { file: string; fingerprint: string; created: boolean; entries: LedgerEntry[] };
-  };
-}
-export interface ProjectModelStatus {
-  projectRoot: string;
-  binding: ProjectBinding;
-  profile: ModelProfile | null;
-  dangling: boolean;
-  projection: { file: string; keys: number; fingerprint: string | null; fingerprintMatches: boolean } | null;
-  message: string | null;
-}
-export function danglingMessage(profileId: string): string;
-export function readBinding(projectRoot: string): Promise<{ value: ProjectBinding; exists: boolean; file: string }>;
-export function bindProject(projectRoot: string, environment: ProcessEnvLike | undefined, profileId: string, io?: Io): Promise<{ changed: boolean; binding: ProjectBinding; projection: { file: string; fingerprint: string; keys: number } }>;
-export function clearProjectBinding(projectRoot: string, environment: ProcessEnvLike | undefined, io?: Io): Promise<{ changed: boolean; conflicts: RollbackConflict[]; binding: ProjectBinding }>;
-export function projectModelStatus(projectRoot: string, environment: ProcessEnvLike | undefined): Promise<ProjectModelStatus>;
-export function resolveProjectProfile(projectRoot: string, environment: ProcessEnvLike | undefined, io?: Io): Promise<{ profile: ModelProfile | null; binding: ProjectBinding; cleaned: boolean; conflicts: RollbackConflict[]; message: string | null }>;
-
-// ---- model: gitignore ----
-export const MODEL_RULES: readonly string[];
-export function ensureModelGitignore(projectRoot: string): Promise<boolean>;
-
-// ---- model: launch injection ----
-export interface AgentCompatibility { claude: { ok: boolean; reason?: string }; codex: { ok: boolean; reason?: string }; opencode: { ok: boolean; reason?: string } }
-export function agentCompatibility(profile: ModelProfile): AgentCompatibility;
-export function codexInjection(profile: ModelProfile, options: { argumentsList?: string[]; environment?: Record<string, string> }): { argumentsList: string[]; environment: Record<string, string>; skipped: string[] };
-export function opencodeInjection(profile: ModelProfile, environment?: Record<string, string>): { environment: Record<string, string>; providerId: string; mode: "builtin-override" | "custom-provider" };
-export function claudeEnvironment(profile: ModelProfile): Record<string, string>;
-export function buildLaunchInjection(input: { agentId: string; profile: ModelProfile | null; argumentsList?: string[]; environment?: Record<string, string> }): { argumentsList: string[]; environment: Record<string, string>; note: string | null };
-
-// ---- model: paste recognition ----
-export interface RecognizedField { field: string; value: string; source?: string }
-export interface ParseResult {
-  form?: "claude-settings" | "flat" | "cc-switch" | "unknown";
-  recognized: RecognizedField[];
-  passthrough: Record<string, unknown>;
-  candidates: Record<string, string[]>;
-  // 识别过程中的非致命说明（如"这个值看起来是掩码，已忽略"）。不是错误：结果仍然可用。
-  warnings: string[];
-}
-export function parseConfigJson(text: string): ParseResult;
-export function parseConfigText(text: string): { recognized: RecognizedField[]; candidates: Record<string, string[]>; warnings: string[] };
-export function recognizeEnvMap(env: Record<string, string>): { recognized: RecognizedField[]; candidates: Record<string, string[]>; warnings: string[] };
-
-// ---- model: presets & probe ----
-export interface Preset { id: string; label: string; baseUrl: string; api: ApiType }
-export const PRESETS: readonly Preset[];
-export function applyPreset(id: string): Preset | null;
-export interface ProbeResult {
-  ok: boolean;
-  category: "2xx" | "auth" | "not-found" | "rate-limited" | "server-error" | "network" | "timeout";
-  status: number | null;
-  durationMs: number;
-  model: string | null;
-  usage: unknown;
-  message: string;
-  url: string | null;
-}
-export function testConnection(
-  profile: ModelProfile,
-  options?: { timeoutMs?: number; fetch?: typeof fetch; endpoint?: EndpointConfig; model?: string },
-): Promise<ProbeResult>;
-// 解析测试连接真正请求的地址（`/v1` 去重逻辑只有这一份）。面板的「将请求：<地址>」实时
-// 预览用它，而不是在 media/main.js 里再写一遍 —— 设计 §9.7 禁止插件侧第二份业务逻辑。
-// 无效 Base URL 会抛（与 probe 同一条校验路径），调用方负责转成界面提示。
-export function probeUrl(baseUrl: string, api: ApiType): string;
-
 // ---- status: one project, one description ----
 // Every host renders this same object: the terminal as text, `status --json`
 // unchanged, the extension as a tree. Read-only and local — no network, no git
 // fetch, no launch reconciliation, no agent CLI started — so it is safe to call
 // from a render pass or a file watch.
-export const STATUS_SCHEMA_VERSION: number;
 
 /** The six words that describe one agent's shared history, in the order they stop being true. */
 export type AgentSyncState = "none" | "running" | "dirty" | "stale" | "missing" | "current";
@@ -909,8 +1044,33 @@ export interface StatusAgent {
   installMethod: AgentInstallMethod;
   /** Whether this project's config lists the agent at all. */
   initialized: boolean;
-  auth: string | null;
-  sessions: string | null;
+  /** "native" for an agent that answers for its own authentication and provider. */
+  runtime: "native" | null;
+  /**
+   * The two methods answer with different facts and a host shows the one the
+   * method owns: an Account says where its sign-in lives and whether it has
+   * happened (`home`, `status`); an API configuration says which file carries
+   * it and what it selects (`configuration`). Null when the agent is not
+   * initialized or names no method. Nothing here is a probe: an unreadable
+   * state is "unknown", never a sign-in Avenic performed, and a credential is
+   * reported as set or not set, never printed.
+   */
+  auth: {
+    method: AuthMethod;
+    scope: Scope;
+    source: "local" | "project" | null;
+    /**
+     * Where this Account's sign-in lives, and where `status` below was read
+     * from: project-relative and forward-slashed for a Project-scope Account,
+     * `~`-prefixed for the machine's own. Null for an API configuration, which
+     * names a file (`configuration.relative`) instead of a home.
+     */
+    home: string | null;
+    /** "signed-in" | "not-signed-in" | "unknown", read from the agent's own credential file. */
+    status: string | null;
+    configuration: ApiConfiguration | null;
+  } | null;
+  sessions: Scope | null;
   history: {
     /** The agent's native session directory for this project. */
     directory: string;
@@ -958,7 +1118,6 @@ export interface StatusModel {
     project: StatusSkillsScope;
     global: StatusSkillsScope;
     hub: {
-      configured: boolean;
       spec: string;
       name: string;
       repository: string;

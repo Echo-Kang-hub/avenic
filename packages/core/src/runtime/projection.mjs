@@ -44,7 +44,7 @@ export function agentLabel(agentId) {
   return AGENT_LABELS[agentId] ?? (agentId ? agentId[0].toUpperCase() + agentId.slice(1) : "Unknown");
 }
 
-const TOOL_BLOCKS = new Set(["tool_use", "tool_result", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"]);
+export const TOOL_BLOCKS = new Set(["tool_use", "tool_result", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"]);
 
 // A record's role says which side of the request it sat on, and that is not
 // always who spoke: the Anthropic API files a tool's answer under role "user",
@@ -79,7 +79,7 @@ export function eventAgent(event) {
   return separator > 0 ? id.slice(0, separator) : "unknown";
 }
 
-export function eventNativeSession(event, agentId) {
+function eventNativeSession(event, agentId) {
   const prefix = `${agentId}:`;
   const id = typeof event?.id === "string" ? event.id : "";
   if (!id.startsWith(prefix)) return null;
@@ -119,7 +119,7 @@ function summarizeInput(input) {
   return keys.length ? `(${keys.join(", ")})` : "";
 }
 
-export function eventText(event) {
+function eventText(event) {
   const parts = Array.isArray(event?.content) ? event.content : [];
   return parts.map(blockText).filter(Boolean).join("\n").trim();
 }

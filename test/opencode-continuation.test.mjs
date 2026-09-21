@@ -8,7 +8,7 @@ import {
   initializeAgent,
   projectCanonicalSession,
   readCanonicalSession,
-  setSessionInteropMode,
+  setHistoryMode,
 } from "../packages/core/src/index.mjs";
 import { getSessionAdapter } from "../packages/core/src/runtime/adapters/index.mjs";
 import { withOpenCodeProject } from "./helpers/session-fixture.mjs";
@@ -95,8 +95,8 @@ test("discovery names the session a fresh official launch created", async () => 
 
 test("an OpenCode session that cannot be started continues in a fresh official session", async () => {
   await withOpenCodeProject(async ({ projectRoot, environment, failProjectedContinue, setNextSessionId, invocations, runCli }) => {
-    await initializeAgent(projectRoot, "opencode", "global", "global");
-    await setSessionInteropMode(projectRoot, "shared");
+    await initializeAgent(projectRoot, "opencode", { sessionScope: "global" });
+    await setHistoryMode(projectRoot, "shared");
     await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
     await appendCanonicalEvents(projectRoot, "shared", [
       event("a", "user", "A"),
@@ -129,8 +129,8 @@ test("a projected OpenCode session that starts is left alone", async () => {
   // The fallback is for a session that cannot run. A session that runs must
   // stay the user's session, with no second launch behind their back.
   await withOpenCodeProject(async ({ projectRoot, environment, invocations, runCli }) => {
-    await initializeAgent(projectRoot, "opencode", "global", "global");
-    await setSessionInteropMode(projectRoot, "shared");
+    await initializeAgent(projectRoot, "opencode", { sessionScope: "global" });
+    await setHistoryMode(projectRoot, "shared");
     await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
     await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
 

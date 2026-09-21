@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { spawnExecutableSync } from "../packages/core/src/index.mjs";
+import { quoteShellLine, spawnExecutableSync } from "../packages/core/src/index.mjs";
 
 const windows = process.platform === "win32";
 
@@ -79,6 +79,13 @@ test("cmd shim resolves when its directory path contains spaces", { skip: !windo
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// 参数里带双引号时没有一条「对谁都对」的转义：cmd 里是 `""`，POSIX 与 PowerShell
+// 读的是 `\"`，同一条命令两种 shell 两种含义。整层能做的诚实选择是拒绝，而不是发出
+// 一行某处会静默变意的命令——启动参数（session id、路径）本也不该带它。
+test("a part containing a double quote is refused rather than quoted into another meaning", () => {
+  assert.throws(() => quoteShellLine("claude", ["--cd", 'a"b c']), /double quote/);
 });
 
 // 跨平台：.exe/原生命令不走 cmd 拼接，参数原样到达（两平台一致，Linux 下真实执行）。

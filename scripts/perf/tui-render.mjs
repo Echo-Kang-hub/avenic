@@ -12,7 +12,8 @@ import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { PassThrough } from "node:stream";
 import { fullLogo, compactBrand } from "../../packages/cli/src/cli/brand.mjs";
-import { multiSelect, singleSelect } from "../../packages/cli/src/cli/prompts.mjs";
+import { multiSelect, singleSelect, wizard } from "../../packages/cli/src/cli/prompts.mjs";
+import { projectDraft, projectWizardSteps } from "../../packages/core/src/runtime/project-wizard.mjs";
 import { percentile } from "./fixture.mjs";
 
 const KEY_BUDGET = 16; // 一帧的时间：按键 → 重绘
@@ -160,6 +161,38 @@ async function measureMulti(stats) {
   }
 }
 
+/**
+ * 项目向导：产品里最长的一场问答。每个答案都会重算后面的步骤（stepsFor(draft)
+ * 在 core，三个 agent 各一套步骤），所以「确认一步」是键盘上最重的一次按键；
+ * 文本步骤（provider / 端点 / 模型 / 凭据）另算一次：每个字符都要重画。
+ */
+async function measureWizard(stats) {
+  const agents = {
+    claude: { authMethod: "api", configScope: "project", sessionScope: "project" },
+    codex: { authMethod: "account", accountScope: "global", sessionScope: "project" },
+    opencode: { sessionScope: "project" },
+  };
+  for (let run = 0; run < runs; run += 1) {
+    const stdin = new FakeTTY();
+    const sink = newSink();
+    const running = wizard({
+      stdin,
+      stdout: sink,
+      color: false,
+      environment: {},
+      draft: projectDraft({ agents, historyMode: "shared" }),
+      stepsFor: (draft) => projectWizardSteps(draft, false),
+      apply: async () => ({}),
+    });
+    await press(stdin, sink, "\r"); // 过了 agents 这一步之后开始量
+    stats.advance.samples.push(await press(stdin, sink, "\r")); // 认证答完 → 重算 + 画下一步
+    await press(stdin, sink, "\r"); // api-scope：预选值确认
+    stats.type.samples.push(await press(stdin, sink, "d")); // provider 是文本步骤：逐字符重画
+    stdin.write("\x1b");
+    await running;
+  }
+}
+
 async function main() {
   const scenarios = [
     scenario("logo (12 rows)", LOGO_BUDGET),
@@ -171,6 +204,8 @@ async function main() {
     scenario("toggle selection", KEY_BUDGET),
     scenario("search (200 rows)", KEY_BUDGET),
     scenario("erase", KEY_BUDGET),
+    scenario("wizard: advance step", KEY_BUDGET),
+    scenario("wizard: type in text", KEY_BUDGET),
   ];
   const [logo, compact, ...frames] = scenarios;
 
@@ -180,6 +215,7 @@ async function main() {
     firstFrame: frames[0], move: frames[1], settle: frames[2], transition: frames[3],
   });
   await measureMulti({ toggle: frames[4], filter: frames[5], erase: frames[6] });
+  await measureWizard({ advance: frames[7], type: frames[8] });
 
   const report = scenarios.map(({ name, budget, samples }) => {
     const median = percentile(samples, 0.5);

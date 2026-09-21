@@ -5,8 +5,9 @@ import path from "node:path";
 import { runtimePaths } from "./config.mjs";
 import { deriveState } from "./handoff.mjs";
 import { CONVERSATION_ROLES } from "./adapters/canonical.mjs";
+import { collapseWhitespace, isAutoTitle, mappedNativeSessionIds, resolveSessionTitle } from "./session-title.mjs";
 
-export const CANONICAL_SESSION_SCHEMA_VERSION = 1;
+const CANONICAL_SESSION_SCHEMA_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const SECRET_KEY = /(?:api[_-]?key|authorization|auth(?:entication)?|cookie|credential|password|secret|token)/i;
 
@@ -120,10 +121,17 @@ export async function readCanonicalSessionRecord(projectRoot, id) {
   const session = await readJson(path.join(directory, "session.json"), null);
   if (!session) throw new Error(`Unknown canonical session: ${id}`);
   if (session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) throw new Error(`Unsupported canonical session schema: ${session.schemaVersion}`);
-  return {
-    session,
-    mappings: await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} }),
-  };
+  const mappings = await readJson(path.join(directory, "mappings.json"), { schemaVersion: 1, canonicalSessionId: id, projections: {} });
+  // The title a reader is handed is the one to show, and it is never an id.
+  // Naming a session after its first turn would mean opening the event log this
+  // read exists to avoid, so a session whose file still carries an id-derived
+  // title is shown under a short id until the next import gives it the real one.
+  return { session: displaySession(session, mappings), mappings };
+}
+
+// What the record says the session is called, in the words a host renders.
+function displaySession(session, mappings, events = []) {
+  return { ...session, title: resolveSessionTitle(session, events, { nativeSessionIds: mappedNativeSessionIds(mappings) }) };
 }
 
 export async function readCanonicalSession(projectRoot, id) {
@@ -132,7 +140,51 @@ export async function readCanonicalSession(projectRoot, id) {
   const eventsText = existsSync(path.join(directory, "events.jsonl")) ? await readFile(path.join(directory, "events.jsonl"), "utf8") : "";
   const events = eventsText.split(/\r?\n/).filter(Boolean).map((line) => normalizeEvent(JSON.parse(line)));
   const state = await readJson(path.join(directory, "state.json"), session.state ?? deriveState(events));
-  return { session: { ...session, state }, events, state, mappings };
+  // The events are in hand here, so a title that had to wait for them — the
+  // first thing the user said — is available without anything being written.
+  return { session: { ...displaySession(session, mappings, events), state }, events, state, mappings };
+}
+
+/**
+ * Give a session the title its own store says it has.
+ *
+ * Import is the only caller, and the rules it relies on live here rather than
+ * in it: a title is replaced only when the stored one is derived from an id (or
+ * absent), a title someone chose is left alone, and a title that is already
+ * right is not written at all — the session file must come out of a repeated
+ * import byte for byte as it was, which is what the comparison is for.
+ *
+ * `updatedAt` is deliberately not moved. A title is not history: a session that
+ * jumped to the top of a dashboard because its name was filled in would be
+ * lying about when it last ran.
+ */
+export async function upgradeCanonicalSessionTitle(projectRoot, id, title, options = {}) {
+  const wanted = typeof title === "string" ? title.trim() : "";
+  if (!wanted) return { updated: false, title: null };
+  // The stored title is read as bytes, not as the display title: what may be
+  // replaced is what the file says, and what may be written is what it does not
+  // already hold.
+  const file = path.join(sessionDirectory(projectRoot, id), "session.json");
+  const session = await readJson(file, null);
+  if (!session) throw new Error(`Unknown canonical session: ${id}`);
+  if (session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) throw new Error(`Unsupported canonical session schema: ${session.schemaVersion}`);
+  const current = typeof session.title === "string" ? session.title : "";
+  if (current.trim() === wanted) return { updated: false, title: wanted };
+  const nativeSessionIds = [options.nativeSessionId, ...(options.nativeSessionIds ?? [])].filter((value) => typeof value === "string" && value);
+  // A title derived from the first turn is machine-made, exactly like one
+  // derived from an id: every capture names a session with `sessionTitleFor`,
+  // which falls back to what the user said first, and nothing was chosen. Only
+  // the exact string an unnamed capture would have written is replaceable —
+  // anything else is somebody's title, and a rename is not an import's to undo.
+  // Without this, a session named by an early capture could never take the name
+  // its own store gained later: the user renamed the conversation in the agent,
+  // and the dashboard kept showing the first sentence forever.
+  const derived = collapseWhitespace(options.derivedTitle ?? "");
+  if (!isAutoTitle(current, options.agentId ?? session.source ?? null, nativeSessionIds) && !(derived && collapseWhitespace(current) === derived)) {
+    return { updated: false, title: null, reason: "explicit" };
+  }
+  await writeAtomic(file, `${JSON.stringify({ ...session, title: wanted }, null, 2)}\n`);
+  return { updated: true, title: wanted };
 }
 
 export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
@@ -219,7 +271,10 @@ export async function findCanonicalSessionForNative(projectRoot, agentId, native
   const { readdir } = await import("node:fs/promises");
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
-    const mappings = await readJson(path.join(root, entry.name, "mappings.json"), null);
+    // Same rule as the list: a mappings file that cannot be read is not this
+    // session's answer, and it is certainly not an error that hides every other
+    // session's answer. Capture asks this question on the way out of a run.
+    const mappings = await readJson(path.join(root, entry.name, "mappings.json"), null).catch(() => null);
     if (mappings?.projections?.[agentId]?.nativeSessionId === nativeSessionId) return entry.name;
   }
   return null;
@@ -238,9 +293,23 @@ export async function listCanonicalSessionRecords(projectRoot) {
   const sessions = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
-    const session = await readJson(path.join(root, entry.name, "session.json"), null);
+    // A record that cannot be read costs its own session and nothing else. This
+    // read used to throw out of the loop, so one unparseable file made the list
+    // show no shared history at all — the same failure shape the sibling list
+    // above has guarded each entry against since it was written.
+    let session = null;
+    try {
+      session = await readJson(path.join(root, entry.name, "session.json"), null);
+    } catch {
+      continue;
+    }
     if (!session || session.schemaVersion !== CANONICAL_SESSION_SCHEMA_VERSION) continue;
-    sessions.push(session);
+    // The record is all this read opens, so the title it reports is the one a
+    // record can prove: an imported session whose file still carries the id an
+    // old import named it after is shown as a short id rather than as nothing.
+    // The event log stays unopened — a list of fifty conversations must not
+    // cost fifty conversations' worth of reading.
+    sessions.push(displaySession(session, null));
   }
   return sessions.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
 }

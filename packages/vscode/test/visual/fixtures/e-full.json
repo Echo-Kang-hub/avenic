@@ -1,0 +1,307 @@
+{
+  "version": "0.5.5",
+  "detail": false,
+  "project": {
+    "name": "atlas",
+    "root": "atlas",
+    "configured": true,
+    "lastUpdated": "2026-09-21 01:36"
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "short": "Claude",
+      "ready": true,
+      "statusText": "Ready",
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "API (Project)",
+          "tone": "muted",
+          "icon": "account"
+        },
+        {
+          "label": "Config Source",
+          "kind": "value",
+          "value": ".claude/settings.local.json",
+          "tone": "muted",
+          "icon": "file-code"
+        },
+        {
+          "label": "Provider",
+          "kind": "value",
+          "value": "DeepSeek",
+          "tone": "muted",
+          "icon": "package",
+          "href": ".claude/settings.local.json"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "deepseek-chat",
+          "tone": "muted",
+          "icon": "symbol-structure",
+          "options": [
+            "deepseek-chat"
+          ]
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 6,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config File",
+        "icon": "go-to-file"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      }
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "short": "Codex",
+      "ready": true,
+      "statusText": "Ready",
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Account (Project)",
+          "tone": "blue",
+          "icon": "account"
+        },
+        {
+          "label": "Account Status",
+          "kind": "status",
+          "value": "Not signed in",
+          "tone": "muted",
+          "icon": "account"
+        },
+        {
+          "label": "Account Home",
+          "kind": "value",
+          "value": ".agents/local/codex",
+          "tone": "muted",
+          "icon": "folder"
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 0,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config Folder",
+        "icon": "folder-opened"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      }
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "short": "OpenCode",
+      "ready": true,
+      "statusText": "Ready",
+      "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Native (OpenCode UI)",
+          "tone": "purple",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 0,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open OpenCode",
+        "icon": "link-external"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      }
+    }
+  ],
+  "history": {
+    "mode": "shared",
+    "sharedCount": 6
+  },
+  "shared": {
+    "rows": [
+      {
+        "id": "claude-session-0006",
+        "title": "summarise this week's changes",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-20T17:36:29.840Z",
+        "relative": "just now",
+        "active": true
+      },
+      {
+        "id": "claude-session-0005",
+        "title": "explain the snapshot restore order",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-20T17:36:29.795Z",
+        "relative": "just now",
+        "active": false
+      },
+      {
+        "id": "claude-session-0004",
+        "title": "add a test for the empty catalog",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-20T17:36:29.756Z",
+        "relative": "just now",
+        "active": false
+      },
+      {
+        "id": "claude-session-0003",
+        "title": "drop the unused vendor shim",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-20T17:36:29.708Z",
+        "relative": "just now",
+        "active": false
+      },
+      {
+        "id": "claude-session-0002",
+        "title": "why does the ledger re-read every account?",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-20T17:36:29.663Z",
+        "relative": "just now",
+        "active": false
+      }
+    ],
+    "total": 6
+  },
+  "native": {
+    "claude": {
+      "rows": [
+        {
+          "id": "claude-session-0006",
+          "title": "summarise this week's changes",
+          "agents": [],
+          "updated": "2026-09-20T17:36:29.840Z",
+          "relative": "just now",
+          "active": true
+        },
+        {
+          "id": "claude-session-0005",
+          "title": "explain the snapshot restore order",
+          "agents": [],
+          "updated": "2026-09-20T17:36:29.795Z",
+          "relative": "just now",
+          "active": false
+        },
+        {
+          "id": "claude-session-0004",
+          "title": "add a test for the empty catalog",
+          "agents": [],
+          "updated": "2026-09-20T17:36:29.756Z",
+          "relative": "just now",
+          "active": false
+        },
+        {
+          "id": "claude-session-0003",
+          "title": "drop the unused vendor shim",
+          "agents": [],
+          "updated": "2026-09-20T17:36:29.708Z",
+          "relative": "just now",
+          "active": false
+        },
+        {
+          "id": "claude-session-0002",
+          "title": "why does the ledger re-read every account?",
+          "agents": [],
+          "updated": "2026-09-20T17:36:29.663Z",
+          "relative": "just now",
+          "active": false
+        }
+      ],
+      "total": 6
+    },
+    "codex": {
+      "rows": [],
+      "total": 0
+    },
+    "opencode": {
+      "rows": [],
+      "total": 0
+    }
+  },
+  "skills": {
+    "installed": [
+      {
+        "name": "alpha",
+        "description": "",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      }
+    ],
+    "installedTotal": 1,
+    "packs": [
+      {
+        "id": "common",
+        "name": "Common",
+        "description": "",
+        "installed": true,
+        "count": 1
+      },
+      {
+        "id": "extra",
+        "name": "Extra",
+        "description": "",
+        "installed": false,
+        "count": 1
+      }
+    ],
+    "packsTotal": 2
+  },
+  "hub": {
+    "spec": "catalog",
+    "revision": "8d07d357e6f4344fba663ba3dbdfa72382531c81",
+    "state": "current"
+  },
+  "activity": [],
+  "transcript": null,
+  "empty": null
+}

@@ -37,7 +37,7 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
     if (scope === null) return;
     const cwd = await scopeCwd(scope, deps.resolveRoot);
     if (cwd === null) return;
-    if ((await catalogDefaultSpec()) === null) { await vscode.window.showWarningMessage("尚未选择默认 Hub，请先执行 Avenic: Hub 添加"); return; }
+    if ((await catalogDefaultSpec()) === null) { await vscode.window.showWarningMessage("尚未选择默认 Hub，请先执行 Avenic: 添加 Hub"); return; }
     const all = await skills.availablePacks(scope, cwd);
     const installed = await skills.installedPackIds(scope, cwd);
     // 只列举未安装的 Pack；描述兜底 id

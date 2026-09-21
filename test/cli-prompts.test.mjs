@@ -604,6 +604,33 @@ test("a text prompt takes typed input and will not settle on nothing", async () 
   assert.match(stdout.text(), /└  owner\/rep/); // 落定帧
 });
 
+test("a wizard's text step is drawn as one frame, not two", async () => {
+  // 文本步骤的模型曾经自带帧头和帧尾，而向导按同一步又画了一遍：屏幕上于是出现
+  // 两层标题、两层帮助行。帧头和帧尾只有一个地方可以画 —— 画这一帧的人。
+  const stdin = new FakeTTY();
+  const stdout = fakeStdout();
+  const promise = wizard({
+    stdin,
+    stdout,
+    draft: {},
+    stepsFor: () => [
+      { id: "pick", kind: "single", title: "Pick", options: [{ value: "a", label: "Alpha" }], value: () => "a", write: () => {}, summary: () => "Alpha" },
+      { id: "url", kind: "text", title: "Base URL", description: "the provider's API base URL", value: () => "", write: () => {}, summary: () => "" },
+      { id: "apply", kind: "single", title: "Apply configuration?", options: [{ value: true, label: "Yes" }, { value: false, label: "No" }], value: () => true, apply: true },
+    ],
+    apply: async () => ({ result: "written", summary: "done" }),
+  });
+  await waitForWizardFrame(stdout, /◆ {2}Pick/, "the first step");
+  keys(stdin, "\r");
+  await waitForWizardFrame(stdout, /◆ {2}Base URL/, "the text step");
+  const frame = wizardFrame(stdout);
+  assert.equal(frame.match(/◆ {2}Base URL/g)?.length, 1, "帧头只画一次");
+  assert.equal(frame.match(/the provider's API base URL/g)?.length, 1, "说明行只画一次");
+  assert.equal(frame.match(/└ {2}/g)?.length, 1, "帧尾只画一次");
+  keys(stdin, "\x1b");
+  assert.equal(await promise, null);
+});
+
 // ---- 端到端：假 TTY 驱动 dispatchSkills 的交互流程 ----
 
 async function withTempDirectory(prefix, run) {

@@ -1,5 +1,6 @@
 import { readCanonicalSession } from "./canonical-sessions.mjs";
-import { agentLabel, blockText, eventAgent, turnKind } from "./projection.mjs";
+import { TOOL_BLOCKS, agentLabel, blockText, eventAgent, turnKind } from "./projection.mjs";
+import { mappedNativeSessionIds, resolveSessionTitle } from "./session-title.mjs";
 
 // The canonical store is the one transcript a shared project has, so the one
 // place that knows how to read it as a conversation lives here — not in a
@@ -10,9 +11,8 @@ import { agentLabel, blockText, eventAgent, turnKind } from "./projection.mjs";
 // whoever actually said it. Tool traffic is attached to the turn that ran it
 // rather than presented as a speaker of its own.
 
-export const TRANSCRIPT_SCHEMA_VERSION = 1;
+const TRANSCRIPT_SCHEMA_VERSION = 1;
 
-const TOOL_BLOCKS = new Set(["tool_use", "tool_result", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"]);
 const TOOL_RESULT_BLOCKS = new Set(["tool_result", "function_call_output", "custom_tool_call_output"]);
 
 function summarize(value, limit = 120) {
@@ -135,7 +135,10 @@ export function transcriptSummary(session, events, record = {}) {
   return {
     schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
     id: session?.id ?? null,
-    title: session?.title ?? session?.id ?? "Untitled",
+    // The title the stored record carries was resolved before it got here, but
+    // a caller that passes its own session object gets the same answer: what
+    // the session is called is never a raw id, whichever end you read it from.
+    title: resolveSessionTitle(session, list, { nativeSessionIds: mappedNativeSessionIds(record?.mappings) }),
     revision: session?.revision ?? null,
     createdAt: session?.createdAt ?? null,
     updatedAt: session?.updatedAt ?? null,

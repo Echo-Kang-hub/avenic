@@ -3,8 +3,9 @@
 // versions their manifests declare. The versions are read, never passed in —
 // bumping a package.json is the only place a release number changes.
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, rm, copyFile } from "node:fs/promises";
+import { mkdir, rm, copyFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -45,5 +46,12 @@ run(process.execPath, [npmCli, "run", "package"], { cwd: path.join(repo, "packag
 const vsix = `avenic-agent-manager-${versions.extension}.vsix`;
 await copyFile(path.join(repo, "packages", "vscode", "dist", "avenic-agent-manager.vsix"), path.join(output, vsix));
 
+// The hashes are written by the same run that writes the files, so they cannot
+// describe a package that was built at some other time.
+const names = [`avenic-${versions.cli}.tgz`, `avenic-core-${versions.core}.tgz`, vsix];
+const sums = names.map((name) => `${createHash("sha256").update(readFileSync(path.join(output, name))).digest("hex")}  ${name}`);
+await writeFile(path.join(output, "SHA256SUMS"), `${sums.join("\n")}\n`, "utf8");
+
 console.log(`\navenic ${versions.cli} · @avenic/core ${versions.core} · extension ${versions.extension} → pack/`);
+for (const line of sums) console.log(`  ${line}`);
 console.log("next: npm run release:verify");

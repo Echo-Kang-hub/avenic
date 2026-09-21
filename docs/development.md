@@ -13,7 +13,7 @@ test/                          单元与 fixture 测试（catalog 用例全部�
 docs/superpowers/              设计 spec 与实施 plan
 ```
 
-根 package.json 内部名 `avenic-repo`（GitHub 根安装模式的直接安装物）。
+根 package.json 内部名 `avenic-repo`（GitHub 根安装模式的直接安装物）。测试只有根一套：`packages/core` 与 `packages/cli` 自身没有 `test` 脚本（在包目录里直接 `npm test` 会报 missing script），在仓库根跑 `npm test` 即可，它同时覆盖这两个包。
 
 ## 开发
 
@@ -24,6 +24,8 @@ npm run test:install   # 双模式全局安装集成测试
 npm run pack:cli       # npm pack --dry-run
 npm run sync-core      # 手动同步 packages/core/src → packages/cli/vendor/core-src
 npm run perf           # 两条真实等待路径的端到端 + 分步计时
+npm run test:visual    # 看板视觉回归（headless Edge + 参考图对比），仅 Windows
+npm run test:host      # 真实 VS Code 扩展宿主检查（会打开窗口），仅 Windows 桌面会话
 ```
 
 ## 性能
@@ -68,6 +70,19 @@ npm --prefix packages/vscode run package          # → packages/vscode/dist/ave
 ```
 
 `vsce package` 产出的 VSIX 需人工上传 Marketplace（VSCE_PAT 由维护者持有，不进入仓库）。上传前先在真实 VS Code 里安装该 VSIX，走一遍 Initialize、Configure、Launch、Sessions、Hub Sync 以及 Shared/Isolated 两种模式。
+
+### 看板的视觉与主机回归（仅 Windows）
+
+看板有两条发布闸门，都不在 CI 里——它们跑不了 ubuntu runner：
+
+- `npm run test:visual`（`packages/vscode/test/visual/`）：用真实媒体文件在 headless Edge 里渲染，做 overview 截图、与参考图的几何边对比，以及 22 个场景矩阵。Edge 从 Windows 安装路径解析（`shot.mjs` 的 `EDGE_CANDIDATES`）。
+- `npm run test:host`（`packages/vscode/test/host/run.mjs`）：把 VSIX 装进干净 profile，在真实 VS Code 扩展宿主里打开仪表盘，并用 PowerShell `CopyFromScreen` 读屏取证。它会打开一个 topmost、不抢键盘焦点的窗口，需要桌面会话。
+
+```bash
+npm run release:gate   # release:pack → release:verify → test:vscode → test:visual → test:host
+```
+
+`release:gate` 的最后一步会打开窗口，所以它只在 Windows 桌面会话里手动执行，不放进 `npm test`，也不加进 CI；只要无窗口的部分，就按同样的顺序逐条跑到 `test:visual` 为止。
 
 ## core 发布纪律
 

@@ -43,7 +43,8 @@ function scopeSummary(scope) {
 }
 
 function hubSummary(hub) {
-  if (!hub.configured) return "not configured";
+  // 没有「未配置」这一态：spec 要么来自环境，要么是内置的默认值，总有一个。
+  // 这台机器上到底有没有检出、检出的是不是锁文件钉的版本，由 cache 说。
   const revision = hub.revision ? hub.revision.slice(0, 7) : null;
   const detail = hub.cache === "missing"
     ? "not on this machine — run: avenic skills update"
@@ -53,15 +54,64 @@ function hubSummary(hub) {
   return `${hub.name} · ${hub.cache} · ${detail}`;
 }
 
+const METHOD_LABELS = { account: "Account", api: "API" };
+
+// Authentication and session storage are two answers, so they are two columns:
+// the method with the scope it owns, and where this agent's sessions live. The
+// facts a scope alone cannot give — the configuration file, the account home,
+// whether the sign-in has happened — belong to the lines below, not here.
 function agentRow(agent) {
+  const auth = agent.auth;
   return [
     agent.displayName,
     agent.available ? "found" : "not found",
-    agent.initialized ? `${agent.auth} auth` : "not initialized",
-    agent.initialized ? `${agent.sessions} sessions` : "—",
+    // 没有方法不等于没有初始化：一个项目可以只回答案了「会话存哪儿」，把认证留到
+    // 启动时再问（合法状态）。那一格该说的是「还没选」，不是「未初始化」。
+    auth ? `${METHOD_LABELS[auth.method]} · ${auth.scope === "project" ? "Project" : "Global"}` : (agent.runtime ?? (agent.initialized ? "not chosen" : "not initialized")),
+    agent.initialized ? agent.sessions : "—",
     String(agent.history.sessions),
     SYNC_LABELS[agent.history.sync] ?? agent.history.sync,
   ];
+}
+
+// What the method's own scope means on disk, said once per agent. An Account
+// points at a home the agent signs into itself; an API configuration points at
+// the file the launch reads and selects from — and says so as missing, with its
+// remedy, rather than as an error, because a project whose configuration is not
+// written yet still launches.
+function authNotes(agent, at) {
+  const auth = agent.auth;
+  if (!auth) return [];
+  const name = agent.displayName;
+  if (auth.method === "api") {
+    const configuration = auth.configuration ?? {};
+    const file = configuration.relative ?? auth.scope;
+    if (!configuration.present) {
+      // 「没写过」和「写过、现在不在了」是两种处境，补救相同、事实不同：账本证明得了
+      // 前者没有、后者有过，就说哪一种。后半句要能活过 80 列终端的截断——被截掉的
+      // 补救命令等于没有。
+      if (configuration.owned) return [[`${name}: API configuration gone — run: avenic change`, { ...at, mark: "!" }]];
+      return [[`${name}: API configuration — ${file} holds no configuration Avenic wrote (run: avenic change)`, { ...at, mark: "!" }]];
+    }
+    const provider = configuration.provider ? `, Provider ${configuration.provider}` : "";
+    const model = configuration.model ? `, Model ${configuration.model}` : "";
+    const credential = configuration.credentialSet ? "" : ", credential not set — the launch reads it from your own environment";
+    return [[`${name}: Config source ${file}${provider}${model}${credential}`, at]];
+  }
+  const notes = [];
+  if (auth.home) notes.push([`${name}: Auth home ${auth.home}`, at]);
+  if (auth.status === "signed-in") {
+    // The positive answer is the one a reader most often wants, and it is the
+    // only one the page can give without a remedy attached.
+    notes.push([`${name}: Auth status Signed in`, at]);
+  } else if (auth.status === "not-signed-in") {
+    notes.push([`${name}: Auth status Not signed in — run: avenic ${agent.id} to sign in`, { ...at, mark: "!" }]);
+  } else if (auth.status === "unknown") {
+    // Naming the uncertainty is the honest answer: this platform can hold the
+    // credential somewhere no file read can see, and a probe is not a status.
+    notes.push([`${name}: Auth status Unknown — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, at]);
+  }
+  return notes;
 }
 
 /**
@@ -103,6 +153,8 @@ export function renderStatus(status, io = console, options = {}) {
     if (remedy) note(sink, `${agent.displayName}: ${SYNC_LABELS[agent.history.sync]} — ${remedy}`, { ...at, mark: "!" });
     else if (!agent.available) note(sink, `${agent.displayName}: the ${agent.command} CLI is not on PATH — Avenic still manages its history`, at);
     else if (!agent.initialized) note(sink, `${agent.displayName}: run: avenic ${agent.id} init`, at);
+    // 路径放在行首：行尾会被终端宽度截掉，而「配置/账号在哪」正是这行必须活下来的部分。
+    for (const [line, style] of authNotes(agent, at)) note(sink, line, style);
   }
   blank();
   section(sink, "Skills", at);

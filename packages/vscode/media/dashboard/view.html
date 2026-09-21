@@ -1,15 +1,66 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; img-src {{cspSource}} data:; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};" />
+        content="default-src 'none'; img-src {{cspSource}}; style-src {{cspSource}} 'nonce-{{nonce}}'; script-src 'nonce-{{nonce}}'; font-src {{cspSource}};" />
   <link rel="stylesheet" href="{{style}}" />
 </head>
 <body>
-  <main id="app"></main>
-  <noscript>Dashboard 需要启用 JavaScript。</noscript>
+  <div id="root">
+    <!-- The shell is static so the first paint never waits for data. -->
+    <aside class="sidebar">
+      <div class="side-brand">
+        <img class="side-brand-mark" src="{{iconUri}}" alt="" />
+        <div class="side-brand-text">
+          <span class="side-brand-name">AVENIC</span>
+          <span class="side-brand-tag">AI Workflows. Yours.</span>
+        </div>
+      </div>
+      <nav class="side-nav" id="nav" aria-label="Avenic sections">
+        <button class="nav-item active" data-section="overview" aria-current="page"><span class="icon" data-icon="layout"></span>Overview</button>
+        <button class="nav-item" data-section="configure"><span class="icon" data-icon="gear"></span>Configure</button>
+        <button class="nav-item" data-section="agents"><span class="icon" data-icon="robot"></span>Agents</button>
+        <button class="nav-item" data-section="sessions"><span class="icon" data-icon="comment"></span>Sessions</button>
+        <button class="nav-item" data-section="skills"><span class="icon" data-icon="sparkle"></span>Skills</button>
+        <button class="nav-item" data-section="quick"><span class="icon" data-icon="rocket"></span>Quick Actions</button>
+      </nav>
+      <div class="side-foot">
+        <div class="side-sep"></div>
+        <button class="nav-item" data-action="openDocs"><span class="icon" data-icon="book"></span>Documentation</button>
+        <button class="nav-item" data-action="openSettings"><span class="icon" data-icon="gear"></span>Settings</button>
+        <div class="side-meta">
+          <div class="side-version">Avenic v<span id="version">—</span></div>
+          <div class="side-ready"><span class="dot"></span><span id="ready-label">Ready</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="proj-header">
+        <div class="proj-id">
+          <h1 class="proj-title" id="project-title">Project</h1>
+          <button class="proj-path" id="project-path" type="button" title="Reveal this project in the file manager"><span id="project-root">—</span><span class="icon path-go" data-icon="chevron-right"></span></button>
+        </div>
+        <div class="header-status">
+          <span class="pill" id="configured-pill"><span class="icon" data-icon="check"></span><span id="configured-label">Avenic Configured</span></span>
+          <span class="header-note" id="last-updated"></span>
+        </div>
+        <div class="header-actions">
+          <button class="btn" id="refresh-button"><span class="icon" data-icon="refresh"></span>Refresh</button>
+          <button class="btn btn-primary" id="reconfigure-button"><span class="icon" data-icon="settings-gear"></span>Reconfigure</button>
+        </div>
+      </header>
+      <div class="content" id="content">
+        <div class="skeleton">
+          <div class="skeleton-block"></div>
+          <div class="skeleton-block"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <noscript>The dashboard needs JavaScript to read the project.</noscript>
   <script nonce="{{nonce}}" src="{{mainJs}}"></script>
 </body>
 </html>

@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
+import { configureCommands } from "./harness.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "cli", "scripts", "skills.mjs");
@@ -164,7 +165,11 @@ async function main() {
   spawnSync(process.execPath, [cliEntry, "--version"], { cwd: projectRoot, env: environment });
 
   launch(["--version"], "avenic --version");
-  launch(["init", "--agents", "claude,codex,opencode", "--auth", "global", "--sessions", "project", "--history", "shared"], "avenic init (shared)");
+  // 配置命令按 agent 的能力生成：自管认证的 OpenCode 不接受 --auth，把三个 agent
+  // 塞进同一条 init 会被整条拒绝，后面四次启动量的就都是「未初始化」的错误退出。
+  for (const argumentsList of configureCommands(["claude", "codex", "opencode"])) {
+    launch(argumentsList, `avenic ${argumentsList[0] === "init" ? "init (shared)" : `${argumentsList[0]} init`}`);
+  }
   launch(["claude"], "avenic claude (cold)");
   launch(["claude"], "avenic claude (warm)");
   launch(["codex"], "avenic codex (warm)");

@@ -1,0 +1,14 @@
+{
+  "projectRoot": "D:\\Demo\\agenthome-cli",
+  "history": { "mode": "shared", "sessions": 12, "activeTitle": "Fix authentication environment handling" },
+  "agents": [
+    { "id": "claude", "label": "Claude Code", "statusText": "认证 API · 项目（.claude/settings.local.json · Demo Provider / demo-model） / 12 会话 · 已同步", "executableAvailable": true, "iconHint": "pass-filled", "sync": "current" },
+    { "id": "codex", "label": "Codex", "statusText": "认证 Account · 项目（.agents/local/codex） / 8 会话 · 已同步", "executableAvailable": true, "iconHint": "pass-filled", "sync": "current" },
+    { "id": "opencode", "label": "OpenCode", "statusText": "认证 Native（OpenCode 自己管理） / 3 会话 · 已同步", "executableAvailable": true, "iconHint": "pass-filled", "sync": "current" }
+  ],
+  "catalog": { "spec": "Echo-Kang-hub/SkillsHub#main", "revision": "0123456789abcdef0123456789abcdef01234567" },
+  "skillsHealth": [
+    { "label": "Claude Code", "ok": true, "details": "shared" },
+    { "label": "Codex", "ok": true, "details": "1/1" }
+  ]
+}

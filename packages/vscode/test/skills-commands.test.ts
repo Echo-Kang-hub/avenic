@@ -182,39 +182,15 @@ test("repairLinks is a no-op with zero side effects when nothing is managed", as
   }
 });
 
-test("manifest registers the ten skills command ids with skills-tree context menus", async () => {
+test("manifest declares the ten skills command ids", async () => {
+  // 这十条以前挂在 Skills 树的每行上；树没了，命令还在（面板的 Skills 卡与命令面板
+  // 用的是同一批实现）。命令↔注册的双向校验在 manifest.test.ts，这里只钉这一组名字。
   const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const manifest = JSON.parse(await readFile(path.join(pkgDir, "package.json"), "utf8"));
   const ids = manifest.contributes?.commands ?? [];
   const ids9 = ["avenic.skills.installPacks", "avenic.skills.uninstallPacks", "avenic.skills.addDirect", "avenic.skills.removeDirect", "avenic.skills.directList", "avenic.skills.adopt", "avenic.skills.adoptPack", "avenic.skills.uninstallPack", "avenic.skills.reinstallPack", "avenic.skills.repairLinks"];
   for (const id of ids9) {
     assert.ok(ids.some((c: { command: string }) => c.command === id), id);
-  }
-  // 决议 9：视图级绑定（skills 树为分组行结构，五命令挂每行），不做 viewItem 细分
-  const contextMenus: Array<{ command: string; when: string; group?: string }> = manifest.contributes?.menus?.["view/item/context"] ?? [];
-  for (const id of ids9.slice(0, 5)) {
-    assert.ok(contextMenus.some((m) => m.command === id && m.when === "view == avenic.skills"), id);
-  }
-  // adopt 专属行级绑定：contextValue == detected（含分组行与叶子行，provider attachScope 直传 scope）；
-  // inline@1 悬停键位 + 右键菜单两处呈现
-  const adoptBinding = "view == avenic.skills && viewItem == detected";
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.adopt" && m.when === adoptBinding && m.group === "inline@1"), "detected 行悬停键位");
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.adopt" && m.when === adoptBinding && m.group === undefined), "detected 行右键菜单");
-  // adoptPack：已托管但无 Pack 记录的 adopted 行（provider attachScope 直传 scope）
-  const adoptedBinding = "view == avenic.skills && viewItem == adopted";
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.adoptPack" && m.when === adoptedBinding && m.group === "inline@1"), "adopted 行悬停键位");
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.adoptPack" && m.when === adoptedBinding && m.group === undefined), "adopted 行右键菜单");
-  // Pack 行（Installed Packs 层次）专属绑定：重装 inline@2 + 卸载 inline@3 + 右键菜单两处
-  const packBinding = "view == avenic.skills && viewItem == pack";
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.reinstallPack" && m.when === packBinding && m.group === "inline@2"), "pack 行重装悬停键位");
-  assert.ok(contextMenus.some((m) => m.command === "avenic.skills.uninstallPack" && m.when === packBinding && m.group === "inline@3"), "pack 行卸载悬停键位");
-  for (const id of ["avenic.skills.uninstallPack", "avenic.skills.reinstallPack"]) {
-    assert.ok(contextMenus.some((m) => m.command === id && m.when === packBinding && m.group === undefined), `${id} pack 行右键菜单`);
-  }
-  // Skills 标题栏键位：安装 Packs / 添加直装 / 修复链接（作用域经交互选择）
-  const titleMenus: Array<{ command: string; when: string }> = manifest.contributes?.menus?.["view/title"] ?? [];
-  for (const id of ["avenic.skills.installPacks", "avenic.skills.addDirect", "avenic.skills.repairLinks"]) {
-    assert.ok(titleMenus.some((m) => m.command === id && m.when === "view == avenic.skills"), id);
   }
 });
 

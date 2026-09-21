@@ -1,0 +1,37 @@
+{save}{repaint}{brand}◆{/}  {strong}Select agents{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Claude Code{/}
+{muted}│{/}    {muted}○{/}  Codex
+{muted}│{/}    {muted}○{/}  OpenCode
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · space select · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
+{muted}│{/}  {muted}Claude Code{/}
+{brand}◆{/}  {strong}Claude Code authentication{/}
+{muted}│{/}  {muted}Account — use Claude Code's native account sign-in · API — use a provider/model/API configurati…{/}
+{muted}│{/}
+{muted}│{/}    {muted}○{/}  Account
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}API{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
+{muted}│{/}  {muted}Claude Code{/}
+{brandSoft}◇{/}  {strong}Claude Code authentication{/}
+{muted}│{/}  {muted}API{/}
+{brand}◆{/}  {strong}Claude Code API configuration{/}
+{muted}│{/}  {muted}Global — write ~/.claude/settings.json · Project — write .claude/settings.local.json{/}
+{muted}│{/}
+{muted}│{/}    {muted}○{/}  Global
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Project{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
+{muted}│{/}  {muted}Claude Code{/}
+{brandSoft}◇{/}  {strong}Claude Code authentication{/}
+{muted}│{/}  {muted}API{/}
+{brandSoft}◇{/}  {strong}Claude Code API configuration{/}
+{muted}│{/}  {muted}Project{/}
+{brand}◆{/}  {strong}Claude Code provider{/}
+{muted}│{/}  {muted}the provider this endpoint belongs to — a label, shown back to you and stored with the keys Ave…{/}
+{muted}│{/}
+{muted}│{/}  {brandStrong}▸{/} {brand}▏{/}
+{muted}│{/}
+{brandSoft}└{/}  {muted}type · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Claude Code provider{/}
+{error}✖{/}  {muted}cancel{/}

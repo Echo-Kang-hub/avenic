@@ -40,5 +40,5 @@ test("isolated history is only imported when the user asks for it", async () => 
     const synced = runCli(["sessions", "sync"]);
     assert.equal(synced.status, 0, synced.stderr);
     assert.deepEqual(await canonicalIds(projectRoot), [`claude-${sessionId}`]);
-  }, { sessions: 0, sessionInterop: "isolated" });
+  }, { sessions: 0, historyMode: "isolated" });
 });

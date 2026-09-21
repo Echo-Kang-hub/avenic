@@ -50,15 +50,29 @@ function fixtureStatus() {
       activeEvents: 5939,
       updatedAt: "2026-09-19T09:51:00.000Z",
     },
+    // One golden, all three answers: an API configuration that names the file
+    // the launch reads, an account whose sign-in lives in the project and has
+    // not happened yet, and an agent whose authentication is its own business.
     agents: [
-      { id: "claude", displayName: "Claude Code", command: "claude", available: true, initialized: true, auth: "global", sessions: 10, history: { sessions: 10, sync: "current" } },
-      { id: "codex", displayName: "Codex", command: "codex", available: true, initialized: true, auth: "global", sessions: 10, history: { sessions: 10, sync: "stale" } },
-      { id: "opencode", displayName: "OpenCode", command: "opencode", available: true, initialized: false, auth: "global", sessions: 0, history: { sessions: 0, sync: "none" } },
+      {
+        id: "claude", displayName: "Claude Code", command: "claude", available: true, initialized: true, runtime: null,
+        auth: {
+          method: "api", scope: "project", source: "project", home: null, status: null,
+          configuration: { relative: ".claude/settings.local.json", owned: true, present: true, provider: "DeepSeek", model: "deepseek-chat", credentialSet: true },
+        },
+        sessions: "project", history: { sessions: 10, sync: "current" },
+      },
+      {
+        id: "codex", displayName: "Codex", command: "codex", available: true, initialized: true, runtime: null,
+        auth: { method: "account", scope: "project", source: "local", home: ".agents/local/codex", status: "not-signed-in", configuration: null },
+        sessions: "project", history: { sessions: 10, sync: "stale" },
+      },
+      { id: "opencode", displayName: "OpenCode", command: "opencode", available: true, initialized: false, runtime: "native", auth: null, sessions: null, history: { sessions: 0, sync: "none" } },
     ],
     skills: {
       project: { installed: 15, packs: [{ name: "optimized" }], state: "current", total: 15 },
       global: { installed: 0, packs: [], state: "none" },
-      hub: { configured: true, name: "Echo-Kang-hub/SkillsHub", cache: "current", revision: "9122e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4", pinned: "9122e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4" },
+      hub: { name: "Echo-Kang-hub/SkillsHub", cache: "current", revision: "9122e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4", pinned: "9122e3a4b5c6d7e8f90a1b2c3d4e5f60718293a4" },
     },
   };
 }
@@ -133,6 +147,30 @@ export const SCENARIOS = {
     return paintPrompt(
       (stdin, stdout) => multiSelect({ stdin, stdout, color: true, environment: TRUECOLOR, title: "Select enabled agents", options: agents, initial: ["claude", "codex"], minSelected: 1 }),
       (press) => press("\x1b[B", " "),
+    );
+  },
+
+  // 向导的文本步骤：已答的步骤折叠成轨道，当前这一问是唯一展开的帧。这个帧曾经
+  // 画两层帧头和两层帧尾（文本模型自带一套，画帧的人又加一套）——金样本让形状
+  // 固定下来，谁再画第二遍就是一次 diff。
+  async "wizard-text-step"() {
+    const { wizard } = await import("../../packages/cli/src/cli/prompts.mjs");
+    const { projectDraft, projectWizardSteps } = await import("../../packages/core/src/runtime/project-wizard.mjs");
+    return paintPrompt(
+      (stdin, stdout) => wizard({
+        stdin,
+        stdout,
+        color: true,
+        environment: TRUECOLOR,
+        draft: projectDraft({
+          agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
+          historyMode: "shared",
+        }),
+        stepsFor: (draft) => projectWizardSteps(draft, false),
+        apply: async () => ({}),
+      }),
+      // agents → authentication → API configuration → provider（文本）
+      (press) => press("\r", "\r", "\r"),
     );
   },
 

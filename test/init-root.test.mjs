@@ -134,7 +134,7 @@ test("avenic init inside another Avenic project asks before making a separate on
     keys(accepted.stdin, "y");
     await waitFor(() => /Select agents/.test(visible(accepted.stdout.text())), "the wizard after the question");
     keys(accepted.stdin, " ", "\r"); // Claude Code
-    for (const title of ["Claude Code authentication", "Claude Code session storage", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(visible(accepted.stdout.text())), title);
       keys(accepted.stdin, "\r");
     }
@@ -171,9 +171,28 @@ test("avenic change still edits the project the directory belongs to", async () 
     await mkdir(packageDirectory, { recursive: true });
     assert.equal(await run(["init", "--agents", "claude"], { cwd: repository }), 0);
 
-    assert.equal(await run(["change", "--agents", "claude", "--auth", "project"], { cwd: packageDirectory }), 0);
+    assert.equal(await run(["change", "--agents", "claude", "--auth", "api", "--scope", "project"], { cwd: packageDirectory }), 0);
     const written = await config(repository);
-    assert.equal(written.agents.claude.auth, "project", "the enclosing project is the one that changed");
+    assert.deepEqual(written.agents.claude, { authMethod: "api", configScope: "project", sessionScope: "project" }, "the enclosing project is the one that changed");
     assert.equal(configured(packageDirectory), false, "no second project appears in the package");
+  });
+});
+
+test("an agent command resolves the root the caller named, not the cwd's project", async () => {
+  // 宿主可以点名根（VS Code 点的那一行就是那个目录）。agent 分支曾经把它丢掉，
+  // 于是 `avenic <agent> status` 会去回答别处的项目：点名的那一份配置永远答不上来。
+  await withRoots(async ({ root, run, logged }) => {
+    const project = path.join(root, "project");
+    const elsewhere = path.join(root, "elsewhere");
+    await mkdir(project, { recursive: true });
+    await mkdir(elsewhere, { recursive: true });
+    assert.equal(await run(["init", "--root", project, "--agents", "claude", "--sessions", "project"], { cwd: elsewhere }), 0);
+
+    logged.length = 0;
+    assert.equal(await run(["claude", "status"], { cwd: elsewhere, projectRootOverride: project }), 0);
+    const page = logged.join("\n");
+    assert.match(page, /◆ {2}Claude Code status/);
+    assert.ok(page.includes(project), `the page must name the root it was asked about:\n${page}`);
+    assert.ok(!page.includes(process.cwd()), "and never the process's own project instead");
   });
 });

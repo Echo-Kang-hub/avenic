@@ -44,6 +44,11 @@ async function withLaunchState(agentId, projectRoot, run) {
 
 test("status describes the project, its agents, and its history from one model", async () => {
   await withClaudeProject(async ({ projectRoot, environment }) => {
+    // The sign-in is invented and lives in the fixture's own home. Writing it
+    // is what makes the two assertions below about *where* the home is: an
+    // enumeration of the three states would pass for somebody else's home too.
+    const claudeHome = environment.CLAUDE_CONFIG_DIR;
+    await writeFile(path.join(claudeHome, ".credentials.json"), "{\"claudeAiOauth\":{\"fixture\":true}}\n");
     const status = await collectStatus(projectRoot, { environment });
     assert.equal(status.schemaVersion, 1);
     assert.equal(status.project.root, path.resolve(projectRoot));
@@ -54,7 +59,23 @@ test("status describes the project, its agents, and its history from one model",
     assert.deepEqual(status.agents.map((agent) => agent.id), ["claude", "codex", "opencode"]);
     const claude = status.agents[0];
     assert.equal(claude.initialized, true);
-    assert.equal(claude.auth, "global");
+    // Authentication and configuration are separate facts: this project chose
+    // Account at the global scope, so what it has is a method, the scope that
+    // method owns, where the answer came from, and what the local files say
+    // about the sign-in — and no API configuration at all.
+    assert.equal(claude.auth.method, "account");
+    assert.equal(claude.auth.scope, "global");
+    assert.equal(claude.auth.source, "project");
+    // 全局作用域的 home 是这台机器自己的目录，不是项目里的路径：报出来用 `~` 打头
+    // （夹具的 CLAUDE_CONFIG_DIR 就在夹具的 HOME 底下，所以该是 `~/.claude`），项目
+    // 相对路径才是项目作用域的形状。下面那句 sign-in 状态正是从这个目录读到的。
+    // 断言写成完整的字符串：拿本进程的 `os.homedir()` 去缩短，两个平台都会得到一串
+    // 临时目录的绝对路径（夹具 home 不在真实 home 底下，在 Windows 上只是恰好同盘），
+    // 于是这条断言在两个平台都会红——环境说了算。
+    assert.equal(claude.auth.home, "~/.claude", `a global account's home is the machine's own: ${claude.auth.home}`);
+    assert.equal(claude.auth.home.includes(projectRoot), false, "and it is not a project directory");
+    assert.equal(claude.auth.status, "signed-in", "read from the home the environment names, not from this process's");
+    assert.equal(claude.auth.configuration, null);
     assert.equal(claude.sessions, "project");
     assert.equal(claude.history.sync, "current");
     assert.equal(claude.history.sessions, 0);

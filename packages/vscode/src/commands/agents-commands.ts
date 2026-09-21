@@ -1,10 +1,11 @@
 import * as vscode from "vscode";
-import { applyProjectDraft, formatSessionDiagnostics, projectDraft, projectWizardSteps } from "@avenic/core";
+import { apiPrefill, applyProjectDraft, formatSessionDiagnostics, projectDraft, projectWizardSteps } from "@avenic/core";
+import { releaseSummary } from "../services/agents.ts";
 import type { ProjectDraft } from "@avenic/core";
 import * as agents from "../services/agents.ts";
 import { updateCommandForInstallation } from "../services/agent-versions.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
-import { assertIdle, pickOne } from "../ui/flows.ts";
+import { assertIdle } from "../ui/flows.ts";
 import { runProjectWizard } from "../ui/project-wizard.ts";
 import { quickPickHost } from "../ui/quickpick-wizard.ts";
 import { showError } from "./errors.ts";
@@ -17,26 +18,19 @@ export interface AgentDeps {
   refresh: () => void;
 }
 
-// 初始化只选一次作用域：auth 与 sessions 是两个独立维度，但用户视角里两次"global/project"
-// 选择题是同一个问题被问两遍（且后一次显得"才生效"）。合并为一次 QuickPick，每个选项是
-// 一个完整组合；之后需要混合或调整时再分别走 switchAuth / switchSessions。
-const INIT_MODES = [
-  { label: "项目域（认证 + 会话）", description: "认证存在项目内（被 gitignore），会话随项目入库，可迁移", value: { auth: "project", sessions: "project" } },
-  { label: "全局域（认证 + 会话）", description: "认证与会话都走系统级目录，项目只留运行时配置", value: { auth: "global", sessions: "global" } },
-  { label: "认证全局 / 会话项目", description: "认证走系统级目录；会话随项目入库", value: { auth: "global", sessions: "project" } },
-  { label: "认证项目 / 会话全局", description: "项目内放临时认证；会话走系统级目录", value: { auth: "project", sessions: "global" } },
-] as const;
-
 export function registerAgentsCommands(context: vscode.ExtensionContext, deps: AgentDeps): void {
   // 决议 1：交互（resolveRoot / 选择）在队列外，仅 mutation 服务调用进 queue.run；
   // 决议 2：busy 守卫在命令体最前（spec §6 进行中时相关命令禁用），提示并返回不入队；
   // runMutation 保证成功/失败都 refresh（T8 Minor A）。
-  const register = (id: string, fn: (treeItem?: vscode.TreeItem) => Promise<void>) =>
-    context.subscriptions.push(vscode.commands.registerCommand(id, async (treeItem?: vscode.TreeItem) => {
+  // 命令体的返回值原样交回给调用方：`executeCommand<boolean>("avenic.agents.launch")`
+  // 就是靠它知道这一次到底跑起来没有（仪表盘据此决定活动日志写不写），所以包装层
+  // 不能把答案吃掉——它只负责把抛出的错误翻译成提示。
+  const register = (id: string, fn: (treeItem?: vscode.TreeItem) => Promise<unknown>) =>
+    context.subscriptions.push(vscode.commands.registerCommand(id, async (treeItem?: vscode.TreeItem): Promise<unknown> => {
       try {
         // try/catch 覆盖整个命令体：resolveRoot / QuickPick 的拒绝同样经 showError 呈现
-        await fn(treeItem);
-      } catch (err) { await showError(err); }
+        return await fn(treeItem);
+      } catch (err) { await showError(err); return undefined; }
     }));
 
   const busy = () => !assertIdle(deps.queue, (message) => void vscode.window.showWarningMessage(message));
@@ -49,26 +43,19 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     return id === undefined ? null : { root, id };
   };
 
-  register("avenic.agents.init", async (treeItem) => {
-    if (busy()) return;
-    const target = await agentTarget(treeItem);
-    if (target === null) return;
-    // 交互（作用域组合一次选择）在队列外完成；仅 initialize 突变进队列（W2a）
-    const mode = await pickOne([...INIT_MODES], async (items) => vscode.window.showQuickPick(items));
-    if (mode === undefined) return;
-    await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.initialize(target.root, target.id, mode.value.auth, mode.value.sessions).then(() => { report("完成"); })), () => deps.refresh());
-  });
-
-  // Initialize 与 Configure 是同一场问答的两种模式：目录还没配过就是初始化（第一步标题
+  // 初始化与配置是同一场问答的两种模式：目录还没配过就是初始化（第一步标题
   // "Select agents"），配过就是修改（"Select enabled agents"，各步预选当前值）。问题与
   // 写盘都来自 core，VS Code 只负责画 —— 与 `avenic init` / `avenic change` 同一份步骤。
+  // 逐行的「切换认证」「切换会话」不另做一套问题：方法、作用域、会话都在这一场里答。
   register("avenic.agents.configureProject", async () => {
     if (busy()) return;
     const root = await deps.resolveRoot();
     if (root === null) return;
     const current = await agents.readProjectConfiguration(root);
     const editing = Object.keys(current.agents).length > 0;
-    const draft = projectDraft(current);
+    // 修改时每一步都预选当前值，API 那几个字段也一样：屏幕上空着的 provider 或端点
+    // 就是「提交上去的答案为空」，而把空答案写下去等于把配置撤掉。答案仍然由 core 读。
+    const draft = projectDraft(current, { api: await apiPrefill(root, current.agents) });
     const host = quickPickHost<ProjectDraft>();
     try {
       // 整轮问答在队列外；只有提交那一刻的写入进队列（决议 1 / W2a）。
@@ -76,11 +63,19 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
         draft,
         (unfinished: ProjectDraft) => projectWizardSteps(unfinished, editing),
         host,
-        (finished) => runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
-          applyProjectDraft(root, finished).then(() => { report("Completed"); }),
-        ), () => deps.refresh()),
+        async (finished) => {
+          // 删除旧配置的二次确认是问卷里的一步（core 的 switch-confirm），不再在写盘
+          // 期间弹模态：写盘一旦开始，取消就够不着它了，而同一按键也不该同时决定两帧。
+          return runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
+            applyProjectDraft(root, finished).then((result) => { report("Completed"); return result; }),
+          ), () => deps.refresh());
+        },
       );
-      if (outcome.applied) await vscode.window.showInformationMessage(`Avenic ${editing ? "配置已更新" : "初始化完成"} · ${root}`);
+      if (!outcome.applied || outcome.result === null) return;
+      // 一句话说清这一轮到底改了什么，尤其是「旧配置留着还是删了」——以及给不回来
+      // 的那种键（组成在 services/releaseSummary，与 CLI 说同一组事实）。
+      const detail = releaseSummary(outcome.result.released ?? []);
+      await vscode.window.showInformationMessage(`Avenic ${editing ? "配置已更新" : "初始化完成"}${detail ? ` · ${detail}` : ""} · ${root}`);
     } finally {
       host.dispose();
     }
@@ -111,33 +106,39 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
   register("avenic.agents.install", runCliInstall);
   register("avenic.agents.update", runCliInstall);
 
+  // 返回值是「这一次真的跑起来了吗」：调用它的人（仪表盘）要用这个答案决定活动日志
+  // 里写不写「会话已开始」。树视图不看返回值，命令面板也不看——只有面板需要知道。
   register("avenic.agents.launch", async (treeItem) => {
-    if (busy()) return;
+    if (busy()) return false;
     const target = await agentTarget(treeItem);
-    if (target === null) return;
+    if (target === null) return false;
     const status = await agents.agentStatus(target.root, target.id);
-    if (status.effective === null) {
-      await vscode.window.showWarningMessage(`${status.agent.displayName} 尚未初始化，请先执行「Avenic: 初始化 Agent」`);
-      return;
+    if (!status.initialized) {
+      await vscode.window.showWarningMessage(`${status.agent.displayName} 尚未初始化，请先执行「Avenic: Configure Project」`);
+      return false;
     }
     if (!status.executableAvailable) {
       await vscode.window.showWarningMessage(`未找到 ${status.agent.displayName} 官方可执行文件（${status.agent.executable}），请先安装官方 CLI`);
-      return;
+      return false;
     }
     const prepared = await runMutation(deps.queue, () => agents.prepareAgentLaunch(target.root, target.id), () => deps.refresh());
     const { definition, finishRun } = prepared;
     if (definition.note !== null) {
-      // 模型配置没能生效（spec §13：不静默跳过）——启动照常进行，但必须让用户看见原因。
+      // core 说了这次启动为什么和配置不一样（还没有认证方式、API 配置还没写入、
+      // 凭据要从你自己的环境里读）——启动照常进行，但原因必须让用户看见，不静默跳过。
       void vscode.window.showWarningMessage(definition.note);
     }
     const terminal = vscode.window.createTerminal({ name: definition.name, cwd: definition.cwd, env: definition.environment });
     const closeListener = vscode.window.onDidCloseTerminal((closed) => {
       if (closed !== terminal) return;
       closeListener.dispose();
-      void finishRun().catch((error) => showError(error));
+      // 一次运行结束后，会话、投影和同步状态都变了：无论收尾成功还是失败，树视图
+      // 和仪表盘都该重新读一遍，而不是留着一份启动前的旧图。
+      void finishRun().catch((error) => showError(error)).finally(() => deps.refresh());
     });
     terminal.show();
     terminal.sendText(definition.command);
+    return true;
   });
 
   register("avenic.agents.deinit", async (treeItem) => {
@@ -145,28 +146,6 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     const target = await agentTarget(treeItem);
     if (target === null) return;
     await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.deinitialize(target.root, target.id).then(() => { report("完成"); })), () => deps.refresh());
-  });
-
-  register("avenic.agents.switchAuth", async (treeItem) => {
-    if (busy()) return;
-    const target = await agentTarget(treeItem);
-    if (target === null) return;
-    const status = await agents.agentStatus(target.root, target.id);
-    const currentLabel = status.effective?.auth ?? "未配置";
-    const chosen = await vscode.window.showQuickPick([{ label: currentLabel, description: "当前" }, { label: "global" }, { label: "project" }, { label: "reset" }]);
-    if (chosen === undefined || chosen.label === currentLabel) return;
-    await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.setAuthMode(target.root, target.id, chosen.label as "global" | "project" | "reset").then(() => { report("完成"); })), () => deps.refresh());
-  });
-
-  register("avenic.agents.switchSessions", async (treeItem) => {
-    if (busy()) return;
-    const target = await agentTarget(treeItem);
-    if (target === null) return;
-    const status = await agents.agentStatus(target.root, target.id);
-    const currentLabel = status.effective?.sessions ?? "未配置";
-    const chosen = await pickOne([{ label: currentLabel, description: "当前" }, { label: "global" }, { label: "project" }], async (items) => vscode.window.showQuickPick(items));
-    if (chosen === undefined || chosen.label === currentLabel) return;
-    await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.setSessionsMode(target.root, target.id, chosen.label as "global" | "project").then(() => { report("完成"); })), () => deps.refresh());
   });
 
   register("avenic.agents.sessionsImport", async (treeItem) => {

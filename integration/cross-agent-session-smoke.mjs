@@ -14,8 +14,8 @@ const project = path.join(root, "project");
 const marker = `AVENIC_SMOKE_${randomUUID().slice(0, 8)}`;
 const claudeId = randomUUID();
 await mkdir(project, { recursive: true });
-await initializeAgent(project, "claude", "global", "project");
-await initializeAgent(project, "codex", "global", "project");
+await initializeAgent(project, "claude", { authMethod: "account", accountScope: "global", sessionScope: "project" });
+await initializeAgent(project, "codex", { authMethod: "account", accountScope: "global", sessionScope: "project" });
 
 async function run(agentId, args) {
   const runtime = await resolveEffectiveAgentRuntime(project, agentId, { argumentsList: args });

@@ -1,325 +1,1063 @@
-/* ===== Avenic Dashboard —— 终端 / 极客风格 =====
-   主题：颜色取 VS Code 注入的 --vscode-* 变量（次要信息 = descriptionForeground、
-   成功 = ansiGreen、警告 = ansiYellow、错误 = ansiRed），品牌色是产品自己的红橙
-   （与 CLI 的 brand 同一个色，见下方 --avenic-*）。深/浅主题自适应不做手动判断
-   （规则 R4）。字体用编辑器等宽字体（终端感）。
-   图标（codicon）：本地随包字体 media/dashboard/codicon.ttf（@vscode/codicons，Microsoft，
-   MIT — 详见同目录 LICENSES.md），经 @font-face + ::before content 字形映射渲染；
-   数据图标名只经 CSS 映射，不走远程资源（规则 R1）。安全：文本仍只经 textContent 渲染。
-   排版铁律：单列 + max-width，任何一行绝不横向溢出（ellipsis / break-all / overflow-x hidden）。 */
+/* Avenic dashboard.
+ *
+ * The dark palette is sampled from the owner's reference screenshot (see
+ * dist/dashboard-visual/measurements.md); the light palette is the same design
+ * translated for light themes. Every colour, radius and font size used by the
+ * renderer lives in this token block — components never hard-code a value.
+ *
+ * codicon.ttf ships next to this file (MIT, see LICENSES.md); glyphs are mapped
+ * through .icon[data-icon]::before so the renderer only ever names an icon.
+ */
 
 :root {
-  --avenic-brand: #ff7a18;
-  --avenic-brand-strong: #ff4d2e;
-  --avenic-brand-soft: #ff9e5e;
+  color-scheme: dark;
+
+  --av-bg: #09141e;
+  --av-sidebar: #0b1620;
+  --av-surface: #111d27;
+  /* Sampled, not guessed: the reference's secondary buttons are #18242f while
+   * the surface behind them is #111d27 — a 7-point lift, not a border. */
+  --av-surface-hi: #18242f;
+  /* Two weights of rule, measured separately: a control's outline is #25323e,
+   * a card's outline is the softer #18242e. */
+  --av-border: #25323e;
+  --av-border-soft: #18242e;
+
+  --av-text: #ffffff;
+  --av-text-body: #dbe8f2;
+  --av-text-label: #b9cdda;
+  --av-text-muted: #8ba3b5;
+  --av-text-dim: #6f8496;
+
+  --av-brand: #fb6e27;
+  --av-brand-strong: #e2651c;
+  --av-brand-text: #ff9a3d;
+  /* Three tint levels, each measured off a different element: the active nav
+   * item is a whisper (0.12), a selected tab or icon tile is a wash (0.25), and
+   * an agent chip is a solid pill with a white label. */
+  --av-brand-soft: rgba(251, 110, 39, 0.12);
+  --av-brand-tint: rgba(251, 110, 39, 0.22);
+  --av-brand-line: rgba(251, 110, 39, 0.42);
+
+  /* Chips are opaque, sampled: #773f2b / #1d568d / #42337d with white text. */
+  --av-chip-brand: #773f2b;
+  --av-chip-blue: #1d568d;
+  --av-chip-purple: #42337d;
+
+  --av-green: #3ddc84;
+  --av-green-text: #7bfbd5;
+  --av-green-soft: rgba(61, 220, 132, 0.14);
+
+  /* The three status badges are tinted pills with their own label colour, and
+   * they are the one place the light theme cannot simply inherit: a pale mint
+   * label on a 16% wash measures 1.6:1 against a white card. */
+  --av-badge-blue-bg: rgba(98, 200, 255, 0.30);
+  --av-badge-blue-line: rgba(98, 200, 255, 0.45);
+  --av-badge-blue-fg: #eaf4ff;
+  --av-badge-purple-bg: rgba(179, 157, 255, 0.30);
+  --av-badge-purple-line: rgba(179, 157, 255, 0.45);
+  --av-badge-purple-fg: #f1ecff;
+  --av-badge-green-bg: rgba(61, 220, 132, 0.16);
+  --av-badge-green-line: #368c4d;
+  --av-badge-green-fg: #5fd9a0;
+
+  --av-blue: #62c8ff;
+  --av-blue-soft: rgba(98, 200, 255, 0.14);
+  --av-purple: #b39dff;
+  --av-purple-soft: rgba(179, 157, 255, 0.14);
+
+  --av-radius: 8px;
+  --av-radius-sm: 6px;
+  --av-radius-pill: 999px;
+
+  --av-space-1: 4px;
+  --av-space-2: 8px;
+  --av-space-3: 12px;
+  --av-space-4: 14px;
+  --av-space-5: 18px;
+
+  --av-font: var(--vscode-font-family, "Segoe UI", system-ui, sans-serif);
+  --av-font-size: 13px;
+  --av-font-mono: var(--vscode-editor-font-family, "Cascadia Mono", Consolas, monospace);
+
+  --av-sidebar-width: 203px;
+  --av-control-height: 33px;
+  /* A list sits in a bordered box inset 15px from its card, measured. */
+  --av-list-inset: 15px;
+}
+
+body.vscode-light,
+body.vscode-high-contrast-light {
+  color-scheme: light;
+  --av-bg: #eef2f6;
+  --av-sidebar: #e6ecf2;
+  --av-surface: #ffffff;
+  --av-surface-hi: #f4f7fa;
+  --av-border: #d3dde6;
+  --av-border-soft: #e0e8ef;
+
+  --av-text: #14202b;
+  --av-text-body: #24323d;
+  --av-text-label: #46586a;
+  /* A shade darker than the dark theme's counterpart: on a light surface the
+   * same muted grey-blue measures 3.8:1, and these are 12px labels. */
+  --av-text-muted: #55697c;
+  --av-text-dim: #7f93a4;
+
+  --av-brand: #e05a13;
+  --av-brand-strong: #c94f0d;
+  /* Deep enough to carry the words: on its own 16% tint this measures 4.9:1. */
+  --av-brand-text: #9c400a;
+  --av-brand-soft: rgba(224, 90, 19, 0.1);
+  --av-brand-tint: rgba(224, 90, 19, 0.16);
+  --av-brand-line: rgba(224, 90, 19, 0.35);
+
+  /* Same three chip hues, darkened for a light surface: an opaque pill keeps
+   * its white label legible in either theme. */
+  --av-chip-brand: #9a4a2c;
+  --av-chip-blue: #1d568d;
+  --av-chip-purple: #4b3a94;
+
+  --av-green: #1a7f4b;
+  --av-green-text: #146b3f;
+  --av-green-soft: rgba(26, 127, 75, 0.12);
+
+  /* Same three pills, restated for a light card: the tint carries the hue and
+   * the label carries the contrast. The label is set against the darkest
+   * surface a badge lands on (the page itself, #eef2f6 — a section's rows are
+   * not all in cards), where the first pass measured 4.37 / 4.08 / 4.14:1 and
+   * failed AA. These clear 4.9 on that surface and better on a card. */
+  --av-badge-blue-bg: rgba(15, 108, 189, 0.12);
+  --av-badge-blue-line: rgba(15, 108, 189, 0.35);
+  --av-badge-blue-fg: #0b5f9e;
+  --av-badge-purple-bg: rgba(107, 79, 216, 0.14);
+  --av-badge-purple-line: rgba(107, 79, 216, 0.35);
+  --av-badge-purple-fg: #5b3fc9;
+  --av-badge-green-bg: rgba(26, 127, 75, 0.12);
+  --av-badge-green-line: rgba(26, 127, 75, 0.35);
+  --av-badge-green-fg: #146b3f;
+
+  --av-blue: #0f6cbd;
+  --av-blue-soft: rgba(15, 108, 189, 0.12);
+  --av-purple: #6b4fd8;
+  --av-purple-soft: rgba(107, 79, 216, 0.12);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 body {
-  font-family: var(--vscode-editor-font-family, ui-monospace, "Cascadia Mono", monospace);
-  font-size: var(--vscode-font-size, 13px);
-  color: var(--vscode-foreground);
-  margin: 0;
-  padding: 0.6rem 0.75rem 1rem;
-  background: transparent;
-  line-height: 1.5;
-  overflow-x: hidden;       /* 全局禁横向滚动：任何内容超出即截断 */
-  max-width: 100%;
-}
-
-/* 等宽终端：所有字号角色共用编辑器等宽字体，角色差异靠权重 + 颜色（h1 品牌橙、h2 注释灰、
-   value 常规、meta 灰）。区块标题不做 ALL-CAPS 徽标（AI 设计默认款）——终端注释「# 区块名」
-   更贴近本工具素材，且普通大小写对中文可读性更好。 */
-h1 { font-size: 1rem; font-weight: 700; margin: 0; letter-spacing: 0.18em; color: var(--avenic-brand-strong, var(--vscode-foreground)); }
-h2 { font-size: 0.72rem; font-weight: 600; margin: 0; letter-spacing: 0.02em; color: var(--vscode-descriptionForeground); }
-h3 { font-size: 0.78rem; font-weight: 600; margin: 0; }
-p { margin: 0; }
-
-/* ---------- codicon 图标（本地 codicon 字体；data-icon → ::before 字形映射） ----------
-   之前误信 VS Code 会注入 --vscode-icon-* data-URI 变量——其实并不注入，导致图标
-   background-image 恒为 none，按钮里只剩隐形占位（把文字挤偏、看起来像分开贴图）。
-   改为随包字体 + 字形映射（字形随文字同基线渲染，始终居中于图标盒内）。 */
-@font-face {
-  font-family: "codicon";
-  font-display: block;
-  src: url("./codicon.ttf") format("truetype");
-}
-.icon {
-  display: inline-block;
-  width: 14px;
-  height: 14px;
-  flex: none;
-  font-family: "codicon";
-  font-size: 14px;
-  line-height: 14px;
-  text-align: center;
-  vertical-align: -2px;
-  opacity: 0.85;
+  background: var(--av-bg);
+  color: var(--av-text-body);
+  font-family: var(--av-font);
+  font-size: var(--av-font-size);
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
-  user-select: none;
-}
-.icon[data-icon="refresh"]::before        { content: "\eb37"; }
-.icon[data-icon="sync"]::before           { content: "\ea77"; }
-.icon[data-icon="plus"]::before           { content: "\ea60"; }
-.icon[data-icon="package"]::before        { content: "\eb29"; }
-.icon[data-icon="robot"]::before          { content: "\ec20"; }
-.icon[data-icon="import"]::before         { content: "\ec74"; } /* codicon download：导入（入箱）语义 */
-.icon[data-icon="folder-opened"]::before  { content: "\eaf7"; }
-.icon[data-icon="settings-gear"]::before  { content: "\eb51"; } /* 与 package.json 里 avenic.model.open 的 $(settings-gear) 同形 */
-.icon[data-icon="repo"]::before           { content: "\ea62"; }
-.icon[data-icon="history"]::before        { content: "\ea82"; }
-.icon[data-icon="check"]::before          { content: "\eab2"; }
-.icon[data-icon="error"]::before          { content: "\ea87"; }
-.icon[data-icon="info"]::before           { content: "\ea74"; }
-.icon[data-icon="pass-filled"]::before    { content: "\ebb3"; }
-.icon[data-icon="circle-outline"]::before { content: "\eabc"; }
-
-.spin { animation: spin 1.2s steps(8) infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-/* 动效克制：唯一常态动画是光标闪烁；用户系统请求减少动态时全部停用 */
-@media (prefers-reduced-motion: reduce) {
-  .spin, .cursor, .loading-dots::after { animation: none !important; }
 }
 
-/* ---------- 顶栏：AVENIC 提示符 + 闪烁光标 ---------- */
-.topbar {
+#root {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding-bottom: 0.4rem;
-  border-bottom: 1px solid var(--vscode-panel-border, rgb(128 128 128 / 0.3));
-  margin-bottom: 0.45rem;
+  min-height: 100vh;
+  align-items: stretch;
 }
-.topbar .brand { display: flex; align-items: center; gap: 0.35rem; min-width: 0; overflow: hidden; }
-.topbar .brand .cursor {
-  display: inline-block;
-  width: 0.55em;
-  height: 1em;
-  background: var(--avenic-brand-strong, var(--vscode-foreground));
-  animation: blink 1.1s steps(1) infinite;
-}
-@keyframes blink { 50% { opacity: 0; } }
-.icon-button {
-  display: flex;
-  align-items: center;
-  padding: 0.15rem;
-  border: none;
-  border-radius: 2px;
-  background: none;
+
+button {
+  font: inherit;
   color: inherit;
+  background: none;
+  border: none;
   cursor: pointer;
 }
-.icon-button:hover { background: var(--vscode-toolbar-hoverBackground, rgb(128 128 128 / 0.2)); }
 
-/* 提示符行：$ avenic status */
-.prompt-line {
-  margin: 0.4rem 0 0.7rem;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.82rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.prompt-line .dollar { color: var(--vscode-descriptionForeground); }
-.prompt-line .cmd { color: var(--avenic-brand, var(--vscode-foreground)); }
-
-/* ---------- 终端行卡片（单列，左侧色条，绝不换行溢出） ---------- */
-.status-grid { display: flex; flex-direction: column; gap: 0.25rem; margin: 0 0 0.85rem; }
-.card {
-  /* terminal 行风格:无圆角、左边 2px 彩色条 */
-  border-left: 2px solid var(--avenic-brand-soft, var(--vscode-focusBorder));
-  background: var(--vscode-editorWidget-background, none);
-  padding: 0.3rem 0.55rem;
-  min-width: 0;
-  max-width: 100%;
-}
-.card-head { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.15rem; min-width: 0; }
-.card-head .icon { width: 13px; height: 13px; font-size: 13px; line-height: 13px; }
-.card-head h3 { color: var(--vscode-descriptionForeground); }
-
-.value {
-  font-size: 0.9rem;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;    /* 长路径/长 spec：省略号而非撑破一行 */
-}
-.meta  { font-size: 0.78rem; color: var(--vscode-descriptionForeground); margin-top: 0.1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hint  { font-size: 0.8rem; color: var(--vscode-descriptionForeground); margin-top: 0.2rem; }
-
-/* ---------- 区块标题 ---------- */
-.block { margin: 0 0 0.95rem; max-width: 100%; }
-.block-title {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin: 0 0 0.4rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--avenic-brand-soft, var(--vscode-descriptionForeground));
-}
-/* 终端注释标记「# 区块名」：结构与内容同源（配置/脚本里的注释行即如此），替代 ALL-CAPS 徽标 */
-.block-title::before {
-  content: "# ";
-  color: var(--vscode-descriptionForeground);
-}
-.block-title .icon { width: 13px; height: 13px; font-size: 13px; line-height: 13px; }
-.count {
-  margin-left: 0.15rem;
-  padding: 0 0.4rem;
-  border: 1px solid var(--vscode-widget-border, rgb(128 128 128 / 0.4));
-  border-radius: 2px;
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.66rem;
-  line-height: 1.5;
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--av-brand));
+  outline-offset: 1px;
 }
 
-/* ---------- Agents：终端进程列表 ---------- */
-.agent-grid { display: flex; flex-direction: column; gap: 0.2rem; }
-.agent-card {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  border-left: 2px solid var(--avenic-brand-soft, var(--vscode-focusBorder));
-  background: var(--vscode-editorWidget-background, none);
-  padding: 0.28rem 0.55rem;
-  min-width: 0;
-  /* 内容驱动的降级容器：@container 按卡片自身宽度判定（≠视口断点），
-     文字真的放不下才隐藏，放得下就绝不提前隐藏（用户反馈的 600/430 视口断点
-     会过早隐藏仍可容纳的文字，已废弃）。 */
-  container-type: inline-size;
-}
-.agent-card .icon { width: 12px; height: 12px; font-size: 12px; line-height: 12px; }
-.agent-head { display: flex; align-items: center; gap: 0.4rem; flex: 0 1 auto; min-width: 0; }
-.agent-name { font-weight: 600; font-size: 0.85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 同步状态徽标：与 `avenic status` 的 Sync 一列同义（core 的六个词）。只有需要
-   动手的状态才上色——current 应该是安静的。 */
-.sync-chip {
-  font-size: 0.68rem;
-  padding: 0 0.3rem;
-  border: 1px solid var(--vscode-descriptionForeground);
-  color: var(--vscode-descriptionForeground);
-  opacity: 0.85;
-  white-space: nowrap;
-}
-.sync-chip.warn {
-  border-color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
-  color: var(--vscode-terminal-ansiYellow, var(--vscode-editorWarning-foreground));
-}
-.agent-status { font-size: 0.8rem; color: var(--vscode-descriptionForeground); flex: none; }
-.agent-meta { font-size: 0.74rem; color: var(--vscode-descriptionForeground); margin-left: auto; flex: none; }
-/* Agent 品牌标记（inline SVG，currentColor 继承前景色）：全宽态与窄屏态都显示 */
-.agent-mark { width: 13px; height: 13px; flex: none; }
+/* ---------------------------------------------------------------- icons -- */
 
-/* ---------- Skills 健康：[✓]/[✗] 终端标记 ---------- */
-.skill-rows { display: flex; flex-direction: column; }
-.skill-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.22rem 0.1rem;
-  border-bottom: 1px dashed var(--vscode-widget-border, rgb(128 128 128 / 0.25));
-  min-width: 0;
-}
-.skill-row:last-child { border-bottom: none; }
-.skill-row .mark { flex: none; font-weight: 700; }
-.skill-row .mark.ok  { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
-.skill-row .mark.bad { color: var(--vscode-terminal-ansiRed, var(--vscode-errorForeground)); }
-.skill-label { flex: none; font-size: 0.85rem; }
-.skill-details {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.8rem;
-  margin-left: auto;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+@font-face {
+  font-family: "avenic-codicon";
+  src: url("./codicon.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
 }
 
-/* ---------- 快捷操作：终端按钮（方角、边框字色） ----------
-   gap 保证按钮之间明显缝隙（包裹换行时同样成立）；文字与图标在按钮内水平居中
-   （justify-content: center —— 此前缺失导致内容左偏）。 */
-.action-grid { display: flex; flex-wrap: wrap; gap: 0.55rem 0.6rem; }
-.button {
+.icon {
+  font-family: "avenic-codicon";
+  font-size: 16px;
+  line-height: 1;
+  font-style: normal;
+  font-weight: normal;
   display: inline-flex;
   align-items: center;
-  justify-content: center;   /* 按钮内文字居中 */
-  gap: 0.35rem;
-  padding: 0.3rem 0.7rem;
-  border: 1px solid var(--vscode-button-secondaryBackground, var(--vscode-widget-border));
-  border-radius: 2px;
-  background: none;
-  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-  font-family: inherit;
-  font-size: 0.8rem;
-  cursor: pointer;
-  flex: 0 0 auto;            /* 按钮按内容宽排布，不拉伸；缝隙由 grid gap 承担 */
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  justify-content: center;
+  flex: none;
+  speak: never;
 }
-.button:hover:not(:disabled) { border-color: var(--avenic-brand, var(--vscode-focusBorder)); color: var(--avenic-brand, var(--vscode-foreground)); }
-.button:disabled { opacity: 0.45; cursor: default; }
-.button .icon { width: 12px; height: 12px; font-size: 12px; line-height: 12px; }
-/* 键盘可达性底线：焦点环可见，不破坏极客观感 */
-.button:focus-visible, .icon-button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 
-/* ---------- loading / error 状态 ---------- */
-.state {
+.icon[data-icon="layout"]::before        { content: "\ebeb"; }
+.icon[data-icon="gear"]::before          { content: "\eaf8"; }
+.icon[data-icon="robot"]::before         { content: "\ec20"; }
+.icon[data-icon="comment"]::before       { content: "\eac7"; }
+.icon[data-icon="sparkle"]::before       { content: "\ec10"; }
+.icon[data-icon="rocket"]::before        { content: "\eb44"; }
+.icon[data-icon="book"]::before          { content: "\eaa4"; }
+.icon[data-icon="check"]::before         { content: "\eab2"; }
+.icon[data-icon="refresh"]::before       { content: "\eb37"; }
+.icon[data-icon="settings-gear"]::before { content: "\eb51"; }
+.icon[data-icon="organization"]::before  { content: "\ea7e"; }
+.icon[data-icon="ellipsis"]::before      { content: "\ea7c"; }
+.icon[data-icon="terminal"]::before      { content: "\ea85"; }
+.icon[data-icon="play"]::before          { content: "\eb2c"; }
+.icon[data-icon="account"]::before       { content: "\eb99"; }
+.icon[data-icon="file-code"]::before     { content: "\eae9"; }
+.icon[data-icon="package"]::before       { content: "\eb29"; }
+.icon[data-icon="symbol-structure"]::before { content: "\ea91"; }
+.icon[data-icon="symbol-parameter"]::before { content: "\ea92"; }
+.icon[data-icon="dashboard"]::before     { content: "\eacd"; }
+.icon[data-icon="folder"]::before        { content: "\ea83"; }
+.icon[data-icon="history"]::before       { content: "\ea82"; }
+.icon[data-icon="key"]::before           { content: "\eb11"; }
+.icon[data-icon="unlock"]::before        { content: "\eb74"; }
+.icon[data-icon="file-directory"]::before { content: "\ea83"; }
+.icon[data-icon="go-to-file"]::before    { content: "\ea94"; }
+.icon[data-icon="link-external"]::before  { content: "\eb14"; }
+.icon[data-icon="share"]::before         { content: "\ec25"; }
+.icon[data-icon="database"]::before      { content: "\eace"; }
+.icon[data-icon="file-text"]::before     { content: "\ec5e"; }
+.icon[data-icon="download"]::before      { content: "\ec74"; }
+.icon[data-icon="folder-opened"]::before  { content: "\eaf7"; }
+.icon[data-icon="zap"]::before           { content: "\ea86"; }
+.icon[data-icon="clockface"]::before     { content: "\ec75"; }
+.icon[data-icon="check-all"]::before     { content: "\ebb3"; }
+.icon[data-icon="error"]::before         { content: "\ea87"; }
+.icon[data-icon="chevron-right"]::before { content: "\eab6"; }
+.icon[data-icon="chevron-down"]::before  { content: "\eab4"; }
+.icon[data-icon="arrow-right"]::before   { content: "\ea9c"; }
+.icon[data-icon="list"]::before          { content: "\eb17"; }
+
+/* --------------------------------------------------------------- sidebar -- */
+
+.sidebar {
+  width: var(--av-sidebar-width);
+  flex: none;
+  background: var(--av-sidebar);
+  border-right: 1px solid var(--av-border-soft);
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 1.4rem 0.25rem;
-  color: var(--vscode-descriptionForeground);
+  padding: 21px 0 12px;
+  overflow-y: auto;
 }
-.state .icon { width: 18px; height: 18px; font-size: 18px; line-height: 18px; }
-.state .hint { font-size: 0.8rem; }
-.loading-dots::after { content: "…"; animation: blink 1.2s steps(1) infinite; }
-.state-error { color: var(--vscode-errorForeground); }
-.state-error .error-message {
-  color: var(--vscode-terminal-ansiRed, var(--vscode-errorForeground));
+
+/* Named side-brand, not brand: "brand" is a badge/chip tone modifier, and a
+ * bare `.brand` rule would leak its margins onto every orange badge. */
+.side-brand {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 var(--av-space-4) 0 16px;
+  margin-bottom: 26px;
+}
+
+/* 42px square: the artwork carries transparent padding (its ink is 38.7x31.8
+ * at this size), and the reference measures the ink, not the box. */
+.side-brand-mark {
+  width: 42px;
+  height: 42px;
+  flex: none;
+  object-fit: contain;
+}
+
+.side-brand-text { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+
+.side-brand-name {
+  color: var(--av-text);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  line-height: 1.1;
+}
+
+.side-brand-tag {
+  color: var(--av-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.side-nav { display: flex; flex-direction: column; gap: 5px; padding: 0 12px 0 8px; }
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 37px;
+  padding: 0 10px;
+  border-radius: var(--av-radius-sm);
+  border-left: 3px solid transparent;
+  color: var(--av-text-label);
+  font-size: 14px;
+  text-align: left;
+  width: 100%;
+}
+
+.nav-item .icon { font-size: 18px; color: var(--av-text-muted); }
+
+.nav-item:hover { background: var(--av-surface); }
+
+.nav-item.active {
+  background: var(--av-brand-soft);
+  border-left-color: var(--av-brand);
+  color: var(--av-brand-text);
+  font-weight: 600;
+}
+
+.nav-item.active .icon { color: var(--av-brand); }
+
+.side-foot { margin-top: auto; padding: 0 12px 0 8px; display: flex; flex-direction: column; gap: 2px; }
+
+.side-foot .nav-item { font-size: 13px; height: 30px; }
+
+.side-sep { height: 1px; background: var(--av-border-soft); margin: 10px 4px; }
+
+/* The version line is indented past the nav labels' icons, measured: its ink
+ * starts 13px right of the nav item text above it. */
+.side-meta { padding: 15px 10px 0 20px; display: flex; flex-direction: column; gap: 4px; }
+
+.side-version { color: var(--av-text-label); font-size: 12px; letter-spacing: 0.7px; }
+
+.side-ready { display: flex; align-items: center; gap: 6px; color: var(--av-text-muted); font-size: 12px; }
+
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--av-green); flex: none; }
+
+/* 状态点的颜色只由宿主给出的 tone 决定——一个写着「Not signed in」的行旁边亮着绿点，
+ * 是界面上唯一一处字与图互相矛盾的地方。五个 tone 都写出来（绿色与无 tone 的默认同色）：
+ * 载荷里能出现的每一档都得在纸面上有它的一句话。 */
+.dot.green  { background: var(--av-green); }
+.dot.muted  { background: var(--av-text-muted); }
+.dot.blue   { background: var(--av-blue); }
+.dot.purple { background: var(--av-purple); }
+.dot.brand  { background: var(--av-brand); }
+
+/* ------------------------------------------------------------------ main -- */
+
+/* Main's gutters are unequal in the reference: 14 on the left, 12 on the right
+ * of the content column (1262 wide inside a 1288 main). */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 12px 10px 14px; }
+
+/* The header band is a fixed 74px (rule at y=73) with its three groups centred
+ * against it — measured: pill top 11, buttons 16..54, title cap 17. */
+.proj-header {
+  display: flex;
+  align-items: center;
+  gap: var(--av-space-4);
+  height: 74px;
+  flex: none;
+  /* Both the title and the buttons sit 8-9px inside the content column. */
+  padding: 0 8px 0 9px;
+  border-bottom: 1px solid var(--av-border-soft);
+}
+
+.proj-id { min-width: 0; }
+
+/* 标题与路径各自收在自己那一格里：长项目名与长路径在窄窗口里必须省略，而不是画到
+ * 状态块上去。裁剪写在真正装着字的那一层——`.proj-path` 是按钮、路径在它的 span
+ * 里，只给按钮写 text-overflow 是写给一个没有直接文字的元素，什么也不会发生。 */
+.proj-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--av-text);
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 参考图的路径行末尾带一个「点我」的箭头，所以它是一个按钮：把 UA 给的边框、内边距
+ * 与字体全部抹平，几何与它作为一行 div 时逐像素一致（`font: inherit` 先取回继承来的
+ * 行高，再由下面两条只覆盖字族与字号）。 */
+.proj-path {
+  margin-top: 2px;
+  font: inherit;
+  font-family: var(--av-font-mono);
+  /* 13px: the reference's mono run measures 160px wide for the same path, and
+   * the fallback face this build gets is ~3% narrower at 12.5. */
+  font-size: 13px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--av-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 按钮自己不许比这一格宽，里面的路径负责省略号（见下一条）。 */
   max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.state-error .button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
-.state-error .button:hover { background: var(--vscode-button-hoverBackground); }
-
-/* ---------- 响应式分层：面板横向压缩时优雅降级 ----------
-   agent 行的文字降级走容器查询（@container，见 .agent-card 的 container-type），
-   按卡片自身宽度（=内容实际可容纳宽度）判定；视口 @media 只处理非代理内容
-   （提示行、技能细节、卡片元信息/提示、字号缩放），其宽度与文字可容纳性
-   大致对应，保留视口断点即可。 */
-@media (max-width: 600px) {
-  body { padding: 0.45rem 0.5rem 0.8rem; }
-  .prompt-line { display: none; }
-  .skill-details { display: none; }
-  .card .meta { display: none; }
-  .card .hint { display: none; }
-  .topbar .brand h1 { font-size: 0.9rem; }
-}
-@media (max-width: 430px) {
-  .value { font-size: 0.82rem; }
-  .button { padding: 0.25rem 0.45rem; font-size: 0.74rem; }
-  .button .icon { width: 11px; height: 11px; font-size: 11px; line-height: 11px; }
-  .skill-row { gap: 0.35rem; }
+  overflow: hidden;
 }
 
-/* ---------- Agent 行容器降级（内容驱动，非视口断点） ----------
-   降级顺序（文字放不下才逐级隐藏，放得下则完整显示）：
-   第一级（卡片 ≤430px，完整行「名称+状态+元信息」已容纳不下）：
-   只隐「已初始化 · global/project」状态行与「可执行文件就绪」元信息行，
-   名称「Claude Code」保留显示；完整信息仍在悬停 tooltip（main.js 写入 card.title）。
-   第二级（卡片 ≤180px，名称+图标行也容纳不下）：名称也隐藏，
-   只剩「品牌图标 + 状态点」（提示圆点 still = 状态点，见 .agent-head 内 icon）。
-   两级之间的宽度区间（430px~180px）名称始终显示，不会提前图标化。 */
-@container (max-width: 430px) {
-  .agent-status { display: none; }
-  .agent-meta { display: none; }
-  .sync-chip { display: none; }
+/* 路径那一格是 flex 项：默认 min-width:auto 会拒绝收窄，省略号就永远不出现。 */
+.proj-path #project-root {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-@container (max-width: 180px) {
-  .agent-name { display: none; }
-  .agent-mark { width: 15px; height: 15px; }
+
+.proj-path[disabled] { cursor: default; }
+
+/* Measured: the status block is not flush against the buttons — the reference
+ * leaves 160px of air between them, so the pill reads as status, not as a button. */
+.header-status { margin-left: auto; margin-right: 172px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+
+/* The path line ends in a dim "open me" chevron, as the reference draws it. */
+.proj-path .path-go { font-size: 13px; color: var(--av-text-dim); }
+
+.header-actions { display: flex; align-items: center; gap: 15px; }
+
+/* The project header's two buttons are taller than the panel's (39 vs 35): the
+ * header is where the eye starts, and the reference gives it the bigger target. */
+.proj-header .btn { height: 39px; padding: 0 21px; gap: 8px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 29px;
+  padding: 0 18px;
+  border-radius: var(--av-radius-pill);
+  border: 1px solid var(--av-green-soft);
+  background: var(--av-green-soft);
+  color: var(--av-green-text);
+  font-size: 12.5px;
+}
+
+.pill.warn { border-color: var(--av-brand-line); background: var(--av-brand-soft); color: var(--av-brand-text); }
+
+.header-note { font-size: 12px; color: var(--av-text-muted); }
+
+/* --------------------------------------------------------------- buttons -- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: var(--av-control-height);
+  padding: 0 12px;
+  border-radius: var(--av-radius-sm);
+  border: 1px solid var(--av-border);
+  background: var(--av-surface-hi);
+  color: var(--av-text-body);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.btn:hover { background: var(--av-surface); border-color: var(--av-text-dim); }
+
+.btn .icon { font-size: 15px; }
+
+.btn-primary {
+  background: var(--av-brand);
+  border-color: var(--av-brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-primary:hover { background: var(--av-brand-strong); border-color: var(--av-brand-strong); }
+
+.btn-icon { width: var(--av-control-height); padding: 0; }
+
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* --------------------------------------------------------------- content -- */
+
+/* The reference's two gaps differ: 13px under the Agent Configuration panel,
+ * 9px between the two lower rows. */
+/* The panel starts 11px below the header rule (measured y85 against a rule at 73). */
+.content { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 9px; padding-top: 11px; }
+
+.content > .section:first-child { margin-bottom: 4px; }
+
+.section {
+  background: var(--av-surface);
+  border: 1px solid var(--av-border);
+  border-radius: var(--av-radius);
+  overflow: hidden;
+}
+
+.section-head { display: flex; align-items: center; gap: 10px; padding: 11px 6px; }
+
+/* A head's icon is the brand colour and nothing else: the reference draws the
+ * glyph itself at ~30px, with no tile behind it. The box stays 30x30 because
+ * that is what holds the title where the reference puts it. */
+.section-icon {
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--av-brand);
+  flex: none;
+}
+
+/* The glyph is nudged up 5px inside that box: codicon's baseline puts the ink
+ * 6.8px below the box top where the reference's sits 1.8px down (measured with
+ * the luminance probe — image x900..921 y770..797 against our x902..920
+ * y775..801). The box itself is untouched, so the anchored title stays put. */
+.section-icon .icon { font-size: 30px; line-height: 1; transform: translateY(-5px); }
+
+/* Recent Activity is the one head the reference draws small: its clock inks
+ * 18x18 (image x900..917 y923..940) against the other heads' 28x30. */
+.card-head.inline-sub .section-icon .icon { font-size: 20px; transform: none; }
+
+.section-titles { display: flex; flex-direction: column; min-width: 0; }
+
+.section-title { font-size: 15px; font-weight: 700; color: var(--av-text); }
+
+.section-sub { font-size: 12px; color: var(--av-text-muted); }
+
+.section-head .spacer { flex: 1; }
+
+.section-head + .section-body { border-top: 1px solid var(--av-border-soft); }
+
+/* The agent cards sit 6px in from the panel's left edge and 10px in from its
+ * right — measured from the reference's card boxes, not a guess. */
+.section-body { padding: 0 10px 11px 6px; }
+
+/* ---------------------------------------------------------- agent cards -- */
+
+.agent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+.agent-card {
+  border: 1px solid var(--av-border);
+  border-radius: var(--av-radius);
+  /* 4px under the foot button, not 6: the reference leaves the button's own
+   * bottom edge 4px above the card's, and the card's height is what the rows
+   * below it are measured against. */
+  padding: 11px 14px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.agent-head { display: flex; align-items: center; gap: 16px; height: 46px; margin-bottom: 7px; }
+
+.agent-mark { width: 46px; height: 46px; flex: none; display: flex; align-items: center; justify-content: center; }
+
+.agent-mark svg { width: 46px; height: 46px; }
+
+/* Claude's mark in the reference is the one that carries a tile: a rounded
+ * square in the agent's own red-orange with a white star knocked out of it.
+ * Codex and OpenCode are drawn as bare glyphs, so they get no box. */
+.agent-mark.claude {
+  background: #e06446;
+  border-radius: 12px;
+}
+
+.agent-mark.claude svg { width: 30px; height: 30px; }
+
+/* The agents' own hues, for every mark that stands alone (skill rows, quick
+ * actions). One context overrides all three: a glyph inside an agent card is
+ * drawn white, because Claude's sits on its tile and the other two sit on the
+ * card — sampled #ffffff for all three. */
+.mark-claude { color: #ef7a44; }
+
+.mark-codex { color: #f2f5f8; }
+
+.mark-opencode { color: #8d7ff0; }
+
+.agent-mark .mark { color: #ffffff; }
+
+.agent-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.agent-name { font-size: 15px; font-weight: 700; color: var(--av-text); }
+
+.agent-state { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--av-green-text); }
+
+.agent-head .btn { margin-left: 2px; }
+
+.agent-head .spacer { flex: 1; }
+
+.agent-fields { display: flex; flex-direction: column; }
+
+.field-row { display: flex; align-items: center; gap: 10px; height: 26px; }
+
+/* 20px between glyph and word, measured: the reference's label ink starts 36px
+ * into the card's content column and its icon is 18 wide. The label is as bright
+ * as the value beside it — this is a two-column read, not a dim caption.
+ *
+ * The label column is a fixed 166px, so the value column starts at the same x
+ * on every row (measured 414 in the reference) whatever the label says. */
+.field-label { display: flex; align-items: center; gap: 20px; width: 166px; flex: none; color: var(--av-text-body); font-size: 13px; min-width: 0; }
+
+.field-label .icon { font-size: 15px; color: var(--av-text-dim); }
+
+/* Values are left-aligned at that column, not pushed to the far right: the
+ * reference puts a badge, a path and a select on the same left edge, and only
+ * the select is wide enough to reach the column's end. */
+.field-value { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* A window narrower than the reference runs the value column out of room before
+ * anything else, and a flex item's automatic minimum size would then push the
+ * value — badge, path or trigger — straight out through the card's edge. Every
+ * kind of value is therefore allowed to shrink, and the element that holds the
+ * words is the one that breaks them off with an ellipsis (a badge or a trigger
+ * keeps its own box: only the text inside it shortens). None of this is
+ * reachable at the reference's own width, where the same rows measure
+ * identically. */
+.field-value > *,
+.field-value .badge span,
+.field-value .field-link span,
+.field-value .field-select span,
+.field-value .agent-state span { min-width: 0; }
+
+.field-value .badge span,
+.field-value .field-link span,
+.field-value .field-select span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.field-plain { color: var(--av-text-body); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* A provider link reads as body text with a blue "opens elsewhere" glyph —
+ * the reference colours the arrow, not the name. */
+.field-link { color: var(--av-text-body); font-size: 12.5px; display: inline-flex; align-items: center; gap: 5px; }
+
+.field-link .icon { color: var(--av-blue); }
+
+.field-link:hover { color: var(--av-text); text-decoration: underline; }
+
+/* 200x22, measured — and a fixed width, not a percentage: the row it sits in
+ * is content-sized, so `width: 100%` collapsed to the trigger's own text. It is
+ * a ceiling rather than a floor on a narrow window, where 200px is more than the
+ * column has and the trigger has to come in to the card's edge. */
+.field-select {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 200px; max-width: 100%; flex: none;
+  height: 22px; padding: 0 8px;
+  border: 1px solid var(--av-border);
+  border-radius: var(--av-radius-sm);
+  background: var(--av-surface-hi);
+  color: var(--av-text-body);
+  font-size: 12.5px;
+}
+
+.field-select .icon { font-size: 13px; color: var(--av-text-muted); }
+
+.agent-divider { height: 1px; background: var(--av-border-soft); margin: 8px 0; flex: none; }
+
+/* The two runtime rows (Sessions, History) are a 24px pitch in the reference
+ * while the configuration rows above them are 26 — the divider's own margins
+ * take up the difference. */
+.agent-runtime .field-row { height: 24px; }
+
+.agent-note { color: var(--av-text-label); font-size: 12.5px; line-height: 1.5; margin: 6px 0 2px; }
+
+/* The config link is a button in the reference, not body text: 30px tall inside
+ * the same 37px the foot had, so the card's height does not move. Its glyphs and
+ * words are blue — the one destination that leaves the editor. */
+.agent-foot { margin-top: 3px; height: 28px; display: flex; align-items: center; }
+
+.agent-foot .btn { height: 28px; padding: 0 12px; color: var(--av-blue); }
+
+.agent-foot .btn .icon { color: var(--av-blue); }
+
+/* ---------------------------------------------------------------- badges -- */
+
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px;
+  border-radius: var(--av-radius-sm);
+  font-size: 12px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+/* A badge reads as a status word on a filled chip, not as a link: the reference
+ * paints the brand one amber-on-brown and the cool ones white-on-blue/purple. */
+.badge.brand  { background: var(--av-brand-tint);  border-color: var(--av-brand-line); color: var(--av-brand-text); }
+.badge.blue   { background: var(--av-badge-blue-bg);   border-color: var(--av-badge-blue-line);   color: var(--av-badge-blue-fg); }
+.badge.purple { background: var(--av-badge-purple-bg); border-color: var(--av-badge-purple-line); color: var(--av-badge-purple-fg); }
+/* Sampled off the reference's "Enabled" pill: a mint label (not white) on the
+ * same translucent green, with a green rule. */
+.badge.green  { background: var(--av-badge-green-bg);  border-color: var(--av-badge-green-line);  color: var(--av-badge-green-fg); }
+.badge.muted  { background: transparent; border-color: var(--av-border); color: var(--av-text-muted); }
+
+.badge .icon { font-size: 12px; }
+
+/* ------------------------------------------------------------ card rows -- */
+
+/* The reference's right column is ~5% wider than the left (measured 606 / 636
+ * inside the 1256px content box), not an even split — an even split moves the
+ * divider ~15px and the eye notices when flipping between the two. */
+/* Not a 1fr/1fr split: the reference's right column is content-sized (638) and
+ * the left takes what is left (612), with an 11-13px gutter between them. The
+ * right column may still shrink — that is what keeps narrow windows usable. */
+.cards-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 638px); gap: 12px; align-items: start; }
+
+.stack { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+.card { background: var(--av-surface); border: 1px solid var(--av-border); border-radius: var(--av-radius); overflow: hidden; display: flex; flex-direction: column; }
+
+.card-head { display: flex; align-items: center; gap: 15px; padding: 11px 14px; }
+
+/* Skills and Quick Actions carry a 55px head against the sessions cards' 60px
+ * (measured band heights; these two have no button row above their list). The
+ * left edge is 9px, not 14: the reference puts this head's 30px icon 9px in
+ * from the card and its title at 941, five pixels left of where 14 put ours. */
+.card-head.compact { padding: 8px 14px 8px 9px; }
+
+/* The Agent Configuration head is the section's, not a card's: it sits 7px
+ * further in than the cards below it and carries the same 11px band. */
+.card-head.section-head { padding: 11px 6px 11px 7px; }
+
+.card-head.section-head .card-title { line-height: 1.45; }
+
+.card-titles { display: flex; flex-direction: column; min-width: 0; }
+
+.card-title { font-size: 15px; font-weight: 700; color: var(--av-text); line-height: 1.3; }
+
+.card-sub { font-size: 12px; color: var(--av-text-muted); }
+
+/* Recent Activity puts its subtitle beside the title so the short card keeps a
+ * single-line head, exactly as the reference does. Its icon column is as wide
+ * as the small clock it carries, not the 30px the other heads use, and the gap
+ * to the title is 10: with 14px of padding that puts the clock's ink at image
+ * x900..917 and the title's at x930, which is where the reference has them. */
+.card-head.inline-sub { padding: 0 14px; gap: 10px; }
+
+.card-head.inline-sub .section-icon { width: 20px; }
+
+.card-head.inline-sub .card-titles { flex-direction: row; align-items: baseline; gap: 10px; }
+
+.card-head .spacer { flex: 1; }
+
+.card-body { padding: 0 16px 11px 11px; }
+
+.row-list { display: flex; flex-direction: column; }
+
+/* The list is a box, not a stack of full-bleed rows: the reference insets it 15px
+ * from both card edges and draws its own border and radius around the rows. */
+.list-box {
+  margin: 0 var(--av-list-inset);
+  border: 1px solid var(--av-border-soft);
+  border-radius: var(--av-radius-sm);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+
+/* Measured: a plain row is 32px, a row that lists agent involvement (chips next
+ * to a shared session, marks next to a skill) is 37px. */
+.list-row {
+  display: flex; align-items: center; gap: 10px;
+  /* Measured: the row's last control ends 7px before the box's edge (the
+   * reference's ⋯ button boxes out at image x825..850, and the box's own right
+   * edge is at 812), while the icon starts 14px after it. */
+  padding: 0 7px 0 14px;
+  height: 32px;
+  flex: none;
+}
+
+.list-box > .list-row + .list-row { border-top: 1px solid var(--av-border-soft); }
+
+.list-row.with-agents { height: 37px; }
+
+.list-row:hover { background: var(--av-surface-hi); }
+
+.list-icon { color: var(--av-text-body); font-size: 15px; flex: none; }
+
+/* The row for the project's active session is the one the reference tints. */
+.list-row.is-active .list-icon { color: var(--av-brand); }
+
+/* The title is a button (it opens the conversation), so its chrome is reset
+ * back to plain text: same font, same metrics as the row it sits in — the
+ * reference has no box here, and adding one would move the row's geometry. */
+.row-title {
+  color: var(--av-text-body); font: inherit; font-size: 13px;
+  background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* A button's automatic minimum size is its whole label, so without this the
+   * title refuses to shrink and pushes the chips and the time out of the row. */
+  min-width: 0;
+}
+
+.row-title:hover { color: var(--av-text); text-decoration: underline; text-underline-offset: 2px; }
+
+.row-main { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
+
+.row-agents { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* The time column is a fixed 63px in the shared card, right-aligned so its
+ * edge — not its text — is what lines up row to row. Project rows are wider
+ * (123px) and read left-aligned: their times start on one x, measured. */
+.row-time {
+  color: var(--av-text-muted); font-size: 12px; white-space: nowrap;
+  margin-left: 12px; min-width: 63px; text-align: right;
+}
+
+.row-time.wide { min-width: 123px; text-align: left; }
+
+.row-actions { display: flex; align-items: center; gap: 6px; margin-left: 6px; }
+
+.active-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--av-green); flex: none; }
+
+/* Opaque pills with white labels, sampled: a chip names an agent, so it is
+ * painted in that agent's hue rather than tinted into the row behind it. */
+.agent-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 9px;
+  border-radius: var(--av-radius-pill);
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.agent-chip.brand { background: var(--av-chip-brand); border-color: var(--av-chip-brand); }
+.agent-chip.blue  { background: var(--av-chip-blue); border-color: var(--av-chip-blue); }
+.agent-chip.purple { background: var(--av-chip-purple); border-color: var(--av-chip-purple); }
+
+/* The shared-session call to action is toned, not plain: the reference paints it
+ * with the brand colour so the one conversation you can pick up reads first. */
+.btn-brand { background: var(--av-brand-tint); border-color: var(--av-brand-line); color: var(--av-brand-text); }
+
+/* A button whose glyph carries the accent while its label stays neutral — the
+ * reference's Launch buttons: an orange play next to plain text. */
+.btn.icon-brand .icon { color: var(--av-brand); }
+
+.btn-brand:not(:disabled):hover { background: var(--av-brand-line); color: var(--av-text); }
+
+/* flex, not block: an inline-flex link inside a block box adds the line-box
+ * strut and quietly costs ~6px per card. */
+.card-foot { border-top: 1px solid var(--av-border-soft); padding: 10px 24px; display: flex; align-items: center; }
+
+.card-foot.compact { padding: 6px 14px; }
+
+/* 深一页的清单里，「View All」没有了，取而代之的是这张单子列了多少条：一张画了前
+ * 50 行却不说这件事的表，与「总共就这么多」看起来没有区别。 */
+.card-foot .foot-note { color: var(--av-text-muted); font-size: 12px; }
+
+/* The skills card's bands are the reference's roomiest: a 55px head and a 48px
+ * foot against the sessions cards' 60/44 (measured band by band, not style). */
+.card.skills .card-head { padding: 9px 14px; }
+
+.card.skills .card-foot { padding: 12px 24px; }
+
+.foot-link { display: inline-flex; align-items: center; gap: 6px; color: var(--av-brand-text); font-size: 12.5px; }
+
+.foot-link:hover { text-decoration: underline; }
+
+/* A tab strip lines up with the list box under it, not with the card's edge:
+ * the reference insets both by the same 15px and starts its first tab exactly
+ * there (measured: the active skills tab's left edge sits on the box's). */
+.tabs { display: flex; align-items: center; gap: 8px; margin: 0 var(--av-list-inset); padding: 5px 0 6px; }
+
+.tabs.inline { padding: 0; margin: 0; }
+
+.tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 13px;
+  border-radius: var(--av-radius-sm);
+  border: 1px solid var(--av-border);
+  color: var(--av-text-label);
+  font-size: 13px;
+}
+
+.tab.active { background: var(--av-brand-tint); border-color: var(--av-brand-line); color: var(--av-brand-text); font-weight: 600; }
+
+/* --------------------------------------------------------------- skills -- */
+
+.skill-icon {
+  width: 22px; height: 22px; border-radius: var(--av-radius-sm);
+  background: var(--av-blue-soft); color: var(--av-blue);
+  display: flex; align-items: center; justify-content: center; flex: none;
+}
+
+/* The reference gives every skill row its own tile hue (sampled: blue, magenta,
+ * green). Which one is a hash of the name, so it is stable across renders. */
+.skill-icon.tint-0 { background: rgba(60, 140, 216, 0.22); color: #6fb6ee; }
+
+.skill-icon.tint-1 { background: rgba(198, 74, 156, 0.22); color: #e88fc4; }
+
+.skill-icon.tint-2 { background: rgba(52, 176, 132, 0.22); color: #63d6ae; }
+
+.skill-icon.tint-3 { background: rgba(140, 126, 232, 0.22); color: #a99bff; }
+
+/* A skill's name sits tight against its tile in the reference (5px), unlike a
+ * session title, which is a comfortable 10 from its icon. */
+.skill-line { gap: 6px; }
+
+/* Bold, and a fixed column: in the reference all three descriptions start on the
+ * same x (image 411), so the name box is 84px whether or not the name fills it. */
+.skill-name {
+  font-family: var(--av-font-mono); font-size: 12.5px; font-weight: 700;
+  color: var(--av-text);
+  width: 84px; flex: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* The description takes whatever the name leaves and gives the rest back with an
+ * ellipsis: in a card narrower than the reference (the skills column is the one
+ * that shrinks first) it is the only element in the row that can. */
+.skill-desc { color: var(--av-text-muted); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* In the Skills section the card is the window's width, so the column that had
+ * to be 84px in the Overview can afford to hold a real skill name. */
+.card.wide .skill-name { width: 156px; }
+
+/* Measured: the three marks sit 28px apart (17px glyph, 12px gap) and end 22px
+ * before the pill — the row's own 6px gap plus this margin. */
+.skill-marks { display: flex; align-items: center; gap: 12px; margin-right: 16px; }
+
+/* The state pill is the only badge in a row, and the reference gives it 10px of
+ * side padding against the 9 the agent cards' badges use. The row's trailing ⋯
+ * is a 25px box, not the 33px the card heads use. */
+.skill-line .badge { padding: 0 10px; }
+
+.list-row .btn-icon { width: 25px; }
+
+.skill-marks svg { width: 17px; height: 17px; }
+
+/* ---------------------------------------------------------------- quick -- */
+
+/* Quick Actions: 38px buttons on a 6px grid (measured pitch 44). */
+.quick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+
+.quick-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 38px; padding: 0 12px;
+  border-radius: var(--av-radius-sm);
+  border: 1px solid var(--av-border);
+  background: var(--av-surface-hi);
+  color: var(--av-text-body);
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.quick-btn:not(:disabled):hover { background: var(--av-surface); border-color: var(--av-text-dim); }
+
+/* A quick action is disabled when core says that agent cannot launch yet (or
+ * when there is no session to continue): it says so rather than sending an
+ * action the host would drop. */
+.quick-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* The reference draws these marks large and ends each button with its label,
+ * so the icon carries the button instead of a chevron doing it. */
+.quick-btn .icon { font-size: 20px; color: var(--av-text-muted); }
+
+.quick-btn svg { width: 21px; height: 21px; flex: none; }
+
+.quick-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ------------------------------------------------------------- activity -- */
+
+/* Two columns, as the reference lays it out: three entries and the "view all"
+ * link filling the last cell. */
+/* The reference's two activity columns are content-sized, not halves: the times
+ * right-align inside each column's own width, and a hairline separates them. */
+.activity-list {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(0, max-content);
+  justify-content: space-between;
+  column-gap: 51px;
+  padding-bottom: 9px;
+}
+
+.activity-row { display: flex; align-items: center; gap: 10px; padding: 0 14px 0 17px; height: 28px; font-size: 12.5px; min-width: 0; }
+
+/* No vertical rule between the columns: a column-by-column luminance probe of
+ * the reference finds none — only the two hairlines under the first pair. */
+.activity-row:nth-child(n + 3) { border-top: 1px solid var(--av-border-soft); }
+
+.activity-row.end { justify-content: flex-end; }
+
+.activity-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--av-green); flex: none; }
+
+.activity-dot.brand { background: var(--av-brand); }
+
+.activity-dot.blue { background: var(--av-blue); }
+
+/* 「继续一条会话」记下来的是 muted，「导入」记下来的是 purple：没有规则的话它们都会
+ * 落在上面那条默认的绿色上，而绿色说的是「成功」。 */
+.activity-dot.muted { background: var(--av-text-muted); }
+
+.activity-dot.purple { background: var(--av-purple); }
+
+.activity-text { color: var(--av-text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.activity-time { margin-left: auto; color: var(--av-text-muted); font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------- states -- */
+
+.empty {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start;
+  padding: 18px 14px; color: var(--av-text-muted); font-size: 12.5px;
+}
+
+.empty strong { color: var(--av-text-body); font-size: 13px; font-weight: 600; }
+
+/* The line a slow read draws: 12.5px of quiet body text on the panel's own
+ * surface, no box and no overlay, because it must not move anything it sits
+ * above. */
+.reading {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 14px;
+  color: var(--av-text-muted);
+  font-size: 12.5px;
+}
+
+.reading .icon { font-size: 15px; color: var(--av-text-dim); }
+
+.transcript { border-top: 1px solid var(--av-border-soft); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.turn { display: flex; flex-direction: column; gap: 4px; }
+
+.turn-role { font-size: 11.5px; color: var(--av-text-muted); text-transform: none; }
+
+.turn-text { font-size: 12.5px; color: var(--av-text-body); white-space: pre-wrap; }
+
+.skeleton { display: flex; flex-direction: column; gap: 12px; }
+
+.skeleton-block { height: 88px; border-radius: var(--av-radius); background: var(--av-surface); border: 1px solid var(--av-border-soft); }
+
+.skeleton-row { height: 14px; border-radius: 4px; background: var(--av-surface-hi); }
+
+.skeleton-row.short { width: 40%; }
+
+/* --------------------------------------------------------- narrow modes -- */
+
+/* The two-card row is the first thing to fold, because it is a fixed 638px plus
+ * whatever is left: below ~1340 that leftover can no longer hold a session row
+ * (icon, title, agent chips, a 63px time and an actions button), and the title
+ * is what pays. Measured at 1280: the title came out 0px wide. Folding the row
+ * gives both cards the full width instead. */
+@media (max-width: 1340px) {
+  .cards-row { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 1180px) {
+  .agent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* The reference's 172px of air between the status block and the buttons is a
+   * wide-window luxury: below ~1180 it is the first thing to give, before the
+   * pill is allowed to wrap into two lines. */
+  .header-status { margin-right: 24px; }
+}
+
+@media (max-width: 860px) {
+  .agent-grid { grid-template-columns: minmax(0, 1fr); }
+  .quick-grid { grid-template-columns: minmax(0, 1fr); }
+  :root { --av-sidebar-width: 176px; }
+}
+
+@media (max-width: 700px) {
+  #root { flex-direction: column; }
+  .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--av-border-soft); }
+  .side-foot { margin-top: 12px; }
 }

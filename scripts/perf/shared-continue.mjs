@@ -20,7 +20,6 @@
 //   node scripts/perf/shared-continue.mjs
 //   node scripts/perf/shared-continue.mjs --runs 10 --events 100,1000
 //   node scripts/perf/shared-continue.mjs --json
-import { spawnSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -33,7 +32,7 @@ import {
 } from "../../packages/core/src/index.mjs";
 import { runtimePaths } from "../../packages/core/src/runtime/config.mjs";
 import { createPerfFixture } from "./fixture.mjs";
-import { cliEntry, measures, record, timeToShim, writeShim } from "./harness.mjs";
+import { cliEntry, configureProject, measures, record, timeToShim, writeShim } from "./harness.mjs";
 
 const argument = (name, fallback) => {
   const index = process.argv.indexOf(name);
@@ -99,11 +98,9 @@ async function main() {
     Path: `${shimDirectory}${path.delimiter}${fixture.environment.Path}`,
   };
   // init is not the measurement; the project only has to be configured before a
-  // continuing launch means anything.
-  const init = spawnSync(process.execPath,
-    [cliEntry, "init", "--agents", target, "--auth", "global", "--sessions", "project", "--history", "shared"],
-    { cwd: fixture.projectRoot, env: environment, encoding: "utf8" });
-  if (init.status !== 0) throw new Error(`init failed: ${init.stderr || init.stdout}`);
+  // continuing launch means anything. Which commands that takes is the model's
+  // answer for this target, not this file's.
+  configureProject({ projectRoot: fixture.projectRoot, environment, agents: [target] });
 
   const report = { runs, target, cases: {} };
   const sessionFor = async (size) => {
@@ -164,7 +161,10 @@ async function main() {
   }
 
   await fixture.dispose();
-  if (Object.values(report.cases).some((data) => data.failures.length > 0)) process.exitCode = 1;
+  // The budget line above is a verdict, so it decides the exit code as well —
+  // a harness that prints FAIL and exits 0 is a gate that cannot close.
+  const largest = report.cases[`delta-${sizes.at(-1)}`].overhead.median;
+  if (largest > 500 || Object.values(report.cases).some((data) => data.failures.length > 0)) process.exitCode = 1;
 }
 
 await main();

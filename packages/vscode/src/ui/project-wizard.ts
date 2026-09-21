@@ -30,18 +30,32 @@ export interface WizardHost<D = unknown> {
   ask(view: WizardView<D>): Promise<WizardAnswer>;
 }
 
-export interface WizardOutcome<D> {
+export interface WizardOutcome<D, R = unknown> {
   /** False when the user cancelled or answered the last step with No. */
   applied: boolean;
   draft: D;
+  /**
+   * What `commit` returned, or null when it never ran. Handing it back here is
+   * what keeps the caller from having to smuggle it out of the callback in a
+   * variable it then has to un-narrow.
+   */
+  result: R | null;
 }
 
 function answeredSteps<D>(steps: readonly ProjectWizardStep<D>[], draft: D, upTo: number): AnsweredStep[] {
   const answered: AnsweredStep[] = [];
-  for (const step of steps.slice(0, upTo)) {
+  const list = steps.slice(0, upTo);
+  for (let at = 0; at < list.length; at += 1) {
+    const step = list[at];
     // The apply step is the confirmation itself; it has no answer to collapse.
     if (step.apply || typeof step.summary !== "function") continue;
-    answered.push({ title: step.title, summary: step.summary(draft) });
+    // Consecutive steps in one group are one answer to the user — five API
+    // fields fold into one line, joined with " │", exactly as the terminal
+    // folds them. The group's title is its first step's.
+    const group = step.group ? list.slice(at).filter((entry) => entry.group === step.group) : [step];
+    if (step.group) at += group.length - 1;
+    const parts = group.map((entry) => entry.summary?.(draft)).filter((summary) => Boolean(summary));
+    answered.push({ title: step.title, summary: parts.join(" │ ") });
   }
   return answered;
 }
@@ -55,12 +69,12 @@ function answeredSteps<D>(steps: readonly ProjectWizardStep<D>[], draft: D, upTo
  * changes which questions follow, and a step's id is what makes going back
  * re-open the same question rather than a new one.
  */
-export async function runProjectWizard<D>(
+export async function runProjectWizard<D, R = unknown>(
   draft: D,
   stepsFor: (draft: D) => ProjectWizardStep<D>[],
   host: WizardHost<D>,
-  commit: (draft: D) => Promise<unknown>,
-): Promise<WizardOutcome<D>> {
+  commit: (draft: D) => Promise<R>,
+): Promise<WizardOutcome<D, R>> {
   let steps = stepsFor(draft);
   let index = 0;
   while (index < steps.length) {
@@ -72,7 +86,7 @@ export async function runProjectWizard<D>(
       answered: answeredSteps(steps, draft, index),
       draft,
     });
-    if (answer === "cancel") return { applied: false, draft };
+    if (answer === "cancel") return { applied: false, draft, result: null };
     if (answer === "back") {
       // The first step has nowhere to go back to; the host hides its Back
       // button, and a stray Back is ignored rather than cancelling.
@@ -80,9 +94,8 @@ export async function runProjectWizard<D>(
       continue;
     }
     if (step.apply) {
-      if (answer.value !== true) return { applied: false, draft };
-      await commit(draft);
-      return { applied: true, draft };
+      if (answer.value !== true) return { applied: false, draft, result: null };
+      return { applied: true, draft, result: await commit(draft) };
     }
     if (step.kind === "multi") {
       const values = answer.value as string[];
@@ -90,6 +103,16 @@ export async function runProjectWizard<D>(
       // frame open, so this only guards a host that answered anyway.
       if (values.length < (step.minSelected ?? 0)) continue;
       step.write?.(draft, values);
+    } else if (step.kind === "text") {
+      // A free-text answer is required to say something (the same rule the
+      // terminal applies): an empty endpoint or model is not a configuration.
+      // A step marked `optional` is the exception — the credential is never
+      // filled in for the reader, so an empty field there means "keep the one
+      // that is already written", and refusing it would trap the user on a
+      // question they cannot answer.
+      const value = String(answer.value ?? "").trim();
+      if (value.length === 0 && step.optional !== true) continue;
+      step.write?.(draft, value);
     } else {
       step.write?.(draft, answer.value);
     }
@@ -99,5 +122,5 @@ export async function runProjectWizard<D>(
     const position = steps.findIndex((candidate) => candidate.id === step.id);
     index = Math.min(position + 1, Math.max(0, steps.length - 1));
   }
-  return { applied: false, draft };
+  return { applied: false, draft, result: null };
 }

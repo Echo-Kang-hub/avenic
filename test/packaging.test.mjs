@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -53,26 +53,31 @@ test("core manifest is configured for public publishing", async () => {
   assert.deepEqual(manifest.engines, { node: ">=18.17" });
 });
 
+// 手写名单会随删除而腐烂（模型库删除后这里还留着 TOGGLE_KEYS/probeUrl），
+// 所以改成从扩展源码反推：扩展真正 import 的每个名字，声明文件必须都有。
+// 扩展的类型检查（tsc）是同一件事的另一半，但那条只在扩展目录里跑得到；
+// 这一条在仓库根就能拦住「core 删了导出、扩展还在 import」。
 test("core type declarations cover the extension contract", async () => {
   const dts = await readFile(path.join(packageRoot, "packages", "core", "index.d.ts"), "utf8");
-  for (const name of [
-    "AGENTS", "getAgent", "agentExecutableAvailable",
-    "initializeAgent", "deinitializeAgent", "setLocalAuth", "clearLocalAuth",
-    "effectiveAgentConfig", "loadRuntime", "getSessionAdapter", "spawnExecutableSync",
-    "createInstallContext", "installedPackIds", "installPacks", "uninstallPacks",
-    "skillsInstallationStatus", "resolveInstallSource", "addDirectSkills", "removeExternalSkills",
-    "readDirectState", "loadKnownCatalogs", "setDefaultCatalogSpec", "loadDefaultCatalogSpec",
-    "registerCatalog", "ensureCatalog", "buildCatalog", "loadPacks", "resolvePacks",
-    "cloneHead", "detectSkillRoot", "discoverSourceSkills", "locateProjectRoot",
-    // 扩展面板与 CLI 共用同一个缓存路径与同一句同步结果，不允许各自再算一遍。
-    "catalogCacheDirectory", "hubSyncSummary", "shortRevision", "spawnExecutable",
-    // 扩展面板直接依赖的三个导出：开关清单/开关落点表（面板显示「实际写入的键名」）与
-    // 测试请求地址解析（「将请求：<地址>」实时预览）。缺任何一个，面板就只能自己抄一份
-    // 业务逻辑，而设计 §9.7 禁止那样做。
-    "TOGGLE_KEYS", "TOGGLE_ENTRIES", "probeUrl",
-  ]) {
-    assert.match(dts, new RegExp(`\\b${name}\\b`), name);
-  }
+  const src = path.join(packageRoot, "packages", "vscode", "src");
+  const imported = new Set();
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(file); continue; }
+      if (!entry.name.endsWith(".ts")) continue;
+      const source = await readFile(file, "utf8");
+      for (const block of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@avenic\/core"/g)) {
+        for (const raw of block[1].split(",")) {
+          const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim();
+          if (name) imported.add(name);
+        }
+      }
+    }
+  };
+  await walk(src);
+  assert.ok(imported.size > 40, `只解析到 ${imported.size} 个 @avenic/core 导入——正则过期了`);
+  for (const name of imported) assert.match(dts, new RegExp(`\\b${name}\\b`), name);
 });
 
 test("root manifest carries the internal avenic-repo identity", async () => {

@@ -26,13 +26,14 @@ export {
   loadRuntime,
   getActiveCanonicalSessionId,
   setActiveCanonicalSession,
-  projectAuthEnvironment,
   projectConfig,
   runtimePaths,
+  agentHomeRoot,
   setLocalAuth,
-  validateAuthMode,
-  validateSessionInteropMode,
-  validateSessionsMode,
+  viewOf,
+  validateAuthMethod,
+  validateHistoryMode,
+  validateScope,
 } from "./runtime/config.mjs";
 export {
   REQUIRED_RULES,
@@ -59,21 +60,41 @@ export {
 export { WATCH_INTERVAL_MS, flushNativeSessions, startNativeWatch } from "./runtime/native-watch.mjs";
 export { durableEnvironment } from "./runtime/environment.mjs";
 export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
-export { agentEnvironment, resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
-export { spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
+export { machineEnvironment, agentRuntimeEnvironment, effectiveAgentEnvironment, launchMethodQuestion, launchMethodReadiness, resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
+export {
+  PROJECTION_FILE,
+  apiAgents,
+  apiCredential,
+  apiEntries,
+  apiPrefill,
+  apiRelative,
+  apiTarget,
+  codexLaunchArguments,
+  codexWireApi,
+  providerIdFor,
+  readApiConfiguration,
+  readCodexProjectConfig,
+  removeApiConfiguration,
+  writeApiConfiguration,
+} from "./runtime/api-config.mjs";
+export { quoteShellLine, spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
   reconcileCanonicalSession,
-  setSessionInteropMode,
+  setHistoryMode,
   applyProjectConfiguration,
+  beginLaunch,
   completeCanonicalContinuation,
   continueCanonicalSession,
   ensureNativeProjection,
   finishLaunch,
   importProjectSessions,
   joinLaunchGroup,
+  methodSwitches,
+  removalTargets,
   observeSharedNativeSessions,
   recoverSharedNativeSessions,
+  releasePreviousMethod,
   continuationLaunchArguments,
   prepareCanonicalContinuation,
   projectCanonicalSession,
@@ -85,7 +106,7 @@ export {
   projectDraftSubmission,
   projectWizardSteps,
 } from "./runtime/project-wizard.mjs";
-export { buildHandoff, HANDOFF_SCHEMA_VERSION } from "./runtime/handoff.mjs";
+export { buildHandoff } from "./runtime/handoff.mjs";
 export {
   PROJECT_ROOT_TOKEN,
   acquireSessionLease,
@@ -96,22 +117,16 @@ export {
   listFiles,
   markLaunchClosing,
   markLaunchFinished,
-  mergeFiles,
-  normalizeProjectIdentity,
   processAlive,
   readFirstJsonLine,
   releaseSessionLease,
-  replaceDirectory,
   revertFrom,
   samePath,
   sessionLeasePath,
-  snapshotFiles,
   snapshotInto,
-  transformJsonLines,
 } from "./runtime/sessions.mjs";
 export { getSessionAdapter } from "./runtime/adapters/index.mjs";
 export {
-  CANONICAL_SESSION_SCHEMA_VERSION,
   appendCanonicalEvents,
   canonicalSessionRevision,
   countCanonicalEvents,
@@ -129,33 +144,18 @@ export {
   agentLabel,
   buildProjection,
   eventAgent,
-  eventNativeSession,
-  eventText,
   projectableEvents,
   projectionItems,
   renderBriefing,
 } from "./runtime/projection.mjs";
-export {
-  TRANSCRIPT_SCHEMA_VERSION,
-  readTranscript,
-  transcriptModel,
-  transcriptSummary,
-  transcriptTurns,
-  turnPreview,
-} from "./runtime/transcript.mjs";
-export { STATUS_SCHEMA_VERSION, collectStatus } from "./status.mjs";
+export { readTranscript, transcriptModel, transcriptSummary, transcriptTurns, turnPreview } from "./runtime/transcript.mjs";
+export { collectStatus } from "./status.mjs";
 
 export { fail } from "./util/fail.mjs";
 export { isInside, removeEmptyDirectory } from "./util/fs.mjs";
 export { readJson, writeJson } from "./util/json.mjs";
 export { shortTimestamp } from "./util/stamp.mjs";
-export {
-  assertSafeId,
-  assertSafeSkillName,
-  assertSafeSkillPath,
-  assertSafeSkillRoot,
-  assertSafeRelativePath,
-} from "./skills/ids.mjs";
+export { assertSafeId, assertSafeSkillName, assertSafeSkillPath, assertSafeSkillRoot } from "./skills/ids.mjs";
 export {
   GLOBAL_TARGETS,
   LEGACY_PROFILE_FILE,
@@ -198,16 +198,7 @@ export {
   setDefaultCatalogSpec,
   shortRevision,
 } from "./skills/catalog.mjs";
-export {
-  addDirectSkills,
-  directLicensesRoot,
-  directRoot,
-  discoverDirectSkills,
-  readDirectState,
-  removeDirectSkills,
-  removeExternalSkills,
-  writeDirectState,
-} from "./skills/direct.mjs";
+export { addDirectSkills, discoverDirectSkills, readDirectState, removeDirectSkills, removeExternalSkills } from "./skills/direct.mjs";
 export { printTree } from "./skills/ui.mjs";
 export {
   buildCatalog,
@@ -215,18 +206,14 @@ export {
   discoverSourceSkills,
   findSource,
   loadSources,
-  parseFrontmatterName,
-  readSkill,
   registerSource,
   saveSources,
   stageSource,
 } from "./skills/sources.mjs";
 export {
   addSkillsToPacks,
-  catalogReferences,
   loadPacks,
   normalizePackIds,
-  packContainsSkill,
   parsePackArguments,
   pruneCatalogSkills,
   resolvePack,
@@ -254,7 +241,6 @@ export {
   removeAllManagedSkills,
   removeInstallationFiles,
   removeSkillDirectories,
-  resolveInstallPacks,
   resolveInstallSource,
   skillsInstallationStatus,
   uninstallPacks,
@@ -269,68 +255,8 @@ export {
   linkSummaryChanged,
   linkTargetPreference,
   logConflicts,
-  normalizeLinkTarget,
-  readLinkTarget,
   removeLinkSafely,
   sameTree,
   shareTargets,
 } from "./skills/links.mjs";
 export { directSkillNames, removeAllInstalledSkills } from "./skills/uninstall.mjs";
-export {
-  API_TYPES,
-  AUTH_FIELDS,
-  CODEX_EFFORTS,
-  MODEL_ROLES,
-  TOGGLE_KEYS,
-  canonicalJson,
-  emptyLibrary,
-  libraryFingerprint,
-  maskSecret,
-  normalizeProfile,
-  validateBaseUrl,
-  validateEnvKey,
-  validateModelId,
-  validateProviderId,
-} from "./model/schema.mjs";
-export {
-  CLAUDE_SETTINGS_FILE,
-  LIBRARY_SCHEMA_VERSION,
-  PROJECT_MODEL_FILE,
-  PROJECT_SCHEMA_VERSION,
-  claudeSettingsFile,
-  modelsFile,
-  modelsTempRoot,
-  projectModelFile,
-  projectTempRoot,
-} from "./model/paths.mjs";
-export { transact } from "./model/transaction.mjs";
-export { getProfile, listProfiles, readLibrary, removeProfile, upsertProfile } from "./model/library.mjs";
-export {
-  ROLE_KEYS,
-  TOGGLE_ENTRIES,
-  buildClaudeEntries,
-  deletePath,
-  mergeClaudeSettings,
-  readPath,
-  rollbackClaudeSettings,
-  writePath,
-} from "./model/project-claude.mjs";
-export {
-  bindProject,
-  clearProjectBinding,
-  danglingMessage,
-  projectModelStatus,
-  readBinding,
-  resolveProjectProfile,
-} from "./model/binding.mjs";
-export { MODEL_RULES, ensureModelGitignore } from "./model/gitignore.mjs";
-export {
-  agentCompatibility,
-  buildLaunchInjection,
-  claudeEnvironment,
-  codexInjection,
-  opencodeInjection,
-} from "./model/inject.mjs";
-export { parseConfigJson, parseConfigText, recognizeEnvMap } from "./model/parse.mjs";
-export { PRESETS, applyPreset } from "./model/presets.mjs";
-export { probeUrl, testConnection } from "./model/probe.mjs";

@@ -34,12 +34,12 @@ export async function linkTargetPreference(context) {
   return Array.isArray(lock?.targets) ? lock.targets : null;
 }
 
-export function normalizeLinkTarget(linkPath, rawTarget) {
+function normalizeLinkTarget(linkPath, rawTarget) {
   const stripped = rawTarget.replace(WINDOWS_PREFIX, "");
   return path.resolve(path.dirname(linkPath), stripped);
 }
 
-export async function readLinkTarget(linkPath) {
+async function readLinkTarget(linkPath) {
   try {
     return normalizeLinkTarget(linkPath, await readlink(linkPath));
   } catch {

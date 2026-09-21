@@ -3,26 +3,58 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ALLOWED_COMMANDS, isWebviewMessage } from "../src/dashboard/protocol.ts";
+import { SECTIONS, isWebviewMessage } from "../src/dashboard/protocol.ts";
+
+// 面板的静态层守着自己的四条纪律：不请求远程资源（CSP 里没有远程来源）、用户数据
+// 不经 innerHTML、发出的消息都是宿主认识的、用到的图标都有字形。这些都是「肉眼看不
+// 出来但一坏就整块失灵」的东西：一个拼错的 action 在两端都写对的时候才会显形。
 
 const media = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "dashboard");
+const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function read(part: string): Promise<string> {
+  return readFile(path.join(media, part), "utf8");
+}
 
 test("html has no remote resources, carries CSP nonce placeholder and allows local font", async () => {
-  const html = await readFile(path.join(media, "view.html"), "utf8");
+  const html = await read("view.html");
   assert.ok(!/https?:\/\//.test(html)); // 无远程
   assert.match(html, /nonce="[^"]+"/);
   assert.match(html, /content-security-policy/i);
   assert.match(html, /font-src\s+\{\{cspSource\}\}/); // 随包 codicon.ttf 需 font-src 放行
 });
 
+test("the brand mark is a placeholder the host fills in, never a path of our own", async () => {
+  const html = await read("view.html");
+  // 运行时不得引用开发机路径，也不得把图标塞成 data: URI：两种做法都会让 VSIX 里
+  // 的副本形同虚设（前者在本机恰好能看见，后者把资源写死在页面里）。
+  assert.match(html, /<img class="side-brand-mark" src="\{\{iconUri\}\}"/);
+  assert.ok(!/file:\/\//.test(html));
+  assert.ok(!/[A-Za-z]:[\\/]/.test(html));
+  assert.ok(!/data:image\//.test(html));
+  // 品牌锁定区：图标 + AVENIC + 标语，与参考图同一结构。
+  assert.match(html, /side-brand-name">AVENIC</);
+  assert.match(html, /side-brand-tag">AI Workflows\. Yours\.</);
+});
+
+test("the shell is static html, so the first paint does not wait for data", async () => {
+  const html = await read("view.html");
+  const js = await read("main.js");
+  // 侧栏与内容容器都在模板里；脚本只往里填（render() 第一句就是取这两个节点）。
+  assert.match(html, /<aside class="sidebar">/);
+  assert.match(html, /<div class="content" id="content">/);
+  assert.match(js, /getElementById\("content"\)/);
+  assert.match(js, /getElementById\("nav"\)/);
+});
+
 test("render code never assigns user data via innerHTML", async () => {
-  const js = await readFile(path.join(media, "main.js"), "utf8");
+  const js = await read("main.js");
   assert.ok(!/\.innerHTML\s*=/.test(js));
   assert.ok(/textContent/.test(js));
 });
 
 test("style uses vscode theme variables and bundles the codicon font locally", async () => {
-  const css = await readFile(path.join(media, "style.css"), "utf8");
+  const css = await read("style.css");
   assert.ok(/--vscode-/.test(css));
   assert.match(css, /@font-face/);
   assert.match(css, /url\("\.\/codicon\.ttf"\)/); // 随包字体，不请求远程
@@ -31,75 +63,220 @@ test("style uses vscode theme variables and bundles the codicon font locally", a
   await access(path.join(media, "codicon.ttf"));
 });
 
+test("the packaged media names no path of its own", async () => {
+  for (const part of ["view.html", "main.js", "style.css"]) {
+    const text = await read(part);
+    assert.ok(!/file:\/\//.test(text), `${part} 不得引用 file:// URL`);
+    assert.ok(!/[A-Za-z]:\\\\/.test(text), `${part} 不得引用开发机的绝对路径`);
+  }
+});
+
+// 宿主只认识协议里列出的 action，其它一概丢弃。所以「渲染层能发的」必须是「宿主
+// 会接的」——两边各写各的名单，拼错的那一个会在用户点下去时静默消失。渲染层发得出
+// 动作的地方有两处：脚本里的字面量，以及模板里带 data-action 的侧栏条目。
+function postedActions(js: string, html: string): string[] {
+  const names = new Set([...js.matchAll(/action:\s*"([A-Za-z][A-Za-z0-9]*)"/g)].map((m) => m[1]!));
+  // 「配置过了就重配、没配置过就初始化」是同一个按钮的两种答话，两个名字都要算数：
+  // 分辨它们的是数据，不是哪一支代码长得像主路。少算一支，反方向那道题就会把
+  // 另一个名字报成没人用的死条目。
+  for (const m of js.matchAll(/action:\s*[^,;\n]*?\?\s*"([A-Za-z][A-Za-z0-9]*)"\s*:\s*"([A-Za-z][A-Za-z0-9]*)"/g)) {
+    names.add(m[1]!);
+    names.add(m[2]!);
+  }
+  for (const m of html.matchAll(/data-action="([A-Za-z][A-Za-z0-9]*)"/g)) names.add(m[1]!);
+  return [...names].sort();
+}
+
+// 每个 action 需要一个形状正确的样本：协议校验的不是名字，是名字加它带的参数。
+const SAMPLES: Record<string, Record<string, unknown>> = {
+  launch: { agent: "claude" },
+  change: { agent: "claude" },
+  openConfig: { agent: "claude" },
+  continueNative: { agent: "claude", id: "abc123" },
+  continueShared: { id: "abc123" },
+  viewSession: { id: "abc123" },
+  setActive: { id: "abc123" },
+  importSkill: {},
+  manageSkills: {},
+  installPack: { pack: "release-kit" },
+  syncHub: {},
+  viewLogs: {},
+  switchHistory: {},
+  initialize: {},
+  reconfigure: {},
+  openProject: {},
+  revealProject: {},
+  openFolder: {},
+  openInTerminal: {},
+  openDocs: {},
+  openSettings: {},
+};
+
+test("every action the renderer posts is one the host accepts", async () => {
+  const posted = postedActions(await read("main.js"), await read("view.html"));
+  assert.ok(posted.length >= 10, `解析本身没跑偏：读到 ${posted.length} 个动作`);
+  for (const name of posted) {
+    const sample = SAMPLES[name];
+    assert.ok(sample !== undefined, `渲染层发的 ${name} 不在样本表里（要么改对名字，要么补上样本）`);
+    assert.ok(isWebviewMessage({ type: "action", action: name, ...sample }), `宿主会丢弃 ${name}`);
+  }
+});
+
+test("every action the host accepts has a way in from the renderer", async () => {
+  // 反方向：只有协议没有入口的动作是死条目——它在类型里存在，用户永远点不到，
+  // 于是没人会发现它其实从没跑通过。
+  const protocol = await readFile(path.join(pkgDir, "src", "dashboard", "protocol.ts"), "utf8");
+  const declared = [...new Set([...protocol.matchAll(/\bcase "([A-Za-z][A-Za-z0-9]*)":/g)].map((m) => m[1]!))];
+  assert.ok(declared.length >= 10, `解析本身没跑偏：协议里有 ${declared.length} 个动作`);
+  const posted = new Set(postedActions(await read("main.js"), await read("view.html")));
+  for (const name of declared) {
+    assert.ok(posted.has(name), `协议里的 ${name} 没有任何按钮会发它`);
+  }
+});
+
+test("the sections the renderer navigates to are the ones the protocol knows", async () => {
+  const js = await read("main.js");
+  const navigated = [...new Set([...js.matchAll(/section:\s*"([a-z]+)"/g)].map((m) => m[1]!))];
+  assert.ok(navigated.length > 0);
+  for (const section of navigated) {
+    assert.ok((SECTIONS as readonly string[]).includes(section), `${section} 不是合法分区`);
+    assert.ok(isWebviewMessage({ type: "navigate", section }), `宿主会丢弃 navigate → ${section}`);
+  }
+  // 模板里的导航项也必须是真分区：写错的那一个点下去只会回到默认页。
+  const html = await read("view.html");
+  const template = [...html.matchAll(/data-section="([a-z]+)"/g)].map((m) => m[1]!);
+  assert.ok(template.length > 0);
+  for (const section of template) assert.ok((SECTIONS as readonly string[]).includes(section), `侧栏的 ${section} 不是合法分区`);
+});
+
+test("every icon name used by the media has a style.css glyph mapping", async () => {
+  const js = await read("main.js");
+  const css = await read("style.css");
+  const names = new Set<string>();
+  for (const m of js.matchAll(/icon\(\s*"([a-z][a-z0-9-]*)"/g)) names.add(m[1]!);
+  for (const m of js.matchAll(/iconName:\s*"([a-z][a-z0-9-]*)"/g)) names.add(m[1]!);
+  // 模板里的图标是写死的 data-icon；渲染层创建的走 icon()。两边都得有字形。
+  const html = await read("view.html");
+  for (const m of html.matchAll(/data-icon="([a-z][a-z0-9-]*)"/g)) names.add(m[1]!);
+  assert.ok(names.size > 0);
+  for (const name of names) {
+    assert.ok(css.includes(`.icon[data-icon="${name}"]::before`), `缺少图标字形映射：data-icon="${name}"`);
+  }
+});
+
 test("compressed dashboard keeps agent identity via inline SVG marks", async () => {
-  const js = await readFile(path.join(media, "main.js"), "utf8");
-  const css = await readFile(path.join(media, "style.css"), "utf8");
+  const js = await read("main.js");
   // 品牌标记：inline SVG（createElementNS），无远程资源、不经 innerHTML
   assert.match(js, /createElementNS/);
   assert.match(js, /agentMark/);
   assert.ok(js.includes('agentId === "claude"'));
   assert.ok(js.includes('agentId === "codex"'));
   assert.ok(!/\.innerHTML\s*=/.test(js)); // 品牌标记同样不经 innerHTML
-  // 品牌标记来自官方标记路径数据（LobeHub 官方静态图标库）：
-  // codex=六边形环结（CODEX_D 常量）、opencode=回字方框（外框镂空 + 偏下内块）
-  assert.match(js, /const CODEX_D = "M8\.086\.457/);
-  assert.match(js, /M2 2h20v20H2V2zm5 5h10v10H7V7z/);
-  // 连字符属性（fill-rule 等）经 setAttribute 写入——避免被图标名映射正则误捕获
-  assert.match(js, /setAttribute\("fill-rule", "evenodd"\)/);
-  // 内容驱动的降级：agent 卡片容器查询按自身宽度隐藏文字，视口 @media 不含 agent 规则
-  // （600/430 视口断点会在文字仍放得下时提前隐藏——用户反馈的缺陷，已废弃）
-  assert.match(css, /container-type: inline-size/);
-  assert.match(css, /@container\s*\(max-width: 430px\)/);
-  assert.match(css, /@container\s*\(max-width: 180px\)/);
-  // 第一级（≤430px 卡片）：只隐「状态 + 元信息」行，名称保留
-  assert.match(css, /@container\s*\(max-width: 430px\)\s*\{[\s\S]*?\.agent-status\s*\{\s*display:\s*none\s*;?\s*\}\s*\n\s*\.agent-meta\s*\{\s*display:\s*none/);
-  // 第二级（≤180px 卡片）：名称也隐，只剩品牌图标 + 状态点
-  assert.match(css, /@container\s*\(max-width: 180px\)\s*\{[\s\S]*?\.agent-name\s*\{\s*display:\s*none/);
-  // 每条 agent 形态隐藏规则必须位于最近的 @container 块内，不得挂回视口 @media
-  // （每条规则前最近的块开启者必须匹配 @container）
-  for (const m of css.matchAll(/\.agent-(?:status|meta|name)\s*\{\s*display:\s*none/g)) {
-    const before = css.slice(0, m.index!);
-    assert.ok(
-      before.lastIndexOf("@container") > before.lastIndexOf("@media"),
-      "agent 形态隐藏只能在 @container 中，不得挂回视口 @media",
-    );
-  }
+  // 三个标记都是**描边**画出来的（fill:none + stroke:currentColor）：参考图里它们
+  // 是等宽的线条，填充版的小尺寸下糊成一团，而线条的颜色要能随上下文变（卡片里
+  // 一律白色，其他地方是各自的本色）。
+  assert.match(js, /const CODEX_RING = "M8\.086\.457/);
+  assert.match(js, /stroke: "currentColor"/);
+  assert.match(js, /fill: "none"/);
+  assert.ok(!/fill-rule/.test(js), "没有需要镂空的填充路径了，evenodd 也随之消失");
+  // 每个标记的形状来自各自那一支：claude 的四向星芒、codex 的环结、opencode 的双环。
+  assert.match(js, /"M8 2\.2v11\.6"/);
+  assert.match(js, /for \(const cx of \["6\.7", "17\.3"\]\)/);
+  // 连字符属性（stroke-width 等）经 setAttribute 写入
+  assert.match(js, /createElementNS\(SVG_NS, tag\)[\s\S]{0,120}setAttribute\(key, value\)/);
+  // 颜色在样式表里，一处例外在卡片内：agent-mark 里三个标记都是白色。
+  const css = await read("style.css");
+  assert.match(css, /\.mark-claude\s*\{[^}]*color:/);
+  assert.match(css, /\.agent-mark \.mark\s*\{[^}]*color:\s*#ffffff/);
 });
 
-test("quick actions and the host command allowlist cannot drift apart", async () => {
-  const js = await readFile(path.join(media, "main.js"), "utf8");
-  const declared = [...js.matchAll(/command: "([A-Za-z][A-Za-z0-9.]*)", label: "/g)].map((m) => m[1]!);
-  assert.ok(declared.length > 0);
-  // 点击只会发 { type: "command", command }：按钮不在白名单里就是死的（host 静默丢弃）。
-  for (const command of declared) {
-    assert.ok(isWebviewMessage({ type: "command", command }), `快捷操作 ${command} 不在转发白名单里`);
-  }
-  // 反向：白名单里的命令必须有按钮，否则是只有协议没有入口的死条目。
-  for (const command of ALLOWED_COMMANDS) {
-    assert.ok(declared.includes(command), `白名单命令 ${command} 没有对应的快捷操作按钮`);
-  }
+test("the renderer reads the host's own fields rather than inventing labels", async () => {
+  const js = await read("main.js");
+  // 状态胶囊与「谁配置了什么」都由宿主给（statusText / fields），渲染层不自己判断
+  // Ready 还是 Unavailable——那是 core 的结论，不是界面的猜测。
+  assert.match(js, /agent\.statusText/);
+  assert.ok(!/agent\.ready \? "Ready"/.test(js), "不得由渲染层自己拼状态文案");
+  assert.match(js, /agent\.fields/);
 });
 
-test("model config entry is project-independent (device-level library)", async () => {
-  const js = await readFile(path.join(media, "main.js"), "utf8");
-  // 模型库是设备级的：未打开项目文件夹时「模型配置」也必须可点，不得进 PROJECT_SCOPED。
-  const scoped = js.match(/const PROJECT_SCOPED = new Set\(\[([\s\S]*?)\]\)/)![1]!;
-  assert.ok(!scoped.includes("model.open"), "模型配置不得依赖项目上下文");
-  assert.ok(scoped.includes("agents.init")); // 解析本身没跑偏：确实读到了那个集合
+test("images come from the extension's own resources and nowhere else", async () => {
+  const html = await read("view.html");
+  // 品牌图标经 asWebviewUri 进来，CSP 就只放行这一处来源：`data:` 一旦被放行，
+  // 「图标塞成 data: URI」这条更省事的路随时会被走回去，而那样 VSIX 里的副本就成了摆设。
+  assert.match(html, /img-src \{\{cspSource\}\};/);
+  assert.ok(!/img-src[^;]*data:/.test(html), "img-src 不得放行 data:");
+  assert.ok(!/img-src[^;]*https:/.test(html), "img-src 不得放行远程");
+  assert.match(html, /<img class="side-brand-mark" src="\{\{iconUri\}\}"/);
 });
 
-test("every icon name used by main.js has a style.css glyph mapping", async () => {
-  const js = await readFile(path.join(media, "main.js"), "utf8");
-  const css = await readFile(path.join(media, "style.css"), "utf8");
-  const names = new Set<string>();
-  for (const m of js.matchAll(/icon\(\s*"([a-z][a-z0-9-]*)"|iconName:\s*"([a-z][a-z0-9-]*)"|"([a-z][a-z0-9-]*)":\s*"([a-z][a-z0-9-]*)"/g)) {
-    names.add(m[1] ?? m[2] ?? m[4]!);
+test("the registry line keeps core's three answers apart", async () => {
+  const js = await read("main.js");
+  // 「从未同步」「落后于项目钉住的那一版」「同步过」是三种状态，两个布尔说不清；
+  // 宿主把 core 的三态原样传来，渲染层就必须把三种都说出来。
+  assert.match(js, /data\.hub\.state === "current"/);
+  assert.match(js, /· up to date/);
+  assert.match(js, /· stale/);
+  assert.match(js, /Never synced/);
+  // 按钮跟着状态走：已经是当前那一份时说「再同步一次」，否则说「同步」。
+  assert.match(js, /data\.hub\.state === "current" \? "Sync again" : "Sync"/);
+});
+
+test("the state dots the payload can ask for all have a colour", async () => {
+  const css = await read("style.css");
+  const js = await read("main.js");
+  // 点的颜色来自宿主给的 tone（字段行）与活动日志的 tone，所以两者能取的每一档都得
+  // 有规则——少一档就是「一个不说话的空心点」，而它在参考图里是有颜色的。
+  assert.match(js, /el\("span", "dot " \+ field\.tone\)/, "状态点带着宿主给的 tone 上屏");
+  for (const tone of ["brand", "blue", "purple", "green", "muted"]) {
+    assert.ok(css.includes(`.dot.${tone}`), `缺少 .dot.${tone}`);
   }
-  assert.ok(names.size > 0);
-  for (const name of names) {
-    assert.ok(
-      css.includes(`.icon[data-icon="${name}"]::before`),
-      `缺少图标字形映射：data-icon="${name}"`,
-    );
+  for (const tone of ["brand", "blue", "purple", "muted"]) {
+    assert.ok(css.includes(`.activity-dot.${tone}`), `缺少 .activity-dot.${tone}`);
   }
+  // 列表卡片底部那句「列了多少、总共有多少」也要有样式，否则它会长成下一行的正文。
+  assert.ok(css.includes(".foot-note"), "缺少清单页脚注样式");
+});
+
+test("the packaged brand mark is the real icon, with its transparency intact", async () => {
+  const icon = await readFile(path.join(pkgDir, "media", "avenic.png"));
+  // PNG 头：宽 16..19、高 20..23、颜色类型 25（6 = RGBA）。面板左上角那块深色底上，
+  // 透明必须真的透明——没有 alpha 通道的图标会是一块带背景色的方片。
+  assert.equal(icon.subarray(1, 4).toString("latin1"), "PNG", "品牌图标必须是 PNG");
+  const width = icon.readUInt32BE(16);
+  const height = icon.readUInt32BE(20);
+  assert.equal(icon[25], 6, "品牌图标必须带 alpha 通道");
+  assert.ok(width >= 256 && height >= 256, `高 DPI 下要够清晰，当前 ${width}×${height}`);
+  // 市场页那一枚与活动栏那一枚也是真资源：package.json 指的是它们，指错就是空图标。
+  const manifest = JSON.parse(await readFile(path.join(pkgDir, "package.json"), "utf8")) as { icon?: string; contributes: { viewsContainers: { activitybar: Array<{ icon: string }> } } };
+  await access(path.join(pkgDir, manifest.icon ?? "media/icon.png"));
+  for (const container of manifest.contributes.viewsContainers.activitybar) {
+    await access(path.join(pkgDir, container.icon));
+  }
+  // 旧资产不再被任何地方引用：图标只有一处来源，留着的那份就是唯一的它。
+  const html = await read("view.html");
+  assert.ok(!/Avenic\.png/.test(html) && !/logo/i.test(html), "模板里不得再有第二个品牌标记");
+});
+
+test("the header's title and path each ellipsise in their own column", async () => {
+  const css = await read("style.css");
+  // 真实窗口里量出来的那一场：编辑器区窄下来、项目路径又长的时候，路径曾经画到
+  // 状态块上面去（两行字叠在一起）。裁编写在真正装着字的那一层——`.proj-path`
+  // 是按钮、路径在它的 span 里，只给按钮写 text-overflow 是写给一个没有直接文字的
+  // 元素。这一条钉住的是那次的修法本身。
+  const block = (selector: string) => {
+    const at = css.indexOf(selector);
+    assert.ok(at >= 0, `样式表里没有 ${selector}`);
+    return css.slice(at, css.indexOf("}", at));
+  };
+  for (const [selector, key] of [["\n.proj-title {", "标题"], ["\n.proj-path #project-root {", "路径那一格"]] as const) {
+    const rule = block(selector);
+    assert.match(rule, /white-space:\s*nowrap/, `${key}不得换行`);
+    assert.match(rule, /overflow:\s*hidden/, `${key}要真的裁掉超出的部分`);
+    assert.match(rule, /text-overflow:\s*ellipsis/, `${key}超出时要给出省略号`);
+  }
+  // 路径那一格是 flex 项：默认 min-width:auto 会拒绝收窄，省略号就永远不出现。
+  assert.match(block("\n.proj-path #project-root {"), /min-width:\s*0/);
+  // 而且这个配方不再挂在窄窗口的媒体查询里——它曾经只在那里，宽一点的窗口就叠字。
+  const narrow = css.slice(css.indexOf("@media (max-width: 1180px)"));
+  assert.ok(!/\.proj-title[^{]*\{[^}]*text-overflow/.test(narrow), "裁剪不该只在窄窗口生效");
 });

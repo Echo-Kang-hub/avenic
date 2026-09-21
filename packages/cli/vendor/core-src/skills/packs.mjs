@@ -120,7 +120,7 @@ export function resolvePacks(catalog, sourceConfig, packs, requestedPackIds) {
   };
 }
 
-export function packContainsSkill(pack, sourceId, skillName) {
+function packContainsSkill(pack, sourceId, skillName) {
   return pack.sources.some(
     (selection) => selection.source === sourceId && selection.skills.includes(skillName),
   );
@@ -134,7 +134,7 @@ export function skillCoveredByPacks(packs, packIds, sourceId, skillName) {
   return Boolean(common && packContainsSkill(common, sourceId, skillName));
 }
 
-export function catalogReferences(packs) {
+function catalogReferences(packs) {
   const references = new Set();
   for (const pack of packs.values()) {
     for (const selection of pack.sources) {

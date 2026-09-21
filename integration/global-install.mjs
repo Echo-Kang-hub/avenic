@@ -85,7 +85,7 @@ async function verifyInstall(archive, environment) {
   await mkdir(projectRoot, { recursive: true });
   const shorthandHelp = runLauncher(shorthand, ["--help"], projectRoot, environment);
   assert.match(shorthandHelp.stdout, /shorthand: ave/);
-  const launched = runLauncher(launcher, ["codex", "init", "--auth", "global"], projectRoot, environment);
+  const launched = runLauncher(launcher, ["codex", "init", "--auth", "account", "--scope", "global"], projectRoot, environment);
   assert.match(launched.stdout, /Changed:/);
   assert.equal(existsSync(path.join(projectRoot, ".agents", "runtime.json")), true);
   const fallback = await codexResumeFallbackFixture(environment);

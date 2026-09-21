@@ -13,7 +13,7 @@ Three packages, one direction of dependency:
 
 | Package | Artifact | Role |
 |---|---|---|
-| `packages/core` | `@avenic/core` | All business logic. ESM, no runtime dependencies: project config, agent runtime, session adapters, canonical (shared) history, capture/durability, Skills and Hub, the status model, the model library. |
+| `packages/core` | `@avenic/core` | All business logic. ESM, no runtime dependencies: project config, agent runtime (authentication method + API configuration), session adapters, canonical (shared) history, capture/durability, Skills and Hub, the status model. |
 | `packages/cli` | `avenic` (bins: `avenic`, `ave` → `scripts/skills.mjs`) | The terminal UI. Vendors core. |
 | `packages/vscode` | `avenic-agent-manager` (publisher `EchoKang`) | The extension. Consumes the same core API; renders QuickPick/Tree/Webview only. |
 
@@ -27,6 +27,13 @@ as JSON unchanged by `--json`, and as a dashboard by
 Vocabulary is deliberately small: **ProjectConfig, AgentRuntime, Session/Capture,
 Adapter/Projection, Skills/Hub**. There is no `Manager`, `Controller`,
 `Coordinator` or `Engine` layer, and new code should not add one.
+
+The canonical runtime schema has exactly these names (`runtime.json`,
+`schemaVersion: 3`): per agent `authMethod` (`account` \| `api`), the scope of
+*that* method (`accountScope` for Account, `configScope` for API — never both),
+and `sessionScope`; per project `historyMode`. Anything derived is computed
+(`viewOf`, `effectiveAgentConfig`), never stored. A second spelling of one of
+these — `authScope`, `interop`, `mode` — is a bug, not a synonym.
 
 The CLI reaches core through the `#core` / `#core/*` import maps, which resolve
 to `packages/cli/vendor/core-src` — a generated copy. Never edit that copy by
@@ -112,6 +119,94 @@ reads a summary of the older part instead of its words. The next version
 decides whether canonical history past the budget should be summarized or
 checkpointed instead of dropped from the target projection. Details and the
 measured numbers: `docs/session-interop-design.md` → "Known limitations".
+
+## Agent environment invariants
+
+These are permanent. They are the code of the converged model: **authentication
+method** and **model/provider configuration** are two different questions, and
+each one is answered by whichever party owns it — the agent, or the project.
+
+1. **Authentication method and model/provider configuration are separate.**
+   A project answers `authMethod: account | api` for each agent, and that answer
+   decides who owns the rest: Account means the agent owns the sign-in and Avenic
+   configures no model; API means Avenic owns the provider/model/endpoint/
+   credential and no account state is loaded on top. The scope each answer
+   carries is its own (`accountScope`, `configScope`) and only one of them exists
+   at a time; `sessionScope` and the project's `historyMode` are independent of
+   both. Nothing derived is stored twice.
+
+2. **Account mode delegates the sign-in to the agent.** Avenic does not log in,
+   does not store a credential, and does not invent a credential format. A
+   project-scoped account is isolated by pointing the agent's *own*
+   configuration-home variable — `CLAUDE_CONFIG_DIR` for Claude, `CODEX_HOME` for
+   Codex — at `<project>/.agents/local/<agent>`, where the agent's own `login`
+   writes its own files; `cwd` stays the project root. The user's global account
+   (`~/.claude`, `~/.codex`) is never read into that home, never written, and
+   never deleted. The one definition of that redirect is
+   `agentRuntimeEnvironment` (`runtime/agent-runtime.mjs`); the resolver,
+   `beginLaunch`, the durability watchdog and `finishLaunch` all take it from
+   that one function, because a launch and its capture that disagree about the
+   configuration root capture nothing and revert the wrong tree.
+
+3. **API mode owns the runtime configuration, in the agent's own file.** Avenic
+   writes provider, endpoint, model and credential into the agent's own
+   configuration (`runtime/api-config.mjs`): Claude's project scope prefers
+   `<project>/.claude/settings.local.json`, and Codex — which has no
+   project-scoped configuration file — receives `-c key=value` overrides on that
+   one launch. Every write goes through the ownership ledger, so exactly what
+   Avenic wrote can be given back, and a key the user wrote or later changed is
+   reported as a conflict and kept. A credential is reported as present or
+   absent and is never printed, copied into canonical history, or written into
+   launch state.
+
+4. **An agent's native project settings stay under `.claude`.** Claude's
+   `.claude/settings.local.json` (and `settings.json`) is Claude's own
+   configuration, not an Avenic auth file: it is written only in API mode, only
+   for the keys the ledger records as Avenic's, and it is never deleted merely
+   because the project switched to Account. Existing files are not overwritten
+   because a command ran.
+
+5. **OpenCode answers for its own authentication, provider and model.** Avenic
+   records only its session scope; `avenic opencode` launches straight into
+   OpenCode's own flow, and no `init`/`change`/Configure step may add an
+   authentication or model question for it.
+
+6. **Live and durable environments are two different things.**
+   `durableEnvironment` narrows what a detached watchdog *persists* (an
+   allow-list that refuses credential-shaped names). It is never the source of a
+   live spawn's environment. "Do not persist secrets" must not become "strip
+   secrets from the running agent": the child that pays for the run keeps its
+   environment; the files that outlive it never see the values.
+
+7. **Capture and revert touch session/transcript storage only**
+   (`projects/<key>`, `sessions/`, …, and the same paths under a project-scoped
+   account home). Credential files, Claude's settings files, skills and
+   worktrees are never snapshotted, rewritten, or treated as session artifacts —
+   a sequence of launches leaves their bytes untouched.
+
+8. **Switching method keeps the old configuration unless the user says
+   otherwise.** The question is asked after the new answers are collected and
+   before anything is applied — `Existing Account/API configuration detected.
+   Keep previous configuration? ▸ Keep / Remove`, default Keep. Removal happens
+   after the new configuration is written, is limited to artifacts Avenic
+   provably wrote for *this* project (the ledger, or an Avenic-owned key),
+   and asks again before destroying anything. It may never `rm -rf` a managed
+   whole directory, never touch the user's global account, and never touch
+   another project. **If it cannot be proven that Avenic generated a thing, that
+   thing stays.**
+
+9. **Nothing is guessed and nothing is probed.** Unknown or ambiguous state is
+   asked about once at launch (with an optional "Remember for this project?",
+   default No); sign-in status is read from the agent's own credential file and
+   reported as signed-in / not-signed-in / unknown. Nothing about who signs in
+   or which model is configured is ever discovered by asking anyone: no network
+   check, no model call, no login attempt on the user's behalf, ever, from
+   `init`, `change`, `status`, the extension or a launch.
+   One deliberate exception, and it is not about state: the extension's agent
+   rows (the "可升级" mark) and `avenic self-update` read the published *version
+   numbers* from the npm registry. That lookup is cached (10 minutes), tolerates
+   failure (no answer is `null`, never an error), never runs inside a launch,
+   and decides nothing about authentication or configuration.
 
 ## Setup
 
@@ -233,6 +328,7 @@ warrants a semver bump:
 
 ```bash
 npm run test:release                     # after `npm test` and `npm run test:vscode`
+npm run release:gate                     # pack → verify → vscode → visual → host; Windows desktop, the last leg opens a window
 npm pack "$PWD/packages/cli"  --pack-destination "$PWD/dist/release-<stamp>"
 npm pack "$PWD/packages/core" --pack-destination "$PWD/dist/release-<stamp>"
 cp packages/vscode/dist/avenic-agent-manager.vsix "$PWD/dist/release-<stamp>/"
