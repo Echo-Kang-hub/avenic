@@ -600,6 +600,12 @@ export function finishLaunch(
 ): Promise<{ changed: boolean; imported: number; diagnostics: unknown[] }>;
 export function recoverSharedNativeSessions(projectRoot: string, agentIds: string[], options?: Record<string, unknown>): Promise<Array<{ agentId: string; changed: boolean; diagnostic?: string }>>;
 export function importProjectSessions(projectRoot: string, agentId: string, options?: Record<string, unknown>): Promise<{ count: number; changed: boolean; discovered: number; imported: number; unchanged: number; failed: number; diagnostics: string[] }>;
+/**
+ * Switch a project's history mode, importing whatever the new mode requires.
+ * `previous` is what the mode was, so a host can say what changed rather than
+ * only what is; `imported` is the native sessions the switch pulled in.
+ */
+export function setHistoryMode(projectRoot: string, mode: HistoryMode, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike; agents?: Record<string, AgentRuntimeConfig>; draft?: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode; api?: Record<string, ApiFields> } }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
 export function applyProjectConfiguration(projectRoot: string, draft: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode; api?: Record<string, ApiFields> }, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
 /** `session.title` is the display title — see listCanonicalSessions — and the stored file is not rewritten to produce it. */
 export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
