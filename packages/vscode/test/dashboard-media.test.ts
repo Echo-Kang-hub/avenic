@@ -47,6 +47,19 @@ test("the shell is static html, so the first paint does not wait for data", asyn
   assert.match(js, /getElementById\("nav"\)/);
 });
 
+test("the footer's version is the CLI's, and the tooltip names both versions", async () => {
+  const html = await read("view.html");
+  const js = await read("main.js");
+  // 底部那一行是「Avenic v<CLI>」；探不到就只写 Avenic，不写一个空着的 v。
+  assert.match(js, /`Avenic v\$\{data\.version\}`/);
+  assert.match(js, /data\.version \? .* : "Avenic"/s);
+  assert.match(html, /id="version-line"><span id="version">Avenic</);
+  // 扩展自己的版本必须可查，但不占底部那一行：悬停时和 CLI 的一起说。
+  assert.match(js, /versionDetails/);
+  assert.match(js, /Avenic CLI not on PATH/);
+  assert.match(js, /VS Code extension \$\{details\.extension\}/);
+});
+
 test("render code never assigns user data via innerHTML", async () => {
   const js = await read("main.js");
   assert.ok(!/\.innerHTML\s*=/.test(js));

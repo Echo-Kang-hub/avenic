@@ -12,6 +12,7 @@ import { LauncherView } from "./views/launcher-view.ts";
 import { markPerformance } from "./ui/performance.ts";
 import { invalidateSkillsSnapshot } from "./services/skills.ts";
 import { invalidateAgentStatusCache } from "./services/agents.ts";
+import { avenicCliVersion, cachedAvenicCliVersion } from "./services/agent-versions.ts";
 
 export function activate(context: vscode.ExtensionContext): void {
   const activationStartedAt = performance.now();
@@ -31,6 +32,15 @@ export function activate(context: vscode.ExtensionContext): void {
   const launcher = new LauncherView();
   context.subscriptions.push(vscode.window.createTreeView("avenic.launcher", { treeDataProvider: launcher }));
   context.subscriptions.push(launcher);
+  // 底部那一行的版本是这台机器真正在用的 Avenic CLI：激活与刷新时各看一眼，都不
+  // await —— 激活与首帧不为一次 spawn 等待。答案落地后只有它真的和面板上正显示的
+  // 那个不同才重画（服务里有十分钟窗口，窗口内的刷新连进程都不会起）。
+  const showCliVersion = (): void => {
+    const shown = cachedAvenicCliVersion();
+    void avenicCliVersion().then((version) => {
+      if (version !== null && version !== shown) DashboardPanel.current?.refresh();
+    });
+  };
   // 数据单向：任何变更后视图/仪表盘重读真实状态（设计 §3），不反向写 core
   let refreshPending = false;
   const refresh = () => {
@@ -45,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
       invalidateAgentStatusCache();
       launcher.refresh();
       DashboardPanel.current?.refresh();
+      showCliVersion();
     });
   };
   // 同步根解析：单根直接返回；多根/null 时经 T6 pickProjectRoot 引导用户选定（workspaceFolders 实时读取，避免激活期闭包过期）
@@ -59,6 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
   registerAgentsCommands(context, { queue, resolveRoot, refresh });
   registerCatalogCommands(context, { queue, refresh, resolveRoot });
   registerSkillsCommands(context, { queue, resolveRoot, refresh });
+  showCliVersion();
   markPerformance("extension.activate", activationStartedAt);
 }
 

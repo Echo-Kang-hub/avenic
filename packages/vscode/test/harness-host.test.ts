@@ -135,7 +135,7 @@ test("an error in the extension's own log fails the run", () => {
 // `code` refusing the VSIX and `code` not being on this machine are different
 // facts. One branch that means both is how a package no editor will accept gets
 // reported as "no editor here", with the install check skipped and the run green.
-const EXPECTED = "echokang.avenic-agent-manager@0.5.5";
+const EXPECTED = "echokang.avenic-agent-manager@0.6.0";
 const attempt = (over: Record<string, unknown> = {}) =>
   artifacts.installVerdict({ editor: "C:/bin/code.cmd", install: { status: 0, stdout: "installing", stderr: "" }, listed: `${EXPECTED}\n`, expected: EXPECTED, ...over });
 
@@ -164,7 +164,7 @@ test("an editor that installed another version than the one packaged fails", () 
 });
 
 test("the version the editor lists is the version that was verified", () => {
-  const result = attempt({ listed: "EchoKang.Avenic-Agent-Manager@0.5.5\n" });
+  const result = attempt({ listed: "EchoKang.Avenic-Agent-Manager@0.6.0\n" });
   assert.equal(result.status, "installed");
-  assert.match(result.detail, /0\.5\.5/);
+  assert.match(result.detail, /0\.6\.0/);
 });

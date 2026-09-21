@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.8.4 / 1.6.5 / 0.5.5 - 2026-09-20
+## 1.8.4 / 1.6.5 / 0.6.0 - 2026-09-21
 
 - **Authentication and model configuration are now two questions, and each one
   has exactly one owner.** A project answers **Authentication** for each agent —
@@ -17,9 +17,11 @@
 - **The extension is one window now: a dashboard drawn from the same answers as
   `avenic status`.** The webview shows the project in a single panel — the
   Avenic mark, a fixed sidebar (Overview, Configure, Agents, Sessions, Skills,
-  Quick Actions; Documentation and Settings at its foot, with the extension's
-  own version and a readiness dot), a project header (name,
-  the project's real root, configured or not, last updated, Refresh,
+  Quick Actions; Documentation and Settings at its foot, with the version of
+  the Avenic CLI this machine is running — probed once, never awaited, and
+  left off rather than invented when there is no CLI — and a readiness dot;
+  the extension's own version is on that line's tooltip), a project header
+  (name, the project's real root, configured or not, last updated, Refresh,
   Reconfigure), three agent cards, shared and per-agent sessions, skills, quick
   actions and recent activity. Every cell is a value core answered for *this*
   project: a field core cannot answer is not drawn rather than filled in, a

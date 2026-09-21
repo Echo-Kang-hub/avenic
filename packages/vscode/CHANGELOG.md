@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.0
+
+- **The extension is one window now: a dashboard drawn from the same answers as
+  `avenic status`.** The per-feature pages and the tree that repeated them are
+  gone. One panel holds the Avenic mark, a fixed sidebar (Overview, Configure,
+  Agents, Sessions, Skills, Quick Actions; Documentation and Settings at its
+  foot), a project header (name, the project's real root, configured or not,
+  last updated, Refresh, Reconfigure), three agent cards, shared and per-agent
+  sessions, skills, quick actions and recent activity. Every cell is a value
+  core answered for *this* project: a field core cannot answer is not drawn
+  rather than filled in. The activity bar keeps one short list that opens the
+  panel, and a command that names a destination ("Sessions") opens it on that
+  section.
+- **The footer names the CLI you are actually running.** `Avenic v…` is the
+  version of the Avenic CLI on this machine — probed once at activation and on
+  refresh, never awaited, cached for ten minutes, and left off (just "Avenic")
+  when this machine has no CLI rather than invented. The extension's own
+  version is on that line's tooltip.
+- **Import Skill is the CLI's Add flow.** Source → discovery → multi-select
+  skills → targets → scope → a summary you confirm → core's own
+  `addDirectSkills`. The panel never grows a second installer.
+- **The window never waits on the project, and a slow read says so.** The shell
+  is static markup and paints before any data arrives; a read that takes longer
+  than half a second draws a status line above the content it is waiting to
+  replace instead of blanking the panel. Reading is only ever a read: no
+  network check, no model call, no login attempt.
+- Ships core 1.6.5 (and CLI 1.8.4): authentication method and model configuration
+  are separate questions with separate owners, one wizard serves both hosts, and
+  switching methods keeps what you had unless you say otherwise.
+
 ## 0.5.5
 
 - **The extension asks the same two questions the CLI does, and draws them the
@@ -39,9 +69,6 @@
   project bindings and the connection test were removed from the extension
   together with the library in core: a model configuration belongs to a project
   and lives in the agent's own configuration file.
-- Ships core 1.6.5 (and CLI 1.8.4): authentication method and model configuration
-  are separate questions with separate owners, one wizard serves both hosts, and
-  switching methods keeps what you had unless you say otherwise.
 
 ## 0.5.4
 

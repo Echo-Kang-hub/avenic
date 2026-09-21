@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
 import { isWebviewMessage, type ActivityRow, type DashboardAction, type DashboardSection } from "./protocol.ts";
+import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
 import { buildDashboardData } from "./state.ts";
 
 // 仪表盘面板：编辑器区里的一个 webview，内部侧栏切换分区。整块界面就是参考图，
@@ -42,7 +43,7 @@ export class DashboardPanel {
     private readonly panel: vscode.WebviewPanel,
     private readonly extensionUri: vscode.Uri,
     private readonly deps: DashboardPanelDeps,
-    private readonly version: string,
+    private readonly extensionVersion: string,
     private readonly activity: () => ActivityRow[],
   ) {
     panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
@@ -164,7 +165,10 @@ export class DashboardPanel {
       this.landing = null;
       try {
         const data = await buildDashboardData(this.deps.root(), process.env, {
-          version: this.version,
+          // 底部那一行读的是缓存下来的答案：探测在飞的时候这一帧照画，等它落地后
+          // 宿主再让面板补一次（见 extension.ts），首帧不为一次 spawn 等待。
+          cliVersion: cachedAvenicCliVersion(),
+          extensionVersion: this.extensionVersion,
           activity: this.activity(),
           transcriptId: this.sessionId,
           detail,

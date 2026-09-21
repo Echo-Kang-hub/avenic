@@ -45,13 +45,18 @@ async function seedClaudePortable(project: string, entries: Array<[string, strin
   }
 }
 
-test("the dashboard names the real project and the version it is running", async () => {
+test("the dashboard names the real project, the CLI in use, and the extension drawing it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
   try {
     const project = path.join(root, "my-app");
     await mkdir(project, { recursive: true });
-    const data = await buildDashboardData(project, testEnv(path.join(root, "state")), { version: "9.9.9" });
+    const data = await buildDashboardData(project, testEnv(path.join(root, "state")), { cliVersion: "9.9.9", extensionVersion: "0.6.0" });
+    // 底部那一行的主版本是 CLI 的产品版本；扩展自己的版本在悬停里，不抢这一行。
     assert.equal(data.version, "9.9.9");
+    assert.deepEqual(data.versionDetails, { cli: "9.9.9", extension: "0.6.0" });
+    const unknown = await buildDashboardData(project, testEnv(path.join(root, "state")), {});
+    assert.equal(unknown.version, "", "没探到 CLI 就是空串——页面只写 Avenic，不编版本号");
+    assert.deepEqual(unknown.versionDetails, { cli: "", extension: "" });
     assert.equal(data.project.root, project);
     assert.equal(data.project.name, "my-app", "项目名取自真实根目录名，不是占位符");
     assert.equal(data.project.configured, false, "全新目录没有 .avenic.json");
@@ -74,7 +79,7 @@ test("a project account reports its home and its sign-in state", async () => {
     await mkdir(project, { recursive: true });
     await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
     invalidateAgentStatusCache();
-    const card = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "claude")!;
+    const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(card, "Authentication")?.value, "Account (Project)");
     assert.equal(fieldOf(card, "Account Status")?.value, "Not signed in", "登录状态来自 agent 自己的 home，不是猜的");
     assert.equal(fieldOf(card, "Account Home")?.value, ".agents/local/claude", "这一格说的是那份状态在哪个目录，作用域已经写在认证徽章里了");
@@ -96,7 +101,7 @@ test("an API configuration shows its file, provider and model — never a creden
     await mkdir(project, { recursive: true });
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
     invalidateAgentStatusCache();
-    const before = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "claude")!;
+    const before = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(before, "Authentication")?.value, "API (Project)");
     assert.equal(fieldOf(before, "Config Source")?.value, ".claude/settings.local.json", "要说出承载配置的那个文件");
     assert.equal(fieldOf(before, "Provider"), undefined, "还没写过 provider 就不能显示一个");
@@ -108,7 +113,7 @@ test("an API configuration shows its file, provider and model — never a creden
       credential: "fixture-value-not-a-real-credential",
     });
     invalidateAgentStatusCache();
-    const card = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "claude")!;
+    const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(card, "Provider")?.value, "DeepSeek");
     const model = fieldOf(card, "Model");
     assert.equal(model?.kind, "select");
@@ -141,7 +146,7 @@ test("every icon the host puts on a card has a glyph in the stylesheet", async (
     });
     await initialize(project, "codex", { authMethod: "account", accountScope: "project", sessionScope: "project" });
     invalidateAgentStatusCache();
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
 
     const icons = new Set<string>();
     for (const card of data.agents) {
@@ -167,7 +172,7 @@ test("OpenCode is reported as native and is not given Avenic-owned fields", asyn
     await mkdir(project, { recursive: true });
     await initialize(project, "opencode", { sessionScope: "project" });
     invalidateAgentStatusCache();
-    const card = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "opencode")!;
+    const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "opencode")!;
     assert.equal(fieldOf(card, "Authentication")?.value, "Native (OpenCode UI)");
     assert.equal(card.detail !== null && card.detail.length > 0, true, "自管认证要有解释段");
     for (const absent of ["Provider", "Model", "Config Source"]) {
@@ -203,7 +208,7 @@ test("session titles come from the agent's own store, then the first thing the u
     ]);
     await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
     invalidateAgentStatusCache();
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     const titles = data.shared.rows.map((row) => row.title);
     assert.equal(data.shared.rows.length, 3);
     assert.equal(data.shared.total, 3);
@@ -235,7 +240,7 @@ test("the project card counts each agent's own sessions and lists the ones the p
     ]);
     await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
     invalidateAgentStatusCache();
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(data.native.claude.total, 1, "这一格是 core 数出来的项目会话数");
     assert.equal(data.native.claude.rows.length, 1);
     assert.equal(data.native.claude.rows[0].title, "Update VS Code extension UI design");
@@ -257,10 +262,10 @@ test("the shared card follows the project's history mode instead of promising se
     const env = testEnv(path.join(root, "state"));
     await mkdir(project, { recursive: true });
     await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
-    assert.equal((await buildDashboardData(project, env, { version: "0" })).history.mode, "shared", "默认就是共享历史");
+    assert.equal((await buildDashboardData(project, env, { cliVersion: "0" })).history.mode, "shared", "默认就是共享历史");
     await configureProject(project, { historyMode: "isolated" });
     invalidateAgentStatusCache();
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(data.history.mode, "isolated");
     assert.equal(data.history.sharedCount, 0);
     assert.deepEqual(data.shared.rows, []);
@@ -279,7 +284,7 @@ test("installed skills are read from the real lock file, with their own descript
     await makeCatalogFixture(catalogDir);
     await select(catalogDir, env);
     await installPacks("project", ["common"], project, env);
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(data.skills.installedTotal, 1, "已安装数来自真实安装状态");
     assert.equal(data.skills.installed[0].name, "alpha");
     assert.equal(data.skills.installed[0].enabled, true);
@@ -305,13 +310,13 @@ test("opening one session reads its turns, and nothing else does", async () => {
     await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
     invalidateAgentStatusCache();
 
-    const closed = await buildDashboardData(project, env, { version: "0" });
+    const closed = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(closed.transcript, null, "没打开任何会话就不读对话内容");
     const id = closed.shared.rows[0].id;
     await setActiveCanonicalSession(project, id);
     invalidateAgentStatusCache();
 
-    const opened = await buildDashboardData(project, env, { version: "0", transcriptId: id });
+    const opened = await buildDashboardData(project, env, { cliVersion: "0", transcriptId: id });
     assert.equal(opened.transcript?.id, id);
     assert.equal(opened.transcript?.title, closed.shared.rows[0].title, "标题与列表里的那一行是同一个");
     // 打开一条对话时得知道它是不是当前活跃的那条：面板据此决定要不要给「设为活跃」
@@ -331,7 +336,7 @@ test("opening one session reads its turns, and nothing else does", async () => {
 test("buildDashboardData renders the not-opened state for a null root", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
   try {
-    const data = await buildDashboardData(null, testEnv(dir), { version: "0" });
+    const data = await buildDashboardData(null, testEnv(dir), { cliVersion: "0" });
     assert.equal(data.project.root, null);
     assert.equal(data.project.configured, false);
     assert.equal(data.agents.length, 3);
@@ -351,7 +356,7 @@ test("untracked on-disk skills are counted, and are not called enabled", async (
   try {
     await mkdir(path.join(dir, ".agents", "skills", "alpha"), { recursive: true });
     await writeFile(path.join(dir, ".agents", "skills", "alpha", "SKILL.md"), "---\nname: alpha\ndescription: an untracked skill\n---\n");
-    const data = await buildDashboardData(dir, testEnv(dir), { version: "0" });
+    const data = await buildDashboardData(dir, testEnv(dir), { cliVersion: "0" });
     assert.equal(data.skills.installedTotal, 1, "磁盘上有、Avenic 没管的 Skill 也要算进已安装");
     assert.equal(data.skills.installed[0].name, "alpha");
     assert.equal(data.skills.installed[0].enabled, false, "没有 Avenic 记录就不算它启用着");
@@ -401,7 +406,7 @@ test("skills installed into a shared target report every agent that receives the
     await makeCatalogFixture(catalogDir);
     await select(catalogDir, env);
     await installPacks("project", ["common"], project, env);
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.deepEqual([...data.skills.installed[0].agents].sort(), ["claude", "codex", "opencode"]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -426,7 +431,7 @@ test("a broken shared link is visible on the skill row that lost it", async () =
     await writeFile(path.join(elsewhere, "SKILL.md"), "---\nname: alpha\n---\n");
     if (process.platform === "win32") await symlink(path.resolve(elsewhere), shared, "junction");
     else await symlink(path.relative(path.dirname(shared), elsewhere), shared, "dir");
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(data.skills.installed[0].enabled, false, "链接不再是共享的那一条时，行要说出来");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -448,13 +453,13 @@ test("the sessions page is handed a longer list than the overview's five", async
     invalidateAgentStatusCache();
 
     // 概览是「最近发生了什么」：5 条 + 一个总数，指向下一站。
-    const overview = await buildDashboardData(project, env, { version: "0" });
+    const overview = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(overview.shared.rows.length, 5);
     assert.equal(overview.shared.total, 8, "总数是全部，不是列出来的那 5 条");
     assert.equal(overview.detail, false);
 
     // 那一站必须真的能列出来：「View All」不是一个通向同一份 5 条的链接。
-    const deep = await buildDashboardData(project, env, { version: "0", detail: true });
+    const deep = await buildDashboardData(project, env, { cliVersion: "0", detail: true });
     assert.equal(deep.shared.rows.length, 8, "Sessions 页列出全部");
     assert.equal(deep.native.claude.rows.length, 8);
     assert.equal(deep.detail, true);
@@ -477,7 +482,7 @@ test("Last updated is a real moment in Avenic's one timestamp format", async () 
     await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
     invalidateAgentStatusCache();
 
-    const data = await buildDashboardData(project, env, { version: "0" });
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
     // 面板不是时间戳的另一个作者：core 的 shortTimestamp 是 Avenic 唯一的写法
     // （status-cli 印的是同一个值），面板照它写，标题栏才不会因为一段 ISO 串换行。
     assert.match(data.project.lastUpdated ?? "", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, `实际是「${data.project.lastUpdated}」`);
@@ -487,7 +492,7 @@ test("Last updated is a real moment in Avenic's one timestamp format", async () 
     await mkdir(fresh, { recursive: true });
     await initialize(fresh, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
     invalidateAgentStatusCache();
-    const freshData = await buildDashboardData(fresh, env, { version: "0" });
+    const freshData = await buildDashboardData(fresh, env, { cliVersion: "0" });
     assert.equal(freshData.shared.rows.length, 0);
     assert.match(freshData.project.lastUpdated ?? "", /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/, "没有会话时说配置的时间，而不是什么都不说");
   } finally {
@@ -505,7 +510,7 @@ test("the registry reports what core says about it, including the middle state",
     await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
 
     // 从没同步过：core 说 missing，面板也这么说（不是「有一个缓存」）。
-    const never = await buildDashboardData(project, env, { version: "0" });
+    const never = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(never.hub.state, "missing");
 
     await makeCatalogFixture(catalogDir);
@@ -514,7 +519,7 @@ test("the registry reports what core says about it, including the middle state",
     assert.ok(spec !== null);
     await sync(spec, env);
     invalidateAgentStatusCache();
-    const synced = await buildDashboardData(project, env, { version: "0" });
+    const synced = await buildDashboardData(project, env, { cliVersion: "0" });
     // 面板不把三态压成布尔：它照抄 core 的答案，「落后于远端」与「落后」于是不一样。
     const status = await projectStatus(project, env);
     assert.equal(synced.hub.state, status.skills.hub.cache);
@@ -532,7 +537,7 @@ test("the registry reports what core says about it, including the middle state",
     git("commit", "-qm", "two");
     await sync(spec, env);
     invalidateAgentStatusCache();
-    const moved = await buildDashboardData(project, env, { version: "0" });
+    const moved = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.equal(moved.hub.state, "stale", "checkout 走了、项目钉住的还是上一版：这一种必须与另外两种分得开");
     assert.equal(moved.hub.state, (await projectStatus(project, env)).skills.hub.cache, "仍然是 core 的那一个答案");
   } finally {
@@ -554,7 +559,7 @@ test("a pack row carries the id its Install button has to send, and the state co
     await sync(spec, env); // Pack 列表读的是本地 checkout：先把它拉下来
     const known = (await packsFor(spec, env, { cachedOnly: true })) ?? new Map();
 
-    const before = await buildDashboardData(project, env, { version: "0" });
+    const before = await buildDashboardData(project, env, { cliVersion: "0" });
     assert.ok(before.skills.packs.length > 0, "Catalog 的缓存里有 Pack");
     // 行上的 id 是 core 的 Pack 身份（不是渲染层按名字现拼的另一套），所以那一行
     // 的「Install」发出去的就是 core 认得的那个 pack。
@@ -565,7 +570,7 @@ test("a pack row carries the id its Install button has to send, and the state co
     }
 
     await installPacks("project", ["extra"], project, env);
-    const after = await buildDashboardData(project, env, { version: "0" });
+    const after = await buildDashboardData(project, env, { cliVersion: "0" });
     const extra = after.skills.packs.find((pack) => pack.id === "extra");
     const common = after.skills.packs.find((pack) => pack.id === "common");
     assert.equal(extra?.installed, true, "装过之后那一行说的是真实锁文件里的状态");
@@ -591,12 +596,12 @@ test("an API card stops showing provider and model once the file no longer holds
       credential: "fixture-value-not-a-real-credential",
     });
     invalidateAgentStatusCache();
-    const fresh = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "claude")!;
+    const fresh = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(fresh, "Provider")?.value, "DeepSeek");
 
     await writeFile(path.join(project, ".claude", "settings.local.json"), "{}\n");
     invalidateAgentStatusCache();
-    const stale = (await buildDashboardData(project, env, { version: "0" })).agents.find((a) => a.id === "claude")!;
+    const stale = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(stale, "Provider"), undefined, "账本里的旧 provider 不是现在生效的配置");
     assert.equal(fieldOf(stale, "Model"), undefined);
     assert.equal(

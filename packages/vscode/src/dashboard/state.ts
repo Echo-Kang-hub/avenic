@@ -264,8 +264,10 @@ function unopenedCards(): AgentCard[] {
 }
 
 export interface DashboardOptions {
-  /** 面板底部那一行版本号：由宿主传入它真正加载的那份扩展的版本。 */
-  version?: string;
+  /** 面板底部那一行版本号：这台机器上真正在用的 Avenic CLI（探不到时留空）。 */
+  cliVersion?: string | null;
+  /** 底部那一行悬停时展开的第二个版本：宿主真正加载的那份扩展的版本。 */
+  extensionVersion?: string;
   /** 最近发生的操作，由宿主的活动环形缓冲给出（核心数据之外唯一由宿主提供的一段）。 */
   activity?: ActivityRow[];
   /** 用户点开的那一条会话：只有它的事件日志会被读（初帧一条都不读）。 */
@@ -283,9 +285,13 @@ export async function buildDashboardData(
   const now = options.now ?? Date.now();
   const detail = options.detail === true;
   const limit = detail ? DETAIL_LIMIT : LIST_LIMIT;
+  // 底部那一行的两个版本：CLI 是主（产品版本），扩展是悬停时展开的那一个。
+  const cli = options.cliVersion ?? "";
+  const versionDetails = { cli, extension: options.extensionVersion ?? "" };
   if (projectRoot === null) {
     return {
-      version: options.version ?? "",
+      version: cli,
+      versionDetails,
       detail,
       project: { name: "", root: null, configured: false, lastUpdated: null },
       agents: unopenedCards(),
@@ -330,7 +336,8 @@ export async function buildDashboardData(
   }
 
   return {
-    version: options.version ?? "",
+    version: cli,
+    versionDetails,
     detail,
     project: {
       name: status.project.name,

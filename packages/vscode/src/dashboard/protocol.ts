@@ -61,9 +61,12 @@ export type PackRow = { id: string; name: string; description: string; installed
 export type ActivityRow = { time: string; text: string; tone: BadgeTone };
 
 export type DashboardData = {
-  /** 面板底部那一行的版本：宿主传入它真正加载的那份扩展的版本（扩展自己就是那个
-   * 「Avenic」——CLI 是另一件可以独立升级的工件，它的版本在 `avenic status` 里）。 */
+  /** 面板底部那一行的版本：这台机器上真正在用的那份 Avenic CLI 的版本（产品版本
+   *  是 CLI 的）。探不到时是空串——那时底部只写「Avenic」，不编一个版本号。 */
   version: string;
+  /** 悬停在底部那一行上时展开的完整说法：CLI 与这个扩展各自的版本。扩展自己的
+   *  版本不占底部那一行，但必须可查。 */
+  versionDetails: { cli: string; extension: string };
   /**
    * True when this payload was built for a section that lists a working set
    * (Sessions, Skills), false for the Overview's "what happened recently" cut.

@@ -809,7 +809,17 @@
     path.disabled = data.project.root === null;
     path.onclick = () => post({ type: "action", action: "revealProject" });
     document.getElementById("refresh-button").onclick = () => { startReading(); post({ type: "refresh" }); };
-    if (data.version) document.getElementById("version").textContent = data.version;
+    // 底部这一行说的是这台机器上真正在用的 Avenic CLI：探到之前只写「Avenic」——
+    // 一个空着的「v」不是版本。扩展自己的版本不占这一行，悬停时和 CLI 的一起说。
+    const version = document.getElementById("version");
+    version.textContent = data.version ? `Avenic v${data.version}` : "Avenic";
+    const details = data.versionDetails;
+    const title = details
+      ? `${details.cli ? `Avenic CLI ${details.cli}` : "Avenic CLI not on PATH"}${details.extension ? ` · VS Code extension ${details.extension}` : ""}`
+      : "";
+    const line = document.getElementById("version-line");
+    if (title) line.setAttribute("title", title);
+    else line.removeAttribute("title");
   }
 
   /* A read that is still going half a second after it was asked for says so,
