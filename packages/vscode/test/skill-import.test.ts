@@ -12,6 +12,7 @@ import {
   type ImportUi,
 } from "../src/ui/skill-import.ts";
 import {
+  importCwd,
   importService,
   type DirectDiscovery,
   type DirectInstall,
@@ -39,6 +40,8 @@ interface Script {
 
 interface Recorder {
   asked: number;
+  /** 每一步被问到的顺序（问题的标题，来源与确认各记一个名字）：顺序本身就是流程的一部分。 */
+  sequence: string[];
   skillItems: ImportChoice<string>[];
   targetItems: ImportChoice<string>[];
   scopeItems: ImportChoice<Scope>[];
@@ -51,6 +54,7 @@ interface Recorder {
 function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
   const log: Recorder = {
     asked: 0,
+    sequence: [],
     skillItems: [],
     targetItems: [],
     scopeItems: [],
@@ -60,8 +64,9 @@ function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
     warns: [],
   };
   const ui: ImportUi = {
-    askSource: async () => { log.asked += 1; return script.source; },
+    askSource: async () => { log.asked += 1; log.sequence.push("source"); return script.source; },
     pickMany: async <T>(title: string, items: ImportChoice<T>[]) => {
+      log.sequence.push(title);
       if (title === "Select Skills") {
         log.skillItems = items as ImportChoice<string>[];
         return script.skills as T[] | undefined;
@@ -70,10 +75,11 @@ function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
       return script.targets as T[] | undefined;
     },
     pickOne: async <T>(title: string, items: ImportChoice<T>[]) => {
+      log.sequence.push(title);
       log.scopeItems = items as ImportChoice<Scope>[];
       return script.scope as T | undefined;
     },
-    confirm: async (title, summary) => { log.confirmTitle = title; log.summary = summary; return script.confirm; },
+    confirm: async (title, summary) => { log.sequence.push("confirm"); log.confirmTitle = title; log.summary = summary; return script.confirm; },
     info: (message) => log.infos.push(message),
     warn: (message) => log.warns.push(message),
     // 进度只是一层包装：测试里同步穿透，让每一步都在同一条调用链上。
@@ -181,6 +187,9 @@ test("the full flow asks each question the CLI asks and calls core with exactly 
   const outcome = await importSkillsFlow(service, ui);
 
   assert.match(log.infos[0] ?? "", /Found 2 skills/, "发现之后先报数量，再问要哪几个");
+  // 顺序与 CLI 的 Add 一字不差（skills-cli.mjs 的 304-313）：来源 → 发现 → 多选 → Install to
+  // → Scope → 确认。只钉「问过每一条」不够——把 Scope 挪到 Install to 前面，每一条也都问过。
+  assert.deepEqual(log.sequence, ["source", "Select Skills", "Install to", "Scope", "confirm"], "每一步的顺序就是 CLI 的顺序");
   assert.deepEqual(log.skillItems.map((item) => item.label), ["alpha", "beta"], "多选列出的就是 core 发现的名字");
   assert.equal(log.skillItems.find((item) => item.value === "beta")?.description, "already managed in this scope", "已受管的那个名字要带上提示");
   assert.equal(log.skillItems.find((item) => item.value === "alpha")?.description, undefined);
@@ -232,6 +241,15 @@ test("a long skill list is summarized instead of turning the confirmation into a
   const { ui, log } = fakeUi({ source: REPO, skills: names, targets: ["agents"], scope: "project", confirm: false });
   await importSkillsFlow(service, ui);
   assert.equal(log.summary?.skills, "8 · a, b, c, d, e, f, +2 more");
+});
+
+// ---- 决议本身：全局操作绝不带项目根 ----
+// core 的全局上下文不看 cwd，所以这条决议没有可观察的副作用——正因为如此，能钉住它的
+// 只有它自己。把它改回「永远传 root」，这一条会红，而没有任何别的测试会红。
+test("a global operation never carries the project root, a project one always does", () => {
+  const root = path.join("C:", "work", "my-app");
+  assert.equal(importCwd("global", root), undefined, "全局操作不许带项目根");
+  assert.equal(importCwd("project", root), root, "项目操作要的正是项目根");
 });
 
 // ---- 核心短路与空仓库：说真话，且不写盘 ----
@@ -342,6 +360,25 @@ test("scope facts are core's own: both labels, both roots, both config files, co
     assert.equal(away.configFile, path.join(env.AVENIC_STATE_DIR as string, "config.json"));
     assert.deepEqual(away.targets.map((target) => target.id), ["claude", "agents"]);
     assert.equal(existsSync(path.join(project, ".avenic.json")), false, "看一眼作用域不等于写盘");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// 「看一眼」不写盘，连改名都不行：流程走到 Install to 之前会先取两个作用域的事实，那一步
+// 读的必须是只读上下文——否则用户还没看到确认页，core 的旧文件改名就已经发生了（CLI 的
+// chooseScope 用 migrate: false 挡的就是这件事）。旧文件存在才看得见差别，所以这一条
+// 自己造一个。
+test("showing a scope's facts does not rename a legacy project file", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-import-legacy-"));
+  try {
+    const project = path.join(root, "project");
+    const env = testEnv(path.join(root, "state"));
+    await mkdir(project, { recursive: true });
+    await writeFile(path.join(project, ".agent-skills.json"), JSON.stringify({ packs: ["common"] }));
+    await importService(project, env).facts("project");
+    assert.equal(existsSync(path.join(project, ".agent-skills.json")), true, "看一眼不等于把旧文件改掉");
+    assert.equal(existsSync(path.join(project, ".avenic.json")), false, "也没有改名之后的新文件");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -49,8 +49,12 @@ export function invalidateSkillsSnapshot(): void {
   snapshots = new WeakMap();
 }
 
-function context(scope: Scope, cwd: string | undefined, environment: Env): InstallContext {
-  return createInstallContext(scope === "global", { cwd, environment });
+function context(scope: Scope, cwd: string | undefined, environment: Env, readOnly = false): InstallContext {
+  // 只读地建上下文要带 migrate: false（core 给「只看安装状态」的宿主留的口子，注释在
+  // core/skills/install.mjs 的 createInstallContext 上）：把旧文件改名是用户用「会改
+  // 项目的命令」换来的修复，不是「看一眼」的副作用。CLI 的 Scope 选择器（skills-cli.mjs
+  // 的 chooseScope）走的是同一个口子。
+  return createInstallContext(scope === "global", readOnly ? { cwd, environment, migrate: false } : { cwd, environment });
 }
 
 export function status(scope: Scope, cwd?: string, environment: Env = process.env): Promise<InstallStatus | null> {
@@ -234,7 +238,9 @@ function displayPath(root: string, destination: string): string {
 }
 
 async function scopeFacts(scope: Scope, cwd?: string, environment: Env = process.env): Promise<ScopeFacts> {
-  const installContext = context(scope, cwd, environment);
+  // 这是一次「看一眼」：流程走到 Install to 只是在显示目标清单，用户还可能在确认前取消，
+  // 取消之后项目不该有任何变化——包括 core 的旧文件改名。
+  const installContext = context(scope, cwd, environment, true);
   // 哪几个是真身目标由 core 说了算（canonicalTargets），插件不自己再判一次。
   const canonical = new Set(canonicalTargets(installContext).map((target) => target.id));
   return {
@@ -251,9 +257,15 @@ async function scopeFacts(scope: Scope, cwd?: string, environment: Env = process
   };
 }
 
+// 全局操作绝不带项目根（与 ui/scope.ts 的 scopeCwd 同一条决议）：core 的全局上下文本来
+// 就不看 cwd，所以这条决议没有可观察的副作用——把它改掉，没有任何行为会跟着变。这正是
+// 它要被测试钉住的原因，也正因如此它是一个具名的纯函数，而不是一句藏在闭包里的三元式。
+export function importCwd(scope: Scope, root: string): string | undefined {
+  return scope === "global" ? undefined : root;
+}
+
 export function importService(root: string, environment: Env = process.env): SkillImport {
-  // 全局操作绝不带项目根（与 scopeCwd 同一条决议）：core 的全局上下文本来就不看 cwd。
-  const cwd = (scope: Scope) => (scope === "global" ? undefined : root);
+  const cwd = (scope: Scope) => importCwd(scope, root);
   return {
     discover: (repo, scope) => coreDiscoverDirectSkills(context(scope, cwd(scope), environment), repo),
     managed: async (scope) => [...await coreManagedSkillNames(context(scope, cwd(scope), environment))],

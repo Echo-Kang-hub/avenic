@@ -12,9 +12,13 @@ import type { ActivityLog } from "../ui/activity.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
 
-// 面板上每一个按钮落到哪里。面板自己不认识业务，这一层也不重写业务：能对应一条
-// 已有命令的就调那条命令（启动、配置、导入 Skill 与树视图/命令面板按的是同一份
-// 实现），只有面板新带来的动作才在这里实现，而且每一种都说得出它问的是谁。
+// 面板上每一个按钮落到哪里。面板自己不认识业务，这一层也不重写业务：能对应一条已有
+// 命令的就调那条命令（启动走 avenic.agents.launch，配置走 avenic.agents.configureProject），
+// 只有面板新带来的动作才在这里实现，而且每一种都说得出它问的是谁。Import Skill 是后
+// 一类里最新的一条：它走的不是命令面板里那条一次装完整仓的旧命令（avenic.skills.addDirect），
+// 而是下面 importUi + importSkillsFlow 那场与 CLI 的 Add 同序、同问题的问答。两条入口
+// 问的问题因此不同，这是有意的——面板问全，旧命令保持它原本的行为；业务两边都只有
+// core 的那一份 installer。
 
 export interface DashboardDeps {
   context: vscode.ExtensionContext;
