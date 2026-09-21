@@ -747,6 +747,7 @@ async function main() {
         out = shootOnce();
         during = scanOf(out, "pre");
       }
+      // An occluder named here as LockApp (window class Windows.UI.Core.CoreWindow, title "Windows 输入体验") is the lock screen itself: it runs on the Default desktop, so this line naming it means the workstation is locked even though LogonUI is absent and the input desktop still reads Default.
       const stolen = block ?? during.strangers[0] ?? null;
       if (stolen !== block && stolen !== null) {
         renameSync(`${OUT}/${file}`, `${OUT}/${file.replace(/\.png$/, "-occluded.png")}`);
