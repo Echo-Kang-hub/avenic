@@ -89,9 +89,10 @@ function authFields(row: StatusAgent): FieldRow[] {
   if (auth.method === "account") {
     const status = auth.status === "signed-in" ? "Signed in" : auth.status === "not-signed-in" ? "Not signed in" : "Unknown";
     fields.push({ label: "Account Status", kind: "status", value: status, tone: auth.status === "signed-in" ? "green" : "muted", icon: "account" });
-    // 这一格说的是那份状态在哪个目录（.agents/local/claude 这样的 home），不是在说
-    // 作用域——作用域已经写在上面那个徽章里了（Account (Project)）。
-    if (auth.home !== null) fields.push({ label: "Account Home", kind: "value", value: auth.home, tone: "muted", icon: "folder" });
+    // 参考图里这一格叫 Account Scope，值把作用域和承载它的目录一起写出来：
+    // Project (.agents/local/claude)。只写目录，读的人还得回头找它属于谁；只写作
+    // 用域，那一行和上面的认证徽章就重复了。home 未知时仍然给出作用域。
+    if (auth.home !== null) fields.push({ label: "Account Scope", kind: "value", value: `${scope} (${auth.home})`, tone: "muted", icon: "folder" });
     return fields;
   }
   // API：说清楚哪个文件承载配置、选了哪个 provider / model。凭据本身从不进入载荷 ——

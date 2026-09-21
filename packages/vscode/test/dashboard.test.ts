@@ -71,7 +71,7 @@ test("the dashboard names the real project, the CLI in use, and the extension dr
   }
 });
 
-test("a project account reports its home and its sign-in state", async () => {
+test("a project account reports its scope and its sign-in state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-account-"));
   try {
     const project = path.join(root, "project");
@@ -82,7 +82,10 @@ test("a project account reports its home and its sign-in state", async () => {
     const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(card, "Authentication")?.value, "Account (Project)");
     assert.equal(fieldOf(card, "Account Status")?.value, "Not signed in", "登录状态来自 agent 自己的 home，不是猜的");
-    assert.equal(fieldOf(card, "Account Home")?.value, ".agents/local/claude", "这一格说的是那份状态在哪个目录，作用域已经写在认证徽章里了");
+    // 参考图里这一格叫 Account Scope，值把作用域和承载它的目录一起写出来
+    // （Project (.agents/local/codex)）——目录单独出现时，读的人还得回头找它属于谁。
+    assert.equal(fieldOf(card, "Account Scope")?.value, "Project (.agents/local/claude)");
+    assert.equal(fieldOf(card, "Account Home"), undefined, "同一个事实不该有两行两种说法");
     // core 在 Account 模式下不去读 agent 自己的模型设置，所以这一格不存在——
     // 与其编一个模型名，不如不说。
     assert.equal(fieldOf(card, "Model"), undefined, "Account 模式的模型由 agent 自己的设置决定，Avenic 不许编");
