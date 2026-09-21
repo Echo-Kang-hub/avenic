@@ -4,8 +4,10 @@ import {
   addDirectSkills,
   adoptPackedSkills as coreAdoptPackedSkills,
   adoptSkills as coreAdoptSkills,
+  canonicalTargets,
   createInstallContext,
   detectedSkillNames as coreDetectedSkillNames,
+  discoverDirectSkills as coreDiscoverDirectSkills,
   ensureSkillLinks as coreEnsureSkillLinks,
   installPacks as coreInstallPacks,
   installedPackIds as coreInstalledPackIds,
@@ -178,6 +180,86 @@ export function addDirect(scope: Scope, repo: string, skillNames: string[], cwd?
 
 export function removeDirect(scope: Scope, names: string[], cwd?: string, environment: Env = process.env): Promise<string[]> {
   return removeExternalSkills(context(scope, cwd, environment), names).then((r) => r.directRemoved);
+}
+
+// ---- Add 流程的四个问句 ----
+// 面板上的 Import Skill 与 CLI 的 Add 走的是同一个顺序：来源 → 发现 → 多选 →
+// Install to → Scope → 确认。这里把它要问 core 的四件事各包一层，全部照抄 core 的答案
+// （作用域名字、目标清单、发现结果），插件不自己算一份。
+
+/** 一个落链目标，用用户看得懂的路径说它把 Skill 放到哪。 */
+export interface ImportTarget {
+  id: string;
+  label: string;
+  /** 相对作用域根、用 `/` 分隔（两个作用域下的相对路径相同，所以提示不必先问 Scope）。 */
+  path: string;
+  /** 真身目标：core 无条件把 Skill 写进去，其余目标链接到它。 */
+  canonical: boolean;
+}
+
+export interface ScopeFacts {
+  scope: Scope;
+  label: string;
+  root: string;
+  configFile: string;
+  targets: ImportTarget[];
+}
+
+export interface DirectDiscovery {
+  sourceId: string;
+  revision: string;
+  names: string[];
+}
+
+export interface DirectInstall {
+  names: string[];
+  sourceId: string;
+  revision: string;
+  alreadyInstalled?: boolean;
+}
+
+/** 发现与安装作用域内的一个直装源；每一次调用都带着 scope，因为 Scope 是在流程中间才问的。 */
+export interface SkillImport {
+  discover(repo: string, scope: Scope): Promise<DirectDiscovery>;
+  /** 这个作用域已经受管的 Skill 名（Pack、接管、直装都在内）。 */
+  managed(scope: Scope): Promise<string[]>;
+  facts(scope: Scope): Promise<ScopeFacts>;
+  install(repo: string, names: string[], scope: Scope, targets: string[]): Promise<DirectInstall>;
+}
+
+function displayPath(root: string, destination: string): string {
+  const relative = path.relative(root, destination);
+  const display = relative === "" || relative.startsWith("..") || path.isAbsolute(relative) ? destination : relative;
+  return display.split(path.sep).join("/");
+}
+
+async function scopeFacts(scope: Scope, cwd?: string, environment: Env = process.env): Promise<ScopeFacts> {
+  const installContext = context(scope, cwd, environment);
+  // 哪几个是真身目标由 core 说了算（canonicalTargets），插件不自己再判一次。
+  const canonical = new Set(canonicalTargets(installContext).map((target) => target.id));
+  return {
+    scope,
+    label: installContext.label,
+    root: installContext.root,
+    configFile: installContext.configFile,
+    targets: installContext.targets.map((target) => ({
+      id: target.id,
+      label: target.label,
+      path: displayPath(installContext.root, target.destination),
+      canonical: canonical.has(target.id),
+    })),
+  };
+}
+
+export function importService(root: string, environment: Env = process.env): SkillImport {
+  // 全局操作绝不带项目根（与 scopeCwd 同一条决议）：core 的全局上下文本来就不看 cwd。
+  const cwd = (scope: Scope) => (scope === "global" ? undefined : root);
+  return {
+    discover: (repo, scope) => coreDiscoverDirectSkills(context(scope, cwd(scope), environment), repo),
+    managed: async (scope) => [...await coreManagedSkillNames(context(scope, cwd(scope), environment))],
+    facts: (scope) => scopeFacts(scope, cwd(scope), environment),
+    install: (repo, names, scope, targets) => addDirectSkills(context(scope, cwd(scope), environment), repo, names, { targets }),
+  };
 }
 
 // 启动/手动补齐共享链接：只处理 lock 记录的受管技能，插件侧不做任何 fs 判断。

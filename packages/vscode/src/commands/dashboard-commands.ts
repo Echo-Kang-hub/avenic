@@ -7,6 +7,7 @@ import * as skills from "../services/skills.ts";
 import { defaultSpec, sync } from "../services/catalog.ts";
 import { continueSession } from "../services/continue.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
+import { importSkillsFlow, type ImportUi } from "../ui/skill-import.ts";
 import type { ActivityLog } from "../ui/activity.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
@@ -164,18 +165,38 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
     }
   };
 
+  // 面板上的技能导入是 CLI 那场 Add 问答（来源 → 发现 → 多选 → Install to → Scope →
+  // 确认）在编辑器里的同一份实现：顺序、问题与每一步的后果在 ui/skill-import.ts 里，
+  // 这里只把宿主接上去——提示走 VS Code 自己的输入框/多选/确认，长活走同一个 mutation
+  // 队列与进度条，业务仍然是 core 的那一份（services/skills.ts 的 importService）。
+  // 默认作用域是项目：按钮就长在这个项目的面板里，但全局也是 CLI 认的一个作用域，所以
+  // 它作为一个选项存在，而不是由插件替用户假定。
+  const importUi = (): ImportUi => ({
+    askSource: async () => vscode.window.showInputBox({ prompt: "owner/repo or repository URL", placeHolder: "owner/repo" }),
+    pickMany: async (title, items) => (await vscode.window.showQuickPick(items, { title, canPickMany: true }))?.map((item) => item.value),
+    pickOne: async (title, items) => (await vscode.window.showQuickPick(items, { title }))?.value,
+    confirm: async (title, summary) => (await vscode.window.showWarningMessage(title, {
+      modal: true,
+      detail: [
+        `Source: ${summary.source}`,
+        `Skills: ${summary.skills}`,
+        `Targets: ${summary.targets}`,
+        `Scope: ${summary.scope}`,
+        `Config: ${summary.config}`,
+      ].join("\n"),
+    }, "Install")) === "Install",
+    info: (message) => void vscode.window.showInformationMessage(message),
+    warn: (message) => void vscode.window.showWarningMessage(message),
+    progress: (title, work) => runMutation(queue, () => withProgress(title, work), () => refresh()),
+  });
+
   async function importSkill(root: string | null): Promise<void> {
     if (root === null) return;
-    // 面板上的技能导入是项目作用域的：按钮就长在这个项目的面板里，再问一次全局还是
-    // 项目等于问用户「你在哪儿点的」。仓库由用户给出，其余全交给 core 的直装流程。
-    const repo = await vscode.window.showInputBox({ prompt: "owner/repo or repository URL", placeHolder: "owner/repo" });
-    if (repo === undefined || repo.trim() === "") return;
-    const result = await runMutation(queue, () => withProgress("Avenic · Importing skill", async (report) => {
-      report("Reading the repository…");
-      return skills.addDirect("project", repo.trim(), [], root);
-    }), () => refresh());
-    activity.record(`Skill imported from ${repo.trim()}`);
-    await vscode.window.showInformationMessage(`Imported ${result.names.length} skill(s): ${result.names.join(", ")}`);
+    const outcome = await importSkillsFlow(skills.importService(root), importUi());
+    if (outcome.kind === "cancelled") return;
+    activity.record(outcome.kind === "installed"
+      ? `Imported ${outcome.names.length} skill(s) from ${outcome.repo} · ${outcome.label}`
+      : `Already installed: ${outcome.repo}`);
   }
 
   // 面板上那一行 Pack 说的是「装这个」：用户已经点过的那一步不该再问一遍，所以安装
