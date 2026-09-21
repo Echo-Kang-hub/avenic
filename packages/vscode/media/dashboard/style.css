@@ -350,13 +350,16 @@ button {
  * of the content column (1262 wide inside a 1288 main). */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 12px 10px 14px; }
 
-/* The header band is a fixed 74px (rule at y=73) with its three groups centred
- * against it — measured: pill top 11, buttons 16..54, title cap 17. */
+/* The header band is a 74px (rule at y=73) with its three groups centred
+ * against it — measured: pill top 11, buttons 16..54, title cap 17. min-height,
+ * not height: at the reference width the band is exactly 74px, and at 720 the
+ * status block's own text needs more than that. A fixed band centred its
+ * overflow *above* itself, off the top of the document. */
 .proj-header {
   display: flex;
   align-items: center;
   gap: var(--av-space-4);
-  height: 74px;
+  min-height: 74px;
   flex: none;
   /* Both the title and the buttons sit 8-9px inside the content column. */
   padding: 0 8px 0 9px;
@@ -430,8 +433,11 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 29px;
-  padding: 0 18px;
+  /* 参考图里它是一行 29px 高的药丸，宽窗口下这里仍然是 29px。但窄窗口里这句话会
+   * 折成两行，写死的高度会把第二行挤到盒子外面去（720 宽时标签盒从 -2.02px 开始画，
+   * 越过了文档自己的顶边，滚多远都够不着）。min-height 让它长到装得下自己写下的字。 */
+  min-height: 29px;
+  padding: 4px 18px;
   border-radius: var(--av-radius-pill);
   border: 1px solid var(--av-green-soft);
   background: var(--av-green-soft);
