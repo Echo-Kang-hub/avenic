@@ -16,6 +16,8 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   wbWait: (find: () => Promise<unknown>, tries: number, gap: number) => Promise<unknown>;
   clickAllowed: (label: string) => boolean;
   ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; window: string }[] };
+  windowEnvironment: () => Record<string, string | undefined>;
+  AGENT_HOME: string;
 };
 const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify-artifacts.mjs")).href)) as {
   installVerdict: (attempt: unknown) => { status: string; detail: string };
@@ -23,7 +25,13 @@ const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify
 
 const SKILLS = { label: "Skills", changed: true, mutations: 2 };
 const SESSION = { sessionsActive: true, turns: 4 };
-const HEADER = { overlaps: [] as string[] };
+// 三段的矩形都在，才有「没有重叠」这句话可说：status 是状态块的矩形，rects 里是标题与
+// 路径的矩形——重叠检查正是拿这三个互相量的。
+const HEADER = {
+  status: { left: 614, right: 759, top: 10, bottom: 39 },
+  rects: { title: { left: 226, right: 600 }, path: { left: 226, right: 600 } },
+  overlaps: [] as string[],
+};
 const SCREEN = { name: "01-dashboard-open.png", occluded: false, surface: false };
 const SURFACE = { name: "01-dashboard-open.window.png", surface: true, captured: true };
 
@@ -96,13 +104,13 @@ test("a session row that was never found fails the run", () => {
 // 状态块压过去，两行字叠在一起。这一条是那一场的检查：叠了就算失败，
 // 而不是等人去看截图时才发现。
 test("a project path painted over the status block fails the run", () => {
-  const result = run({ header: { overlaps: [".proj-path"] } });
+  const result = run({ header: { ...HEADER, overlaps: [".proj-path"] } });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /proj-path/);
 });
 
 test("a header whose three parts each stay in their own column passes", () => {
-  assert.deepEqual(run({ header: { overlaps: [] } }), { pass: true, reasons: [] });
+  assert.deepEqual(run({ header: { ...HEADER } }), { pass: true, reasons: [] });
 });
 
 // 没有这次测量与「没有重叠」不是一回事：量不到的时候不能算通过。
@@ -110,6 +118,22 @@ test("a run that never measured the header fails", () => {
   const result = run({ header: null });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /header/i);
+});
+
+// 量不到的另外两种形状，都是「检查的对象不见了，于是检查没有话可说」：状态块没在页面上
+// （status 为 null，重叠循环一次都没跑），或者标题/路径的选择器一个也没匹配上（循环跑
+// 了，但比较的那几个节点不在）。两种都会让 overlaps 是空数组——那是「没量过」，不是
+// 「没有重叠」。
+test("a header whose status block is missing fails instead of passing unmeasured", () => {
+  const result = run({ header: { ...HEADER, status: null } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /status/i);
+});
+
+test("a header whose title or path is missing is a check that could not run", () => {
+  const result = run({ header: { ...HEADER, rects: { title: null, path: HEADER.rects.path } } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /title or path/i);
 });
 
 // The row click has to open the conversation: a title that only repaints would
@@ -186,6 +210,16 @@ test("an error in the extension's own log fails the run", () => {
   const result = run({ errors: [String.raw`logs\20260921T001717\window1\exthost\exthost.log: 2026-09-21 00:17:19.313 [error] Avenic: command 'avenic.dashboard.open' failed`] });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /avenic\.dashboard\.open/);
+});
+
+// 窗口读的 agent 家目录必须是这次 run 自己的：core 的 fallback 是
+// `CLAUDE_CONFIG_DIR || <home>/.claude`、`CODEX_HOME || <home>/.codex`，环境里不带这两
+// 个变量时它读的就是开发者真实的家目录。今天点到的路径只读项目自己的 portable store，
+// 所以这条是防下一行代码的，不是描述现在。
+test("the window's agent homes are this run's, not the developer's", () => {
+  const env = host.windowEnvironment();
+  assert.equal(env.CLAUDE_CONFIG_DIR, path.join(host.AGENT_HOME, ".claude"));
+  assert.equal(env.CODEX_HOME, path.join(host.AGENT_HOME, ".codex"));
 });
 
 // `code` refusing the VSIX and `code` not being on this machine are different

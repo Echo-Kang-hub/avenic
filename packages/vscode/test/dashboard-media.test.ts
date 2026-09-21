@@ -204,8 +204,11 @@ test("compressed dashboard keeps agent identity via inline SVG marks", async () 
   }
   // codex 的结是填充画出来的：这个 logo 的编织是镂空，描外轮廓只会得到一团剪影。
   assert.match(js, /const CODEX_KNOT = "M22\.2819 9\.8211/);
-  assert.match(js, /CODEX_KNOT[\s\S]{0,80}fill: "currentColor"/);
-  assert.ok(!/CODEX_KNOT[\s\S]{0,80}stroke:/.test(js), "结是实心的，描边会多出一圈轮廓");
+  // 钉的是画这个结的那次调用本身：从 CODEX_KNOT 到它的 } 之间只许有 d 和 fill。原来的
+  // 写法（在 80 个字符里找 "stroke:"）永远为真——那段距离里根本没有 stroke 可给。
+  const knot = js.match(/svgNode\("path", \{ d: CODEX_KNOT[^}]*\}\)/);
+  assert.ok(knot, "codex 的路径是以 CODEX_KNOT 为数据画出来的");
+  assert.ok(!/stroke/.test(knot[0]), `结是实心的，描边会多出一圈轮廓：${knot[0]}`);
   // opencode 的无穷号是一根在中心交叉的线：两个圆相交画出来是「两个圆」，不是 ∞。
   assert.match(js, /const OPENCODE_LOOP = "M12 12C/);
   assert.match(js, /d: OPENCODE_LOOP,\s*"stroke-width": "2\.6",\s*"stroke-linecap": "round"\s*\},\s*stroke\)/);

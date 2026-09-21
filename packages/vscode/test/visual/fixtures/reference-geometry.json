@@ -144,6 +144,8 @@
     { "name": "overflow.page", "key": "overflow.page", "expect": true,
       "note": "The page itself must not scroll sideways — the reference is a fixed-width window whose content fits it." },
     { "name": "overflow.spilled", "key": "overflow.spilled", "expect": 0,
-      "note": "And no element may be painted outside the window with no ancestor clipping or scrolling it — the spill the page-level check is blind to once the page root hides it. See shot.mjs's 'spilled' check." }
+      "note": "And no element may be laid out past the window's edge — a box a non-root ancestor holds is still reported and the string names the holder, because content that wants more width than its container is the same defect one step earlier; the page root is never accepted as the holder. See shot.mjs's 'spilled' check." },
+    { "name": "overflow.clippedCandidates", "key": "overflow.clippedCandidates", "expect": 34,
+      "note": "The size of the set shot.mjs's clipped-text check measured on this render. Pinned because the check walks a fixed selector list: renamed classes empty the set, zero candidates fail zero times, and the check goes green forever. This number moves when the markup legitimately changes; it must never move because the gate stopped looking." }
   ]
 }

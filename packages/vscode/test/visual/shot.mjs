@@ -413,22 +413,30 @@ function buildPage(payload, fixture) {
         // ancestor clipping or scrolling it — is invisible to every check above.
         // losesText asks whether a box loses its own text inside a clip that
         // covers it, and the "overflowing" check only looks at leaves whose own
-        // overflow is hidden; the page-level scrollWidth test goes quiet the moment
-        // the page root hides the spill, which is exactly the layout that
-        // "overflow: hidden" on the body masks. So this one is geometry, walked up
-        // the ancestor chain instead of read off a declaration.
+        // overflow is hidden; the page-level scrollWidth test goes quiet when the
+        // page root itself hides the spill. That is overflow: hidden on both
+        // axes at the root — measured on this engine, overflow-x: hidden on the
+        // body alone still leaves documentElement.scrollWidth at the child's
+        // width — and it is the one masking layout a page-level check cannot see
+        // through. So this one is geometry, walked up the ancestor chain instead
+        // of read off a declaration.
         //
         // Two rules keep it honest, and both of them are about refusing an
         // explanation that does not explain anything:
-        //   * an ancestor explains a spill only if it really clips that element —
+        //   * an ancestor explains a spill only if it really holds that element —
         //     its overflow is not "visible" AND the element is inside the
-        //     ancestor's scroll box, not merely overlapped by its rectangle. An
-        //     ancestor the element has already escaped past clips nothing, so the
-        //     walk continues above it;
-        //   * the page root is never an explanation. overflow: hidden on the body
-        //     is the blanket this check exists to see through: content wider than
-        //     the section holding it is a real spill whether or not the page hides
-        //     it from the user and from scrollWidth.
+        //     ancestor's box, not merely overlapped by its rectangle. An ancestor
+        //     the element has already escaped past holds nothing, so the walk
+        //     continues above it — but the first such ancestor is named in the
+        //     string ("· held in by .card (overflow hidden)"): whatever pokes out
+        //     of it is cut off, not painted, and "nothing clipping it" would be the
+        //     opposite of what was measured. It is still a failure either way:
+        //     content that wants more width than its container is the same defect
+        //     one step earlier;
+        //   * the page root is never an explanation: content wider than the section
+        //     holding it is a real spill whether or not the page hides it from the
+        //     user and from scrollWidth, and this check exists to see through
+        //     exactly that blanket.
         // The bottom edge is deliberately not reported: content under the fold is
         // what scrolling is for. What lands here is painted where only a sideways
         // page scroll could reach it, which this dashboard must never need.
@@ -441,6 +449,7 @@ function buildPage(payload, fixture) {
           if (box.left < -1) why.push("left " + Math.round(box.left));
           if (box.top < -1) why.push("top " + Math.round(box.top));
           if (why.length === 0) return null;
+          let held = null;
           for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
             if (parent === document.body || parent === document.documentElement) break;
             const style = getComputedStyle(parent);
@@ -448,14 +457,24 @@ function buildPage(payload, fixture) {
             const clip = parent.getBoundingClientRect();
             const inside = clip.left - 1 <= box.left && clip.right + 1 >= box.right && clip.top - 1 <= box.top && clip.bottom + 1 >= box.bottom;
             if (inside) return null;
+            if (held === null) {
+              const scrolls = [style.overflowX, style.overflowY].some((value) => value === "auto" || value === "scroll");
+              held = (parent.className || parent.tagName) + (scrolls ? " (scrollable)" : " (overflow hidden)");
+            }
           }
-          return why.join(" ");
+          return why.join(" ") + (held === null ? "" : " · held in by " + held);
         };
         // Every element in the page, once: a spill can be the container as easily
         // as the words inside it, so this does not start from the leaves.
         const spilled = [...document.querySelectorAll("body *")]
           .map((node) => { const why = spilledOut(node); return why === null ? null : loser(node) + " · " + why; })
           .filter((entry) => entry !== null);
+        // The candidate set the clipped check walks is a fixed selector list: if
+        // those class names are renamed away, the list is empty, the failures are
+        // empty, and the check passes every run from then on. The count goes into
+        // the dump so compare.mjs can pin a floor (overflow.clippedCandidates) —
+        // "measured nothing" and "found nothing" are different answers.
+        const clippedTargets = [...document.querySelectorAll(".row-main, .skill-name, .field-value, .proj-title, .proj-path")];
         // Whole-page invariants, checked on every render whatever the payload,
         // size or theme. A screenshot shows that something looks wrong; these say
         // what, and they are the only checks the scenario payloads get — the
@@ -481,11 +500,17 @@ function buildPage(payload, fixture) {
           // just cuts the words off is a defect. Only the second is reported,
           // and it carries the text, because "field-value" alone does not say
           // which field lost its label on a real machine.
-          clipped: [...document.querySelectorAll(".row-main, .skill-name, .field-value, .proj-title, .proj-path")].filter(losesText).map(loser).slice(0, 10),
+          clipped: clippedTargets.filter(losesText).map(loser).slice(0, 10),
+          // How many boxes the line above actually looked at: zero would make it
+          // a check that passes by having nothing to fail about. The renderer's
+          // own matrix reads this number; the reference gate reads the copy in
+          // the structure table below.
+          clippedCandidates: clippedTargets.length,
           overflowing: [...document.querySelectorAll("body *")].filter((node) => node.children.length === 0 && (node.textContent ?? "").trim() !== "" && getComputedStyle(node).overflowX === "hidden").filter(losesText).map(loser).slice(0, 10),
-          // Painted outside the window with nothing clipping or scrolling it —
-          // the spill the two checks above cannot name, and the one a page-level
-          // overflow: hidden hides from noHorizontalScroll.
+          // Painted past the window's edge — the spill the two checks above
+          // cannot name, and the one a page-level overflow: hidden hides from
+          // noHorizontalScroll. Each entry names the ancestor holding it, if
+          // there is one.
           spilled: spilled.slice(0, 10),
           // Controls a keyboard user cannot reach or read.
           unlabelledControls: [...document.querySelectorAll("button")].filter((node) => (node.textContent ?? "").trim() === "" && (node.getAttribute("aria-label") ?? "") === "" && (node.title ?? "") === "").length,
@@ -721,6 +746,9 @@ function buildPage(payload, fixture) {
           // side: the first is the symptom, the second names what did it.
           "overflow.page": document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
           "overflow.spilled": spilled.length,
+          // The size of the set the clipped check measured, so a rename that
+          // empties that set is a red gate rather than a silently vacuous check.
+          "overflow.clippedCandidates": clippedTargets.length,
         };
         const script = document.createElement("script");
         script.type = "application/json";

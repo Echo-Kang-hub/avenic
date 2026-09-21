@@ -79,7 +79,7 @@ const EXT = path.join(ROOT, "ext");
 const PROJECT = path.join(ROOT, "atlas");
 const CATALOG = path.join(ROOT, "catalog");
 const STATE = path.join(ROOT, "state");
-const AGENT_HOME = path.join(ROOT, "home");
+export const AGENT_HOME = path.join(ROOT, "home");
 const SHIM = path.join(ROOT, "bin");
 const PORT = 9333;
 const EXT_ID = "EchoKang.avenic-agent-manager";
@@ -130,12 +130,26 @@ const FOOTER_LINE = `Avenic v${CLI_VERSION}`;
 // dashboard reads the catalog cache and the Skills state from this root, so
 // pointing it here is what makes the window read the fixture's catalog instead
 // of the machine's, and keeps every write inside the run's own directory.
-function windowEnvironment() {
+export function windowEnvironment() {
   const inherited = process.env.PATH ?? process.env.Path ?? "";
   // Both spellings: Windows preserves whichever one a process was started with,
   // and core's resolver reads PATH first and Path second.
   const value = `${SHIM}${path.delimiter}${inherited}`;
-  return { ...process.env, PATH: value, Path: value, AVENIC_STATE_DIR: STATE, XDG_CONFIG_HOME: path.join(AGENT_HOME, ".config") };
+  // The agent homes are re-routed the same way test/helpers.ts and test/host/fixture.mjs
+  // already re-route theirs: core falls back to `CLAUDE_CONFIG_DIR || <home>/.claude`
+  // and `CODEX_HOME || <home>/.codex`, so without these two the window would read the
+  // developer's real homes on any path that touches them. Latent, not an active leak —
+  // today's click set only reads the project's own portable store — but the next click
+  // added to the step list would make it real.
+  return {
+    ...process.env,
+    PATH: value,
+    Path: value,
+    AVENIC_STATE_DIR: STATE,
+    XDG_CONFIG_HOME: path.join(AGENT_HOME, ".config"),
+    CLAUDE_CONFIG_DIR: path.join(AGENT_HOME, ".claude"),
+    CODEX_HOME: path.join(AGENT_HOME, ".codex"),
+  };
 }
 
 // Proved before the window depends on it: this is the command the extension's
@@ -493,9 +507,13 @@ export function verdict({ steps = [], row = null, header = null, shots = [], err
     if (!(step.mutations > 0)) reasons.push(`the ${JSON.stringify(step.label)} click caused no DOM mutations`);
   }
   // 头部的三段各就各位是「看起来像参考图」的一部分，而且是最先塌的一块：窗口一窄、
-  // 项目路径一长，路径就画到状态块上去了。量不到这一项不算通过——没测过与没重叠
-  // 是两件事。
+  // 项目路径一长，路径就画到状态块上去了。量不到这一项不算通过——没测过与没重叠是两
+  // 件事，而「量不到」不止一种：状态块没查到时 status 是 null（探针只记了一行 log），
+  // 标题/路径没查到时重叠循环的几个选择器一个也没匹配上、overlaps 是空数组而不是
+  // 「没有重叠」。两种都必须点名，否则一次删掉了节点的头部会安静地变绿。
   if (header === null) reasons.push("the header layout was never measured (no overlap check ran)");
+  else if (header.status == null) reasons.push("the header status block was never measured (no .header-status node on the page)");
+  else if (header.rects?.title == null || header.rects?.path == null) reasons.push("the header's title or path was not on the page, so the overlap check never compared them");
   else if ((header.overlaps ?? []).length > 0) reasons.push(`the project header paints ${header.overlaps.join(", ")} over the status block`);
   if (row === null) reasons.push("no session row was found on the Sessions page");
   else {

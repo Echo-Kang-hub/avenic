@@ -32,12 +32,17 @@
 //
 // The two checks added on 2026-09-21 were each watched fail. `spilled` — the
 // element-level half of the overflow question, red when something is painted
-// outside the window with no ancestor clipping or scrolling it — was made red on
-// a render whose page root hides the overflow (`body{overflow-x:hidden}`) while
-// `.agent-grid` is widened to 1800px: `noHorizontalScroll` stays true and says
-// nothing, while the dump names ten elements painting past the right edge and
-// counts 42, which is exactly why this one is walked from geometry rather than
-// read off a declaration. The tab check is the section check one level down, and
+// outside the window — was made red on a render with `body{overflow-x:hidden}`
+// and `.agent-grid` widened to 1800px: the dump names ten elements painting past
+// the right edge and counts 42, which is the point — it reads geometry, not
+// declarations. (That perturbation also turned the page-level check red: on this
+// engine, body-only `overflow-x: hidden` still leaves documentElement.scrollWidth
+// at 1800 against a 1461 client width. The layout that really hides the symptom
+// from it is `overflow: hidden` on both axes at the root, which is the one a
+// page-level check can never see.) A box a non-root ancestor does not hold is
+// still reported, and the string names what holds it — `· held in by .card
+// (overflow hidden)` — because "nothing clipping it" would be the opposite of
+// what was measured. The tab check is the section check one level down, and
 // the perturbation was the harness's own fault — a clickTab that took the first
 // tab instead of the labelled one — which goes red with "the pane on screen is
 // the Installed (0) tab, not the Official Registry tab that was clicked".
@@ -215,14 +220,24 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   if (checks.clipped.length > 0) problems.push(`text clipped without ellipsis: ${checks.clipped.join(", ")}`);
   if (checks.overflowing.length > 0) problems.push(`content overflowing a clipped box: ${checks.overflowing.join(", ")}`);
   // The element-level half of the overflow question, and the one the page-level
-  // check above cannot answer: something painted outside the window with no
-  // ancestor clipping or scrolling it. A dump from a shot.mjs that predates this
-  // check has nothing to read, which is a failure too — a check that is absent
-  // passes every run it is absent from.
+  // check above cannot answer: something painted past the window's edge. Each
+  // entry names the ancestor holding it, if there is one — the page root never
+  // counts as one — so the string says what was measured rather than what was
+  // hoped for. A dump from a shot.mjs that predates this check has nothing to
+  // read, which is a failure too: a check that is absent passes every run it is
+  // absent from.
   if (checks.spilled === undefined) {
     problems.push("the geometry dump has no spilled check — shot.mjs produced an older shape");
   } else if (checks.spilled.length > 0) {
-    problems.push(`painted outside the viewport with nothing clipping it: ${checks.spilled.join(", ")}`);
+    problems.push(`painted outside the viewport: ${checks.spilled.join(", ")}`);
+  }
+  // The size of the set the clipped check measured. Zero candidates means the
+  // selector list no longer matches anything, which is how that check goes
+  // vacuously green — "measured nothing" is not "found nothing".
+  if (checks.clippedCandidates === undefined) {
+    problems.push("the geometry dump has no clippedCandidates count — shot.mjs produced an older shape");
+  } else if (checks.clippedCandidates === 0) {
+    problems.push("the clipped-text check measured no candidates at all — its selector list is stale");
   }
   if (checks.unlabelledControls > 0) problems.push(`${checks.unlabelledControls} control(s) with no accessible name`);
   if (checks.tabsNotTabs.length > 0) problems.push(`chips that are not tabs: ${checks.tabsNotTabs.join(", ")}`);

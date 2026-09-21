@@ -105,6 +105,9 @@ function claudeSummaryLine(sessionId, summary) {
 // is what both the Windows and the POSIX extension lists accept.
 async function shimPath(name, executables) {
   const dir = path.join(os.tmpdir(), "avenic-visual-shims", name);
+  // 这个目录跨 run 复用，上一次留下的可执行文件会把「这台机器没装 Claude」变成
+  // 「装了」——场景是从意图里长出来的，不是从上次跑剩的东西里。先清再写。
+  await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
   for (const executable of executables) await writeFile(path.join(dir, executable), "");
   return dir;
