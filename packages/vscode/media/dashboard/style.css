@@ -971,17 +971,18 @@ button {
 
 /* Two columns, as the reference lays it out: three entries and the "view all"
  * link filling the last cell. */
-/* The reference's two activity columns are content-sized, not halves: the times
- * right-align inside each column's own width, and a hairline separates them. */
+/* 两列的宽度是量出来的，不是排出来的：参考图的两条分栏横线在 image x899..1178 与
+ * 1196..1508，卡片是 886..1521——内宽 609 分成 279 + 18 + 312，两侧各让开 13px。
+ * 每一行的时间靠各自那一列的右边缘对齐（参考图里左右两列的时间右端分别是 1166 与
+ * 1490，两列并不等宽），所以列宽错一点点，整列时间就跟着错。 */
 .activity-list {
   display: grid;
-  grid-template-columns: minmax(0, max-content) minmax(0, max-content);
-  justify-content: space-between;
-  column-gap: 51px;
-  padding-bottom: 9px;
+  grid-template-columns: minmax(0, 279fr) minmax(0, 312fr);
+  column-gap: 18px;
+  padding: 0 13px 9px;
 }
 
-.activity-row { display: flex; align-items: center; gap: 10px; padding: 0 14px 0 17px; height: 28px; font-size: 12.5px; min-width: 0; }
+.activity-row { display: flex; align-items: center; gap: 10px; padding: 0 12px 0 4px; height: 28px; font-size: 12.5px; min-width: 0; }
 
 /* No vertical rule between the columns: a column-by-column luminance probe of
  * the reference finds none — only the two hairlines under the first pair. */

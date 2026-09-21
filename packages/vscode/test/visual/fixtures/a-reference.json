@@ -3,11 +3,12 @@
     "source": "Hand-transcribed from the reference design image (image.png at the repo root). NOT captured: test/visual/capture.mjs only produces b-fresh, c-native and e-full.",
     "shape": "Mirrors protocol.ts's DashboardData, but every value is the reference's or invented to draw it — it is not what a project on disk produced.",
     "transcribed-from-the-image": [
-      "version \"1.8.4\" — the reference footer's text, i.e. the CLI's version; the real panel renders the extension's own version (panel.ts passes context.extension.packageJSON.version, \"0.5.5\" today), so no host emits this string",
+      "version \"1.8.4\" — the reference footer's text. The footer names the Avenic CLI the reader is actually running (panel.ts passes cachedAvenicCliVersion()), and the CLI this repo produces is 1.8.4, so the string here is the shape a real host emits; the digits pin the build, not the machine's own answer",
+      "versionDetails.cli \"1.8.4\" / .extension \"0.6.0\" — the footer's title tooltip, composed from the same two answers a host passes; nothing measures it, because no reference box shows a tooltip",
       "project.root \"D:\\Code\\agenthome-cli\" — the reference machine's path, not a value this harness produces"
     ],
     "invented-to-draw-the-reference": "agents[].fields values and options, session titles and counts, skills and pack names, hub spec/revision, activity rows",
-    "gated-by": "shot.mjs renders this payload; compare.mjs measures it against fixtures/reference-geometry.json, whose refs come from the image itself (e.g. text.version's 74..151px run)",
+    "gated-by": "shot.mjs renders this payload; compare.mjs measures it against fixtures/reference-geometry.json, whose refs come from the image itself (e.g. text.version's 74..151px run). The footer's text is gated as a pattern — \"Avenic v\" and a dotted number — never by those digits, which are live machine data",
     "not-regenerated": "capture.mjs never writes this file, so a value here that the host cannot emit stays until someone decides what the footer should show"
   },
   "project": {
@@ -407,7 +408,7 @@
     },
     {
       "time": "18:32:11",
-      "text": "Skill \"code-reviewer\" imported",
+      "text": "Skill ‘code-reviewer’ imported",
       "tone": "green"
     },
     {
@@ -418,6 +419,10 @@
   ],
   "empty": null,
   "version": "1.8.4",
+  "versionDetails": {
+    "cli": "1.8.4",
+    "extension": "0.6.0"
+  },
   "transcript": null,
   "detail": false
 }

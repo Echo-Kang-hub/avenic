@@ -225,6 +225,19 @@ test("compressed dashboard keeps agent identity via inline SVG marks", async () 
   assert.match(css, /\.agent-mark\.codex svg\s*\{[^}]*width:\s*38\.6px/);
 });
 
+test("the activity list is the reference's own two column widths", async () => {
+  const css = await read("style.css");
+  // 参考图里这一块不是一列通栏：两条分栏横线分别画在 image x899..1178 与 1196..1508，
+  // 卡片本身是 886..1521——所以列宽是量出来的 279 与 312（内宽 609），中间 18px 空隙，
+  // 两侧各让开 13px。时间靠各自那一列的右边缘对齐（实测两行时间右端同为 1166/1490，
+  // 与列宽差无关），所以列宽一旦写错，时间整列就跟着错，而它是最显眼的那一列。
+  assert.match(css, /\.activity-list\s*\{[^}]*grid-template-columns:\s*minmax\(0, 279fr\)\s*minmax\(0, 312fr\)/);
+  assert.match(css, /\.activity-list\s*\{[^}]*column-gap:\s*18px/);
+  assert.match(css, /\.activity-list\s*\{[^}]*padding:\s*0 13px/);
+  // 13（列表）+4（行）= 卡片边往里 17px 才是那颗点，正是参考图的 903。
+  assert.match(css, /\.activity-row\s*\{[^}]*padding:\s*0 12px 0 4px/);
+});
+
 test("the renderer reads the host's own fields rather than inventing labels", async () => {
   const js = await read("main.js");
   // 状态胶囊与「谁配置了什么」都由宿主给（statusText / fields），渲染层不自己判断
