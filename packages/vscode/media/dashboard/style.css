@@ -556,13 +556,19 @@ button {
 
 /* Claude's mark in the reference is the one that carries a tile: a rounded
  * square in the agent's own red-orange with a white star knocked out of it.
- * Codex and OpenCode are drawn as bare glyphs, so they get no box. */
+ * Codex and OpenCode are drawn as bare glyphs, so they get no box. The sizes
+ * are the reference's own ink boxes inside that 46px head: the star's 34px
+ * (12 spokes reaching 17px each), the knot's 38px, the loop's 44×22px. */
 .agent-mark.claude {
   background: #e06446;
   border-radius: 12px;
 }
 
-.agent-mark.claude svg { width: 30px; height: 30px; }
+.agent-mark.claude svg { width: 36px; height: 36px; }
+
+/* The knot fills its own canvas (its ink is 0.99 of the viewBox), so at 46px it
+ * would run edge to edge; the reference draws it at 38×39px. */
+.agent-mark.codex svg { width: 38.6px; height: 38.6px; }
 
 /* The agents' own hues, for every mark that stands alone (skill rows, quick
  * actions). One context overrides all three: a glyph inside an agent card is

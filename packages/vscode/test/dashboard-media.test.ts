@@ -185,22 +185,44 @@ test("compressed dashboard keeps agent identity via inline SVG marks", async () 
   assert.ok(js.includes('agentId === "claude"'));
   assert.ok(js.includes('agentId === "codex"'));
   assert.ok(!/\.innerHTML\s*=/.test(js)); // 品牌标记同样不经 innerHTML
-  // 三个标记都是**描边**画出来的（fill:none + stroke:currentColor）：参考图里它们
-  // 是等宽的线条，填充版的小尺寸下糊成一团，而线条的颜色要能随上下文变（卡片里
-  // 一律白色，其他地方是各自的本色）。
-  assert.match(js, /const CODEX_RING = "M8\.086\.457/);
+  // 三个标记都是**各自品牌的真形状**：claude 是 12 道等长、每 30° 一道的光芒（参考图
+  // 里用极坐标量得出来：每道到中心 17px，缝里最深只到 6px），codex 是真结（描外轮廓
+  // 只剩一朵花），opencode 是两环在中间交叉成一根线的无穷号（不是两个相切的圆）。颜
+  // 色随上下文变（卡片里一律白色，其他地方是各自的本色），所以都取 currentColor。
+  const sunburst = js.match(/const CLAUDE_RAYS = "([^"]+)"/)?.[1];
+  assert.ok(sunburst, "claude 的光芒是一条自己的路径数据");
+  const rays = sunburst.split("M").filter(Boolean).map((ray) => {
+    const [, x, y] = ray.match(/^8 8L([\d.]+) ([\d.]+)$/) ?? [];
+    assert.ok(x && y, `这道光芒不是从中心发出的直线：M${ray}`);
+    return { reach: Math.hypot(Number(x) - 8, Number(y) - 8), angle: (Math.atan2(Number(x) - 8, 8 - Number(y)) * 180) / Math.PI };
+  });
+  assert.equal(rays.length, 12, "参考图里的光芒是 12 道");
+  for (const [index, ray] of rays.entries()) {
+    assert.ok(Math.abs(ray.reach - rays[0]!.reach) < 0.01, `第 ${index + 1} 道与第一道不同长：${ray.reach} vs ${rays[0]!.reach}`);
+    const step = (ray.angle + 360) % 30;
+    assert.ok(step < 0.01 || step > 29.99, `第 ${index + 1} 道不在 30° 的刻度上：${ray.angle}°`);
+  }
+  // codex 的结是填充画出来的：这个 logo 的编织是镂空，描外轮廓只会得到一团剪影。
+  assert.match(js, /const CODEX_KNOT = "M22\.2819 9\.8211/);
+  assert.match(js, /CODEX_KNOT[\s\S]{0,80}fill: "currentColor"/);
+  assert.ok(!/CODEX_KNOT[\s\S]{0,80}stroke:/.test(js), "结是实心的，描边会多出一圈轮廓");
+  // opencode 的无穷号是一根在中心交叉的线：两个圆相交画出来是「两个圆」，不是 ∞。
+  assert.match(js, /const OPENCODE_LOOP = "M12 12C/);
+  assert.match(js, /d: OPENCODE_LOOP,\s*"stroke-width": "2\.6",\s*"stroke-linecap": "round"\s*\},\s*stroke\)/);
+  assert.ok(!/for \(const cx of/.test(js), "双圆拼不出中心的交叉");
   assert.match(js, /stroke: "currentColor"/);
   assert.match(js, /fill: "none"/);
-  assert.ok(!/fill-rule/.test(js), "没有需要镂空的填充路径了，evenodd 也随之消失");
-  // 每个标记的形状来自各自那一支：claude 的四向星芒、codex 的环结、opencode 的双环。
-  assert.match(js, /"M8 2\.2v11\.6"/);
-  assert.match(js, /for \(const cx of \["6\.7", "17\.3"\]\)/);
   // 连字符属性（stroke-width 等）经 setAttribute 写入
   assert.match(js, /createElementNS\(SVG_NS, tag\)[\s\S]{0,120}setAttribute\(key, value\)/);
   // 颜色在样式表里，一处例外在卡片内：agent-mark 里三个标记都是白色。
   const css = await read("style.css");
   assert.match(css, /\.mark-claude\s*\{[^}]*color:/);
   assert.match(css, /\.agent-mark \.mark\s*\{[^}]*color:\s*#ffffff/);
+  // 大小也来自参考图：光芒的墨迹 34px、结 38px、无穷号 44×22px（都在 46px 的格子里）。
+  assert.match(css, /\.agent-mark\.claude svg\s*\{[^}]*width:\s*36px/);
+  // 结的路径画满自己的画布（墨迹 ≈ 0.99 个 viewBox），所以 46px 的 svg 会在 46px 的格子里
+  // 顶到边。参考图里的结是 38×39px，比光芒大一点、不贴边，svg 要按比例收到 38.6px。
+  assert.match(css, /\.agent-mark\.codex svg\s*\{[^}]*width:\s*38\.6px/);
 });
 
 test("the renderer reads the host's own fields rather than inventing labels", async () => {
