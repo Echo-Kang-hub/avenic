@@ -27,7 +27,7 @@ import {
   setActiveCanonicalSession,
   validateHistoryMode,
 } from "./config.mjs";
-import { apiRelative, removeApiConfiguration } from "./api-config.mjs";
+import { removeModelConfiguration } from "./model-config.mjs";
 import { agentRuntimeEnvironment, effectiveAgentEnvironment } from "./agent-runtime.mjs";
 import { getAgent } from "./agents.mjs";
 import {
@@ -70,29 +70,35 @@ export function methodSwitches(draft) {
 }
 
 /**
- * The switches a "Remove" could actually act on: the ones whose previous answer
- * was an API configuration, which is the only thing Avenic can show it wrote.
- * A project account home is a sign-in the agent performed, so a host asks the
- * destructive question only when this is non-empty — a confirmation for a
- * deletion that is never going to happen teaches users to click through them.
+ * What a switch left behind, in the words every host uses: the agent, the file
+ * the previous API answer points at, and whether that file is Avenic's to give
+ * back. One formatter, so a terminal confirmation and an editor modal cannot
+ * name different files for the same answer — and so the question itself can be
+ * drawn from the step list rather than asked again inside a write, where a
+ * cancel can no longer reach it.
+ *
+ * Only a switch away from an API answer can leave anything: an account home is
+ * the agent's own sign-in, and a release for it deletes nothing. `files` is what
+ * the wizard read off the disk when it opened (`projectDraft`), so the question
+ * describes a file that is really there rather than one that might be.
  */
-function deletableSwitches(draft) {
-  return methodSwitches(draft).filter(({ agentId }) => draft.stored?.[agentId]?.authMethod === "api");
-}
-
-/**
- * What that removal would name, in the words every host uses: the agent, and
- * the file the previous configuration lives in. One formatter, so a terminal
- * confirmation and an editor modal cannot name different files for the same
- * answer — and so the question itself can be drawn from the step list rather
- * than asked again inside a write, where a cancel can no longer reach it.
- */
-export function removalTargets(draft) {
-  return deletableSwitches(draft).map(({ agentId }) => ({
-    agentId,
-    name: getAgent(agentId).displayName,
-    relative: apiRelative(agentId, draft.stored?.[agentId]?.configScope ?? "global"),
-  }));
+export function leftoverTargets(draft) {
+  const targets = [];
+  for (const { agentId, before } of methodSwitches(draft)) {
+    if (before !== "api") continue;
+    const file = draft.files?.[agentId];
+    if (!file?.exists) continue;
+    targets.push({
+      agentId,
+      name: getAgent(agentId).displayName,
+      relative: file.relative,
+      // Deletable means provable: Avenic created this exact file and it still
+      // holds exactly what Avenic wrote. Anything else stays, whatever the
+      // answer, so it is not what the second, destructive question is about.
+      removable: file.owned === true && file.unchanged === true,
+    });
+  }
+  return targets;
 }
 
 function canonicalRevision(stored) {
@@ -460,43 +466,19 @@ export async function applyProjectConfiguration(projectRoot, draft, options = {}
 }
 
 /**
- * Give back what one agent's previous method left on disk.
+ * Give back what one agent's previous answer left on disk.
  *
- * Only an API configuration can be released: Avenic wrote those keys and the
- * ledger says which ones, so the removal restores the values it displaced and
- * keeps every key the user changed after the fact. A project account home is
- * never released — the sign-in inside it is the agent's own, written by the
- * agent's own login, and nothing in it can be shown to be Avenic's. Which is
- * why the answer names it instead of deleting it.
+ * Only an API answer can be released, and only the file Avenic itself created
+ * (the ledger's proof, and a hash showing nobody has touched it since). An
+ * account home is never released — the sign-in inside it is the agent's own,
+ * written by the agent's own login, and nothing in it can be shown to be
+ * Avenic's. Which is why the wizard names it instead of deleting it, and why
+ * this returns nothing at all for it.
  */
 export async function releasePreviousMethod(projectRoot, agentId, previous, options = {}) {
-  if (previous?.authMethod !== "api") {
-    // A caller that hands no previous answer gets no method back: naming one
-    // would report "an Account was released" about a project that never
-    // answered, which is a fact this function would be inventing.
-    const method = previous?.authMethod === "account" ? "account" : null;
-    const home = method === "account" && previous.accountScope === "project" ? agentHomeRoot(projectRoot, agentId) : null;
-    return {
-      agentId,
-      method,
-      relative: null,
-      // Project-relative, the way every other surface names it: hosts print the
-      // same string the status page and the wizard's descriptions use.
-      home: home === null ? null : path.relative(projectRoot, home).split(path.sep).join("/"),
-      removed: 0,
-      conflicts: 0,
-      kept: 0,
-      deleted: false,
-    };
-  }
-  const result = await removeApiConfiguration(projectRoot, agentId, previous.configScope ?? "global", {
-    environment: options.environment,
-    // The home travels with every other option: a caller that redirected where
-    // a configuration is written must redirect where it is given back, or a
-    // removal reads the developer's own file instead of the fixture's.
-    homeDir: options.homeDir,
-  });
-  return { agentId, method: "api", home: null, ...result };
+  if (previous?.authMethod !== "api") return null;
+  const result = await removeModelConfiguration(projectRoot, agentId, previous.configScope ?? "global", options);
+  return { agentId, relative: result.relative, outcome: result.outcome, removed: result.removed };
 }
 
 

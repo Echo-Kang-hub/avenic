@@ -134,7 +134,7 @@ test("avenic init inside another Avenic project asks before making a separate on
     keys(accepted.stdin, "y");
     await waitFor(() => /Select agents/.test(visible(accepted.stdout.text())), "the wizard after the question");
     keys(accepted.stdin, " ", "\r"); // Claude Code
-    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "History"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(visible(accepted.stdout.text())), title);
       keys(accepted.stdin, "\r");
     }

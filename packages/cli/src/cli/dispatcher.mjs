@@ -4,15 +4,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   AGENTS,
+  agentCard,
+  agentCardRows,
   agentChoices,
   agentLabel,
-  apiRelative,
   applyProjectConfiguration,
   applyProjectDraft,
   effectiveAgentEnvironment,
   agentExecutableAvailable,
   clearLocalAuth,
-  collectStatus,
   deinitializeAgent,
   effectiveAgentConfig,
   enclosingProjectRoot,
@@ -33,13 +33,15 @@ import {
   prepareCanonicalContinuation,
   projectCanonicalSession,
   readCanonicalSession,
-  apiPrefill,
+  historyLabel,
   projectConfig,
   projectDraft,
   projectWizardSteps,
-  readApiConfiguration,
+  LABELS,
+  leftoverTargets,
   methodSwitches,
-  removalTargets,
+  modelConfigPresence,
+  modelConfigRelative,
   releasePreviousMethod,
   sessionsGitIgnored,
   setLocalAuth,
@@ -54,7 +56,7 @@ import {
 import { dispatchHub, dispatchSkills } from "./skills-cli.mjs";
 import { updateAvenic } from "./self-update.mjs";
 import { takeOption } from "./options.mjs";
-import { collectLines, confirm, field, intro, isInteractive, multiSelect, note, palette, searchableSelect, section, singleSelect, warning, wizard } from "./prompts.mjs";
+import { collectLines, confirm, field, intro, isInteractive, line, multiSelect, note, palette, searchableSelect, section, singleSelect, warning, wizard } from "./prompts.mjs";
 import { fullLogo } from "./brand.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
 import { loadTranscript, printTranscript, transcriptPreview } from "./transcript-cli.mjs";
@@ -81,26 +83,23 @@ function parseAgentList(value) {
   return [...new Set(agents)];
 }
 
-// The configuration as rows: one per enabled agent, then the history mode. The
-// method and the scope it owns are one answer, said in the order the wizard
-// asks them; an agent that has not answered says so instead of borrowing the
-// other method's spelling.
-const METHOD_LABELS = { account: "Account", api: "API" };
-
-export function methodSummary(entry) {
-  if (entry.authMethod === "account") return `Account · ${entry.accountScope === "project" ? "Project" : "Global"}`;
-  if (entry.authMethod === "api") return `API · ${entry.configScope === "project" ? "Project" : "Global"}`;
-  return "not chosen — a launch will ask";
-}
-
-function configurationRows(config) {
-  const agentRows = Object.entries(config.agents)
-    .map(([agentId, entry]) => {
-      const agent = getAgent(agentId);
-      const auth = agent.managesOwnAuth ? "Native" : methodSummary(entry);
-      return [agent.displayName, `${auth} · ${entry.sessionScope} sessions`];
-    });
-  return [["Agents", agentRows], ["History", [["Mode", config.historyMode]]]];
+/**
+ * The configuration a command just wrote, as the dashboard draws it: one ◇
+ * block per agent, then one for the project's History. The rows themselves come
+ * from core (`agentCardRows`), so `init`, `avenic <agent> status`, the VS Code
+ * Configure page and the dashboard card cannot disagree about a name or an
+ * order — and a file the user has already filled in reports its provider and
+ * model here, the way the card does.
+ */
+async function configurationRows(projectRoot, config, options) {
+  const sections = [];
+  for (const agentId of Object.keys(config.agents)) {
+    const agent = getAgent(agentId);
+    const card = await agentCard(projectRoot, agentId, options);
+    sections.push([agent.displayName, agentCardRows(card, config.historyMode).map((row) => [row.label, row.value])]);
+  }
+  sections.push([LABELS.history, [historyLabel(config.historyMode)]]);
+  return sections;
 }
 
 /**
@@ -120,7 +119,12 @@ function printResult(title, projectRoot, groups, options = {}) {
   for (const [sectionTitle, rows] of sections) {
     sink.write("\n");
     if (sectionTitle) section(sink, sectionTitle);
-    for (const [label, value] of rows) field(sink, label, value, { labelWidth });
+    // 一行可以是一对 [标签, 值]，也可以是一个没有标签的值：History 那一格说的是
+    // 「Shared」这件事本身，给它编一个标签只会多出一个 Dashboard 上没有的词。
+    for (const row of rows) {
+      if (Array.isArray(row)) field(sink, row[0], row[1], { labelWidth });
+      else line(sink, String(row));
+    }
   }
   flush();
 }
@@ -135,10 +139,10 @@ function printResult(title, projectRoot, groups, options = {}) {
  */
 async function interactiveProjectDraft(projectRoot, editing = false, prompts = {}) {
   const config = projectConfig(await loadRuntime(projectRoot));
-  // Editing starts from what the project already says, API fields included:
-  // an empty provider or endpoint on the screen would mean the answers being
-  // submitted are empty, and applying those would take the configuration away.
-  const draft = projectDraft(config, { api: await apiPrefill(projectRoot, config.agents) });
+  // 草稿带上那次读取的文件事实（哪个文件在、是不是 Avenic 建的、动过没有）：
+  // 「换了一种认证方式，旧的那份怎么办」这一问说的必须是磁盘上真实存在的文件，
+  // 而不是一个可能存在的路径。
+  const draft = projectDraft(config, { files: await modelConfigPresence(projectRoot, config.agents) });
   return wizard({
     ...prompts,
     draft,
@@ -149,7 +153,7 @@ async function interactiveProjectDraft(projectRoot, editing = false, prompts = {
       // runs there is nothing left to ask, and a key pressed now cannot decide
       // an answer that is already being written.
       const result = await applyProjectDraft(projectRoot, draft_);
-      for (const entry of result.released ?? []) reportRelease(entry, getAgent(entry.agentId));
+      for (const entry of result.released ?? []) reportRelease(entry);
       return { result, summary: `Avenic project ${editing ? "updated" : "initialized"} · ${projectRoot}` };
     },
   });
@@ -261,7 +265,7 @@ async function dispatchProjectSetup(argumentsList, editing = false, options = {}
     }
   }
   const result = await applyProjectConfiguration(projectRoot, draft);
-  printResult(`Avenic project ${editing ? "updated" : "initialized"}`, projectRoot, configurationRows(result.config), { labelWidth: 13 });
+  printResult(`Avenic project ${editing ? "updated" : "initialized"}`, projectRoot, await configurationRows(projectRoot, result.config), { labelWidth: 16 });
   if (result.imported.length) console.log(`Imported native histories from ${result.imported.length} agent(s) into the shared workspace.`);
   // Reconfiguring is also a moment to look for history that was left behind,
   // since the next launch deliberately does not.
@@ -283,21 +287,24 @@ Everyday use:
   avenic status                       What this project is, and what state it is in
   avenic skills                       Manage Skills (interactive menu on a terminal)
   avenic sessions                     Manage shared sessions (interactive)
-  avenic change                       Change auth, session storage or history mode
+  avenic change                       Change Authentication, Sessions or History
   avenic self-update                  Update Avenic from the registry
   avenic --version                    Print the installed version
 
 Options for init/change:
   --root <path>                     Set up this directory instead of the current one
   --agents <claude,codex,opencode>  --replace-agents  Replace the enabled set
-  --auth account|api                How the agent authenticates (Account delegates to
-                                    its own sign-in; API uses a provider configuration)
-  --scope global|project            The scope that method owns (default global)
+  --auth account|api                The Authentication answer (Account is the agent's
+                                    own sign-in; API is a provider configuration file)
+  --scope global|project            The scope that answer owns (default global)
   --sessions global|project         Keep sessions in the agent's own storage, or in the project
   --history shared|isolated         One shared history across agents, or separate histories
-Account mode configures no model: the agent signs in with its own account. API
-mode writes the provider, endpoint, model and credential into the agent's own
-configuration file. A project that has not answered is asked once at launch.
+Authentication is one answer per agent, and it is Account or API. Account
+configures no model: the agent signs in itself, and nothing about a provider is
+asked. API prepares the agent's own configuration file — Avenic creates it empty
+if it is missing and never writes into it, so the provider, endpoint, model and
+credential stay yours to fill in (the dashboard reads them back out). A project
+that has not answered is asked once at launch.
 Shared history starts empty and is imported from whatever the agents already
 have; isolated histories are imported on request with \`avenic sessions sync\`.
 A shared project shares a history; a plain launch still opens a new
@@ -314,7 +321,7 @@ Per-agent commands (thin wrappers over the project settings):
   avenic <claude|codex> init [--auth account|api] [--scope global|project] [--sessions global|project]
   avenic opencode init [--sessions global|project]
   avenic <claude|codex|opencode> deinit [--purge [--purge-credentials]]
-  avenic <claude|codex> auth [account|api|reset]     Change this project's method
+  avenic <claude|codex> auth [account|api|reset]     Change this project's Authentication answer
   avenic <claude|codex|opencode> status
   avenic <claude|codex|opencode> sessions [import|writeback|status]
   avenic <claude|codex|opencode> [official CLI arguments...]
@@ -357,72 +364,59 @@ Update Avenic:
 `);
 }
 
-// `avenic <agent> status`, for one agent: the method, the scope it owns, and
-// then only the rows that method has. An Account says where its sign-in lives
-// and whether it has happened; an API configuration names the file the launch
-// reads and what it selects. A project that has not answered says so, with the
-// one command that answers it — never a guessed default.
+// `avenic <agent> status`, for one agent: the same ◇ block, the same rows and
+// the same words the dashboard card shows — both read `agentCardRows` — plus
+// the notes only a terminal page can carry (a missing CLI, a sign-in that has
+// not happened yet, a remedy). A project that has not answered says so, with
+// the one command that answers it, never a guessed default.
 async function printAgentStatus(agent, projectRoot, state) {
   const config = effectiveAgentConfig(state, agent.id);
-  const rows = [["Initialized", config ? "Yes" : "No"]];
-  if (agent.managesOwnAuth) {
-    rows.push(["Authentication", "Native (OpenCode manages its own)"]);
-  } else if (config) {
-    const status = await collectStatus(projectRoot, { environment: process.env });
-    const overview = status.agents.find((entry) => entry.id === agent.id)?.auth ?? null;
-    rows.push(...await authRows(agent, projectRoot, config, overview));
-  } else {
-    rows.push(["Authentication", "Not chosen — a launch will ask"]);
+  const historyMode = projectConfig(state).historyMode;
+  const card = await agentCard(projectRoot, agent.id, { state });
+  const rows = agentCardRows(card, historyMode).map((row) => [row.label, row.value]);
+  printResult(`${agent.displayName} status`, projectRoot, [[agent.displayName, rows]], { labelWidth: 20 });
+  if (config?.source === "local") {
+    console.log("\nThis checkout runs on a local override (.agents/local/runtime.local.json), not on the project's own answer.\n");
   }
-  rows.push(["Official CLI", agentExecutableAvailable(agent.id) ? "Available" : "Not found"]);
-  printResult(`${agent.displayName} status`, projectRoot, rows, { labelWidth: 20 });
+  if (!agentExecutableAvailable(agent.id)) {
+    console.log(`The ${agent.executable} CLI is not on PATH — Avenic still manages this project's history for it.`);
+  } else if (!config) {
+    console.log(`Not configured here yet — run: avenic ${agent.id} init`);
+  }
+  for (const [text, options] of await agentAuthNotes(agent, card, config)) {
+    console.log(options.mark === "!" ? `! ${text}` : text);
+  }
+  printMethodNote(agent, config);
 }
 
-// What the effective method means on disk, as rows. Everything a status line
-// can be wrong about comes from one of two places — the project's answer or
-// this checkout's override — so which one decided is a row of its own.
-async function authRows(agent, projectRoot, config, overview) {
-  const scopeLabel = (scope) => (scope === "project" ? "Project" : "Global");
-  if (!config.authMethod) {
-    return [
-      ["Authentication", "Not chosen — a launch will ask"],
-      ["Sessions", config.sessionScope === "global" ? "Global (native)" : "Project (portable)"],
-    ];
+// 与 `avenic status` 同一批事实、同一套词：一行一句，从一个事实说起（路径在行首，
+// 行尾会被终端宽度截掉）。
+async function agentAuthNotes(agent, card, config) {
+  const auth = card.auth;
+  if (!auth) return [];
+  if (auth.method === "account") {
+    const notes = [];
+    if (auth.status === "not-signed-in") notes.push([`Account Status Not signed in — run: avenic ${agent.id} to sign in`, { mark: "!" }]);
+    else if (auth.status === "unknown") notes.push([`Account Status Unknown — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, {}]);
+    if (auth.detected) notes.push([`${LABELS.detectedButInactive} — ${auth.detected.relative} is present, and this project runs on an Account`, { mark: "!" }]);
+    return notes;
   }
-  const rows = [
-    ["Authentication", METHOD_LABELS[config.authMethod]],
-    ["Method source", config.source === "local" ? "Local override (runtime.local.json)" : "Project configuration"],
-  ];
-  if (config.authMethod === "account") {
-    rows.push(["Account scope", scopeLabel(config.accountScope)]);
-    if (overview?.home) rows.push(["Auth home", overview.home]);
-    // Local files only: no probe, no launch, and an answer this reader cannot
-    // support is named as Unknown rather than as a sign-out it did not see.
-    rows.push(["Auth status", overview?.status === "signed-in" ? "Signed in"
-      : overview?.status === "unknown" ? "Unknown (may live in a platform keychain — run the agent to check)"
-        : "Not signed in"]);
-  } else {
-    const configuration = await readApiConfiguration(projectRoot, agent.id, config.configScope, { environment: process.env });
-    rows.push(["Configuration", scopeLabel(config.configScope)]);
-    // 一格就要能过宽度截断，所以「写过、现在不在了」在这里只说 gone：后半句
-    // （谁写的、怎么补救）由补救命令承担，长的说法在 `avenic status` 那页。
-    rows.push(["Config source", configuration.present ? configuration.relative
-      : configuration.owned ? `${configuration.relative} (gone — run avenic change)`
-        : `${configuration.relative} (nothing written yet)`]);
-    if (configuration.present) {
-      if (configuration.provider) rows.push(["Provider", configuration.provider]);
-      if (configuration.model) rows.push(["Model", configuration.model]);
-      rows.push(["Credential", configuration.credentialSet ? "Set" : "Not set — read from your environment"]);
-    }
-  }
-  rows.push(["Sessions", config.sessionScope === "global" ? "Global (native)" : "Project (portable)"]);
-  return rows;
+  const configuration = auth.configuration ?? {};
+  const file = configuration.relative ?? "—";
+  // 三种处境，同一句补救；行要短到补救活得过 80 列终端的截断（文件在卡片行里
+  // 已经写过了，这里只把「下一步做什么」说完）。换过住处的那一份（1.8.4 之前
+  // Codex 的项目配置）在新文件还没配好时一并说出来：旧值只在它里面。
+  const older = auth.legacy ? [[`${auth.legacy.relative} still holds the earlier configuration`, { mark: "!" }]] : [];
+  if (!configuration.exists) return [[`${file} is missing — run: avenic change`, { mark: "!" }], ...older];
+  if (!configuration.valid) return [[`${file} cannot be read — run: avenic change`, { mark: "!" }], ...older];
+  if (!configuration.configured) return [[`fill in ${file} — nothing in it yet`, { mark: "!" }], ...older];
+  return [[`${LABELS.credential} ${configuration.credentialSet ? "set in the file" : "not in the file — the launch reads it from your own environment"}`, {}]];
 }
 
 // The one line that says what an answer means on disk, so `init` and `auth`
 // never leave the user guessing which file the next launch will read. Account
-// configures no model — the agent signs in — and API is the only mode that
-// writes provider settings, so the sentence differs by method and by scope.
+// configures no model — the agent signs in — and API is a file Avenic prepares
+// and never writes into, so the sentence differs by method and by scope.
 function printMethodNote(agent, config) {
   // 自管认证的 agent 没有「还没回答」这一态：认证和 provider 都是它自己的，启动
   // 路径上也不存在这一问。说它「还没有认证方式、启动时会问一次」是把别人的句子
@@ -440,11 +434,8 @@ Account: ${agent.displayName} signs itself in under .agents/local/${agent.id}/, 
 Account: ${agent.displayName} uses this machine's own sign-in. Avenic stores no credential and configures no model.`);
     return;
   }
-  if (agent.id === "codex" && config.configScope === "project") {
-    console.log("\nAPI: this project's provider is kept in .agents/api/codex.json and handed to Codex as -c overrides at launch. The key itself stays in your environment.");
-    return;
-  }
-  console.log(`\nAPI: the provider, endpoint and model belong in ${apiRelative(agent.id, config.configScope)}, which \`avenic change\` writes.`);
+  console.log(`
+API: ${agent.displayName} reads its provider, endpoint and model from ${modelConfigRelative(agent.id, config.configScope)}, a file of its own that Avenic prepares and never writes into. Fill it in — by hand, or with whatever tool you already use — and the next launch reads it.`);
 }
 
 /**
@@ -459,27 +450,30 @@ Account: ${agent.displayName} uses this machine's own sign-in. Avenic stores no 
  */
 async function askMethodSwitch(targets, prompts) {
   if (!isInteractive(prompts)) return "keep";
+  const named = targets.map(({ name, relative }) => `${name} · ${relative}`).join(" · ");
   const answer = await singleSelect({
     ...prompts,
-    title: "Existing Account/API configuration detected. Keep previous configuration?",
+    title: "What should Avenic do?",
+    description: targets.length === 0
+      ? "The previous answer left no file behind"
+      : `${named} · still present`,
     options: [
-      { value: "keep", label: "Keep", hint: "the previous configuration stays where it is" },
-      { value: "remove", label: "Remove", hint: "delete only what Avenic wrote for the previous answer" },
+      { value: "keep", label: "Keep", hint: "nothing is deleted" },
+      { value: "remove", label: "Remove", hint: "delete the file Avenic created, if you have not changed it" },
     ],
   });
   if (answer === null) return "cancel";
   if (answer !== "remove") return "keep";
-  // Nothing to name means nothing Avenic can show it wrote: an account home is
+  // Nothing to name means nothing Avenic can show it created: an account home is
   // the agent's own sign-in, so the second, destructive question is not asked —
   // a confirmation for a deletion that is never going to happen teaches users
   // to click through them. The answer stands, and the release reports where the
   // old answer remains.
-  if (targets.length === 0) return "remove";
-  const named = targets.map(({ name, relative }) => `${name} · ${relative}`).join(" · ");
+  if (deletable(targets).length === 0) return "remove";
   const destructive = await confirm({
     ...prompts,
-    title: "Delete the previous API configuration? This cannot be undone.",
-    description: `${named} · only the keys Avenic wrote are taken back out`,
+    title: "Remove old configuration? This cannot be undone.",
+    description: `${deletable(targets).map(({ name, relative }) => `${name} · ${relative}`).join(" · ")} · only a file Avenic created and that still holds exactly what it wrote is deleted`,
     initial: false,
   });
   // Esc still means nothing happened: the prompt said so, and the caller writes
@@ -488,37 +482,34 @@ async function askMethodSwitch(targets, prompts) {
   return destructive === true ? "remove" : "keep";
 }
 
+const deletable = (targets) => targets.filter((target) => target.removable);
+
 /**
- * What releasing a previous method did, in the one wording every host repeats:
- * an API release reports the keys it gave back and the ones the user changed
- * after Avenic wrote them; an account home is named and kept, because the
- * sign-in inside it is the agent's own and proving otherwise is not possible.
- * Nothing here is a deletion Avenic merely suspects it owns.
+ * What releasing a previous API answer did, in the one wording every host
+ * repeats. Avenic wrote an empty, valid configuration file and nothing else, so
+ * there are exactly three answers a release can have: it was Avenic's and
+ * untouched, so it is gone; the user has edited it since, so it is theirs; or it
+ * was never Avenic's to begin with. Nothing here is a deletion Avenic merely
+ * suspects it owns — a file it cannot prove it created stays.
  */
-function releaseLines(entry, agent) {
-  if (entry.relative === null) {
-    return entry.home === null
-      ? []
-      : [`Kept ${entry.home}/ — the sign-in inside is ${agent.displayName}'s own, not Avenic's to delete. Sign out in the agent to discard it.`];
+function releaseLines(entry) {
+  switch (entry.outcome) {
+    case "deleted":
+      return [`Removed ${entry.relative} — Avenic created it and nothing had changed it since.`];
+    case "modified":
+      return [`Configuration in ${entry.relative} was modified outside Avenic and will be preserved.`];
+    case "foreign":
+      return [`Kept ${entry.relative} — Avenic did not create it, so it is not Avenic's to delete.`];
+    default:
+      return [`${entry.relative} was already gone — nothing to remove.`];
   }
-  const lines = [entry.removed === 0 && entry.conflicts === 0
-    ? `No Avenic-written configuration was found in ${entry.relative} — nothing to remove.`
-    : `Removed ${entry.removed} key(s) Avenic wrote in ${entry.relative}${entry.deleted ? " (that file was Avenic's only, so it is gone)" : ""}.`];
-  if (entry.conflicts > 0) {
-    lines.push(`Kept ${entry.conflicts} key(s) you changed after Avenic wrote them — a value Avenic did not set is not Avenic's to delete.`);
-  }
-  // The one outcome that asks the user to act: a key they had written
-  // themselves, overwritten by Avenic, whose earlier value the ledger only ever
-  // held as a hash. It cannot be given back, and saying nothing would leave
-  // them with a silently destroyed value and no way to know one was there.
-  if (entry.kept > 0) {
-    lines.push(`Kept ${entry.kept} key(s) whose earlier value Avenic never stored — it cannot be given back; re-enter it if you still need it.`);
-  }
-  return lines;
 }
 
-function reportRelease(entry, agent, io = console) {
-  for (const line of releaseLines(entry, agent)) io.log(line);
+// A release that returned nothing released nothing: an Account's home is the
+// agent's own sign-in, so there is no file to name and no line to print.
+function reportRelease(entry, io = console) {
+  if (!entry) return;
+  for (const line of releaseLines(entry)) io.log(line);
 }
 
 async function dispatchAgent(agentId, argumentsList, options = {}) {
@@ -553,21 +544,20 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     if (sessionsOption) entry.sessionScope = validateScope(sessionsOption, "Sessions");
     const result = await initializeAgent(projectRoot, agentId, entry);
     const configured = effectiveAgentConfig(result, agentId);
-    printResult("Avenic Runtime", projectRoot, [
-      ["Agent", agent.displayName],
-      ...(agent.managesOwnAuth
-        ? [["Authentication", "Native (OpenCode manages its own)"]]
-        : [["Authentication", configured?.authMethod ? methodSummary(configured) : "Not chosen — a launch will ask"]]),
-      ["Sessions", configured?.sessionScope === "global" ? "Global" : "Project"],
-      ["Session Git", (await sessionsGitIgnored(projectRoot)) ? "Off" : "On"],
-      ["Configuration", result.configChanged ? "Updated" : "Unchanged"],
-      ["Git ignore", result.gitignoreChanged ? "Updated" : "Unchanged"],
-      ["Structure", result.structureRepaired ? "Repaired" : "Intact"],
-    ], { labelWidth: 16 });
+    const card = await agentCard(projectRoot, agentId, { state: result });
+    printResult("Avenic project", projectRoot, [
+      [agent.displayName, agentCardRows(card, projectConfig(result).historyMode).map((row) => [row.label, row.value])],
+      ["Project", [
+        ["Settings", result.configChanged ? "Updated" : "Unchanged"],
+        ["Git ignore", result.gitignoreChanged ? "Updated" : "Unchanged"],
+        ["Structure", result.structureRepaired ? "Repaired" : "Intact"],
+        ["Session Git", (await sessionsGitIgnored(projectRoot)) ? "Off" : "On"],
+      ]],
+    ], { labelWidth: 18 });
     const changedSomething = result.configChanged || result.gitignoreChanged || result.structureRepaired;
     console.log(changedSomething ? "\nChanged:" : "\nAlready up to date — nothing changed.");
     if (result.configChanged) {
-      console.log("  .agents/runtime.json          Runtime config (method, scopes, sessions)");
+      console.log("  .agents/runtime.json          Project settings (Authentication, Sessions, History)");
     }
     if (result.gitignoreChanged) {
       console.log("  .gitignore                    Added ignore rules for .agents/ and .claude/skills/");
@@ -577,7 +567,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       if (entry.authMethod === "account" && entry.accountScope === "project") {
         // The directory, not the credential: the agent's own login writes there
         // in its own format, and Avenic never invents one.
-        console.log(`  .agents/local/${agentId}/       Project account home (the agent signs in there itself)`);
+        console.log(`  .agents/local/${agentId}/       Project Account home (the agent signs in there itself)`);
       }
     }
     printMethodNote(agent, configured);
@@ -607,7 +597,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     }
     const result = await deinitializeAgent(projectRoot, agentId, purge ? { purge: true, purgeCredentials } : undefined);
     printResult(`${agent.displayName} deinitialization`, projectRoot, [
-      ["Runtime", result.changed ? "Removed" : "Already absent"],
+      ["Settings", result.changed ? "Removed" : "Already absent"],
       ["Data", result.purged ? "Purged" : "Preserved"],
       ["Agents", `${result.remaining} remaining`],
     ], { labelWidth: 10 });
@@ -665,15 +655,16 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       selected: [agentId],
       stored: { [agentId]: previous },
       agents: { [agentId]: { authMethod, ...scopeAnswer } },
+      files: await modelConfigPresence(projectRoot, { [agentId]: previous }),
     };
-    const decision = methodSwitches(switchDraft).length > 0 ? await askMethodSwitch(removalTargets(switchDraft), prompts) : "keep";
+    const decision = methodSwitches(switchDraft).length > 0 ? await askMethodSwitch(leftoverTargets(switchDraft), prompts) : "keep";
     if (decision === "cancel") return 0;
     const config = await setLocalAuth(projectRoot, agentId, { authMethod, ...scopeAnswer });
     // After, never before: the write above can fail, and a failed write must not
     // leave the user with neither answer. `previous` is a captured fact, so the
     // release does not need the live configuration to still describe it.
     if (decision === "remove") {
-      reportRelease(await releasePreviousMethod(projectRoot, agentId, previous, { environment: process.env }), agent);
+      reportRelease(await releasePreviousMethod(projectRoot, agentId, previous, { environment: process.env }));
     }
     // The result of a switch is a page like every other command's: what the
     // agent now runs under, followed by the one sentence saying what that means
@@ -730,7 +721,9 @@ async function dispatchDoctor() {
   const state = await loadRuntime(projectRoot);
   console.log("Avenic Doctor\n");
   console.log(`Project root       OK  ${projectRoot}`);
-  console.log(`Runtime config     ${state.runtime.agents ? "OK" : "ERROR"}`);
+  // 「项目设置」而不是那份文件的名字：`Runtime` 是 Avenic 内部的说法，
+  // 而这一页是给用户看的诊断 —— init 的结果页叫它 Settings，这里也叫它 Settings。
+  console.log(`Project settings   ${state.runtime.agents ? "OK" : "ERROR"}`);
   for (const agentId of Object.keys(AGENTS)) {
     const agent = getAgent(agentId);
     console.log(`${agent.displayName.padEnd(18)} ${agentExecutableAvailable(agent.id) ? "OK" : "NOT FOUND"}`);

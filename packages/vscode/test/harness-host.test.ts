@@ -17,6 +17,7 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   clickAllowed: (label: string) => boolean;
   ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; proc: string; window: string }[] };
   windowEnvironment: () => Record<string, string | undefined>;
+  pickPreviousVsix: (candidates: { version: string; file: string }[], currentVersion: string, wanted?: string | null) => { version: string; file: string } | null;
   AGENT_HOME: string;
 };
 const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify-artifacts.mjs")).href)) as {
@@ -272,4 +273,29 @@ test("the version the editor lists is the version that was verified", () => {
   const result = attempt({ listed: "EchoKang.Avenic-Agent-Manager@0.6.0\n" });
   assert.equal(result.status, "installed");
   assert.match(result.detail, /0\.6\.0/);
+});
+
+// 原地升级那一趟检查的前提是「从一个真的更早的发行版升上来」。选错版本（选到正在发的
+// 这个、或者什么都没选到）会把「升级过一个正在跑的旧版本」变成「升级过它自己」——照样
+// 全绿，什么都没证明，所以这个选择本身进了测试。
+test("the in-place update starts from the newest release that is not the one being shipped", () => {
+  const onDisk = [
+    { version: "0.5.2", file: "dist/release-20260919-1551/avenic-agent-manager-0.5.2.vsix" },
+    { version: "0.5.5", file: "dist/host-check/avenic-agent-manager-0.5.5.vsix" },
+    { version: "0.6.0", file: "dist/release-20260921/avenic-agent-manager-0.6.0.vsix" },
+  ];
+  assert.deepEqual(host.pickPreviousVsix(onDisk, "0.6.0"), onDisk[1]);
+  // 版本按数字比，不按字符串：0.5.10 比 0.5.9 新。
+  assert.equal(host.pickPreviousVsix([{ version: "0.5.9", file: "a" }, { version: "0.5.10", file: "b" }], "0.9.0")?.version, "0.5.10");
+});
+
+test("--from picks one version by name or by path, and says so when it matches nothing", () => {
+  const onDisk = [{ version: "0.5.2", file: "dist/release-x/avenic-agent-manager-0.5.2.vsix" }, { version: "0.5.5", file: "b" }];
+  assert.equal(host.pickPreviousVsix(onDisk, "0.6.0", "0.5.2")?.version, "0.5.2");
+  assert.equal(host.pickPreviousVsix(onDisk, "0.6.0", "b")?.version, "0.5.5");
+  assert.throws(() => host.pickPreviousVsix(onDisk, "0.6.0", "0.4.0"), /0\.4\.0/);
+});
+
+test("with only the version being shipped on disk there is no previous release to update from", () => {
+  assert.equal(host.pickPreviousVsix([{ version: "0.6.0", file: "only" }], "0.6.0"), null);
 });

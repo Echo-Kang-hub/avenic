@@ -26,6 +26,20 @@
   than half a second draws a status line above the content it is waiting to
   replace instead of blanking the panel. Reading is only ever a read: no
   network check, no model call, no login attempt.
+- **Updating the extension in place no longer strands the Dashboard.** The
+  Marketplace replaces the extension under a running window, so for a moment the
+  new manifest is served by the previous release's code; when the two disagree
+  about the view's id, VS Code paints its own `No view is registered with id: …`
+  into the activity bar, and only an uninstall-then-install cleared it. The id
+  now has one source — the manifest, the registration and the menu bindings read
+  the same constant — and the view provider is mounted first in activation, with
+  every later step (data reads, output channel, version probe) inside a guard, so
+  a failure there cannot take the entry point down with it. The Avenic window
+  stays usable when a page cannot be opened: it says
+  `Avenic Dashboard could not be opened.` and offers **Reload Window** /
+  **View Logs** instead of VS Code's internal sentence. Old command ids from
+  earlier releases still reach the one implementation through a small fixed
+  alias table — no scan, no probe, nothing that costs a keystroke.
 - Ships core 1.6.5 (and CLI 1.8.4): authentication method and model configuration
   are separate questions with separate owners, one wizard serves both hosts, and
   switching methods keeps what you had unless you say otherwise.

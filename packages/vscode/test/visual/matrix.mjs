@@ -135,8 +135,18 @@ const RUNS = [
 const runName = ([payload, width, height, theme, options = {}]) =>
   `${payload}-${width}x${height}-${theme}${options.reading ? "-reading" : ""}${options.keyboard ? "-keyboard" : ""}${options.section ? `-${options.section}` : ""}${options.tab ? `-${options.tab.replaceAll(" ", "-").toLowerCase()}` : ""}`;
 
+// How far the two columns of a row may differ and still be one pair. The
+// reference's own draws measure a 1px difference between its session cards
+// (image y747 vs y748), which is the drawing's own edge error, so the bound is
+// twice that: it accepts a sub-pixel rounding and refuses a card that grew a row.
+const GRID_TOL = 2;
+
 const rows = [];
 const failures = [];
+// How many two-column rows the grid gate above actually measured. See the floor
+// at the bottom of this file: a rename or a fold that empties this set has to be
+// a red run, not a quiet one.
+let gridRows = 0;
 
 for (const [payload, width, height, theme, options = {}] of RUNS) {
   const name = runName([payload, width, height, theme, options]);
@@ -231,6 +241,46 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   } else if (checks.spilled.length > 0) {
     problems.push(`painted outside the viewport: ${checks.spilled.join(", ")}`);
   }
+  // The grid gate. A two-column row is one row of cards, and two cards in it that
+  // end at different heights are not a pair however correct each one is on its
+  // own: that is the ragged bottom a reader sees first and no rect dump shows.
+  // Rows that folded to a single column are skipped by construction — stacked
+  // cards are supposed to start where the one above them ended — and the count of
+  // rows that were gated goes into the summary, so a fold at the reference's own
+  // width cannot quietly turn this check off.
+  if (checks.rowEdges === undefined) {
+    problems.push("the geometry dump has no rowEdges — shot.mjs produced an older shape");
+  } else {
+    for (const row of checks.rowEdges) {
+      const byLeft = new Map();
+      for (const column of row.columns) {
+        if (!byLeft.has(column.left)) byLeft.set(column.left, []);
+        byLeft.get(column.left).push(column);
+      }
+      const columns = [...byLeft.values()].filter((group) => group.length === 1).map((group) => group[0]).filter((column) => column.cards.length > 0);
+      if (columns.length < 2) continue;
+      gridRows += 1;
+      const name = (column) => column.cards.map((card) => card.title || "(untitled)").join(" + ");
+      const edges = (edge) => Math.max(...columns.map((column) => column[edge])) - Math.min(...columns.map((column) => column[edge]));
+      const topSpread = +edges("top").toFixed(1);
+      const bottomSpread = +edges("bottom").toFixed(1);
+      if (topSpread > GRID_TOL) problems.push(`the two columns of row ${row.row} start ${topSpread}px apart (${columns.map((column) => `${name(column)} at ${column.top}`).join(" vs ")})`);
+      if (bottomSpread > GRID_TOL) problems.push(`the two columns of row ${row.row} end ${bottomSpread}px apart (${columns.map((column) => `${name(column)} at ${column.bottom}`).join(" vs ")})`);
+      for (const column of columns) {
+        // Inside a column the cards are a stack, and the stack has to reach both
+        // of its own edges: the top card at the column's top (a stack floating in
+        // the middle of its column) and the bottom card at the column's bottom
+        // (the hole the pair measurement above cannot see, because both columns
+        // would still end together).
+        const first = column.cards[0];
+        const last = column.cards[column.cards.length - 1];
+        const topGap = +(first.top - column.top).toFixed(1);
+        const bottomGap = +(column.bottom - last.bottom).toFixed(1);
+        if (topGap > GRID_TOL) problems.push(`the ${first.title} card starts ${topGap}px below the top of its column`);
+        if (bottomGap > GRID_TOL) problems.push(`the ${last.title} card stops ${bottomGap}px short of the bottom of its column (${name(column)} ends at ${last.bottom}, the column at ${column.bottom})`);
+      }
+    }
+  }
   // The size of the set the clipped check measured. Zero candidates means the
   // selector list no longer matches anything, which is how that check goes
   // vacuously green — "measured nothing" is not "found nothing".
@@ -313,6 +363,15 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   if (problems.length > 0) failures.push(`${name}: ${problems.join("; ")}`);
 }
 
+// The floor on the grid gate, pinned the way compare.mjs pins the clipped
+// candidates: a full run of this matrix measures this many two-column rows.
+// A row that folded, a class that was renamed, a selector that stopped matching
+// — each of them empties part of that set, and an empty set fails nothing.
+const GRID_ROWS_FLOOR = 25;
+if (gridRows < GRID_ROWS_FLOOR) {
+  failures.push(`the grid gate measured ${gridRows} two-column row(s), not the ${GRID_ROWS_FLOOR} this matrix is made of — rows it cannot see are rows it cannot fail`);
+}
+
 const width = Math.max(...rows.map((row) => row.name.length));
 for (const row of rows) {
   const mark = row.problems.length === 0 ? "ok  " : "FAIL";
@@ -332,7 +391,7 @@ if (rows.length === 0 && failures.length > 0) {
   console.log(`FAIL — no render matched${only === null ? "" : ` --only ${only}`}. Runs: ${RUNS.map(runName).join(", ")}`);
   process.exitCode = 1;
 } else if (failures.length === 0) {
-  console.log(`PASS — ${rows.length} renders, every check clean. Shots in ${path.relative(process.cwd(), outDir)}`);
+  console.log(`PASS — ${rows.length} renders, ${gridRows} two-column rows aligned, every check clean. Shots in ${path.relative(process.cwd(), outDir)}`);
 } else {
   console.log(`FAIL — ${failures.length} of ${rows.length} renders have problems:`);
   for (const failure of failures) console.log(`  ${failure}`);

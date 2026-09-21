@@ -512,6 +512,31 @@ function buildPage(payload, fixture) {
           // noHorizontalScroll. Each entry names the ancestor holding it, if
           // there is one.
           spilled: spilled.slice(0, 10),
+          // Where the two-column rows actually end. A grid whose columns stop at
+          // two different heights is the one defect a screenshot shows plainly
+          // and a rect dump cannot: every card is where it should be and the page
+          // still reads as untidy, because two cards that sit side by side and
+          // end 70px apart are not a pair. So each row reports, per column, the
+          // box it drew and the boxes of the cards inside it — read off the
+          // rendered geometry, never off the stylesheet, so a row that folded to
+          // one column says so and a stack that stopped short of its column's
+          // edge shows up as the card that did not reach it.
+          rowEdges: [...document.querySelectorAll("#content > .cards-row")].map((row, index) => ({
+            row: index,
+            columns: [...row.children].map((child) => {
+              const box = child.getBoundingClientRect();
+              const cards = child.matches(".stack") ? [...child.children] : [child];
+              const rectOf = (node) => {
+                const rect = node.getBoundingClientRect();
+                return {
+                  title: (node.querySelector(".card-title")?.textContent ?? "").trim(),
+                  top: +rect.top.toFixed(1),
+                  bottom: +rect.bottom.toFixed(1),
+                };
+              };
+              return { left: Math.round(box.left), top: +box.top.toFixed(1), bottom: +box.bottom.toFixed(1), cards: cards.map(rectOf) };
+            }),
+          })),
           // Controls a keyboard user cannot reach or read.
           unlabelledControls: [...document.querySelectorAll("button")].filter((node) => (node.textContent ?? "").trim() === "" && (node.getAttribute("aria-label") ?? "") === "" && (node.title ?? "") === "").length,
           // A strip of chips that switches what is listed under it is a tab
@@ -677,6 +702,27 @@ function buildPage(payload, fixture) {
           return box.left < -1 || box.right > clientW + 1 || box.top < -1 || box.bottom > pageBottom + 1;
         });
         const agentOrder = agentCards.map((node) => (node.querySelector(".agent-mark")?.className || "").replace("agent-mark", "").trim());
+        // The same question the rowEdges check asks, stated as the numbers the
+        // reference settles: how far apart the two session cards' edges are, and
+        // how far the Skills card is from the two cards beside it. Deltas, not
+        // four absolute boxes — the reference's own numbers are in the anchors,
+        // and what the reference is evidence for is that the pairs line up.
+        const boxOf = (node) => (node === null || node === undefined ? null : node.getBoundingClientRect());
+        const spread = (a, b, edge) => (a === null || b === null ? null : +Math.abs(a[edge] - b[edge]).toFixed(1));
+        const gridCards = rows.map((row) => [...row.querySelectorAll(":scope > .card")]);
+        const stackNode = rows[1] === undefined ? null : rows[1].querySelector(":scope > .stack");
+        const stackCards = stackNode === null ? [] : [...stackNode.children].map(boxOf);
+        const gridDeltas = {
+          "grid.sessions.topDelta": spread(boxOf(gridCards[0]?.[0]), boxOf(gridCards[0]?.[1]), "top"),
+          "grid.sessions.bottomDelta": spread(boxOf(gridCards[0]?.[0]), boxOf(gridCards[0]?.[1]), "bottom"),
+          "grid.bottom.topDelta": spread(boxOf(gridCards[1]?.[0]), stackCards[0], "top"),
+          "grid.bottom.bottomDelta": spread(boxOf(gridCards[1]?.[0]), stackCards[stackCards.length - 1], "bottom"),
+          // The filler's own edge against the column it fills: a Recent Activity
+          // card that stopped short of its column's bottom would leave the hole
+          // the pair measurement above cannot see, because both columns would
+          // still end together.
+          "grid.bottom.fillDelta": spread(stackCards[stackCards.length - 1], boxOf(stackNode), "bottom"),
+        };
         rects.structure = {
           "theme": document.body.className,
           // Sidebar: the reference's own band is image x45..247, i.e. 202px of
@@ -733,6 +779,7 @@ function buildPage(payload, fixture) {
           // the reference puts Agent Configuration first, then the sessions pair,
           // then Skills / Quick Actions / Recent Activity.
           "sections.order": titles.join(" | "),
+          ...gridDeltas,
           // The brand accent, as painted: the token, the active nav item's glyph
           // and the primary button's fill. A palette change shows up here even when
           // every box stays put.

@@ -67,14 +67,25 @@ test("only a project-scoped account repoints an agent's config root", async () =
   // leave that machine alone; a project account points that one agent at the
   // project's own home — and even then, only the copy handed to the child
   // changes, never the process environment it was built from.
+  //
+  // The sentinel homes are real temporary directories, not a path spelled out
+  // to look unwritable: an API answer at the global scope *does* prepare a file
+  // in the user's own config root — inside the test's own temp tree, and never
+  // in the machine the test runs on.
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-auth-scope-"));
+  const machine = await mkdtemp(path.join(root, "machine-home-"));
   const sentinels = {
-    CLAUDE_CONFIG_DIR: `C:${path.sep}Users${path.sep}sentinel${path.sep}.claude`,
-    CODEX_HOME: `C:${path.sep}Users${path.sep}sentinel${path.sep}.codex`,
-    XDG_CONFIG_HOME: `C:${path.sep}Users${path.sep}sentinel${path.sep}.config`,
+    CLAUDE_CONFIG_DIR: path.join(machine, ".claude"),
+    CODEX_HOME: path.join(machine, ".codex"),
+    XDG_CONFIG_HOME: path.join(machine, ".config"),
   };
   const saved = Object.fromEntries(Object.keys(sentinels).map((name) => [name, process.env[name]]));
   Object.assign(process.env, sentinels);
-  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-auth-scope-"));
+  // Where each answer's file goes: the project's own, and the user's own.
+  const targets = {
+    claude: { project: ".claude/settings.local.json", global: path.join(sentinels.CLAUDE_CONFIG_DIR, "settings.json") },
+    codex: { project: ".agents/local/codex/config.toml", global: path.join(sentinels.CODEX_HOME, "config.toml") },
+  };
   try {
     for (const agentId of ["claude", "codex"]) {
       const variable = CONFIG_ROOT_VARIABLE[agentId];
@@ -87,17 +98,35 @@ test("only a project-scoped account repoints an agent's config root", async () =
         ];
         for (const answer of answers) {
           const scope = answer.accountScope ?? answer.configScope;
-          await initializeAgent(root, agentId, { ...answer, sessionScope });
-          const runtime = await resolveEffectiveAgentRuntime(root, agentId, { environment: machineEnvironment() });
           const label = `${agentId} ${answer.authMethod}/${scope}/${sessionScope}`;
+          // One project per combination: "this answer prepared this file" is a
+          // claim about a run, and a shared directory would carry the last run's
+          // leftovers into the next one's negative half.
+          const projectRoot = await mkdtemp(path.join(root, `${agentId}-${scope}-${sessionScope}-`));
+          await initializeAgent(projectRoot, agentId, { ...answer, sessionScope });
+          const runtime = await resolveEffectiveAgentRuntime(projectRoot, agentId, { environment: machineEnvironment() });
+          // Two answers move the agent's own home, each for its own reason: a
+          // project account, whose sign-in has to live in the project, and a
+          // project Codex API configuration — Codex has no project-scope
+          // configuration file of its own, so the project's answer *is* a home
+          // the project owns, and it reaches Codex through Codex's own variable.
+          const ownHome = scope === "project" && (answer.authMethod === "account" || agentId === "codex");
           assert.equal(
             runtime.environment[variable],
-            answer.authMethod === "account" && scope === "project"
-              ? path.join(root, ".agents", "local", agentId)
-              : sentinels[variable],
-            `${label} must hand the child ${answer.authMethod === "account" && scope === "project" ? "the project's own home" : "the user's own home"}`,
+            ownHome ? path.join(projectRoot, ".agents", "local", agentId) : sentinels[variable],
+            `${label} must hand the child ${ownHome ? "the project's own home" : "the user's own home"}`,
           );
           assert.equal(machineEnvironment()[variable], sentinels[variable], `${label} must not mutate the environment it reads from`);
+          if (answer.authMethod === "api") {
+            // The answer names a file, so the answer leaves that file where the
+            // agent will look. And a global answer stays global: the project's
+            // own file is not an alternative spelling of "the user's file".
+            const named = scope === "project" ? path.join(projectRoot, targets[agentId].project) : targets[agentId].global;
+            assert.equal(existsSync(named), true, `${label} prepares the file it names`);
+            if (scope === "global") {
+              assert.equal(existsSync(path.join(projectRoot, targets[agentId].project)), false, `${label} writes no project file`);
+            }
+          }
         }
       }
     }

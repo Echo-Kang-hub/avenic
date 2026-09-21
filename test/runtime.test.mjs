@@ -139,19 +139,15 @@ test("a draft that changes the history mode still writes the answers it carries"
     // neither the old configuration nor the new one.
     const result = await applyProjectConfiguration(projectRoot, {
       agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
-      api: {
-        claude: {
-          provider: "Fixture Provider",
-          baseUrl: "https://provider.fixture.invalid/v1",
-          model: "fixture-model",
-          credential: "fixture-token-not-a-real-secret",
-        },
-      },
       historyMode: "isolated",
     });
     assert.equal(result.mode, "isolated");
-    const written = JSON.parse(await readFile(path.join(projectRoot, ".claude", "settings.local.json"), "utf8"));
-    assert.equal(written.env.ANTHROPIC_MODEL, "fixture-model");
+    // An API answer *is* the file the agent reads, so the draft leaves it
+    // there — and writes nothing into it. Which provider and which model it
+    // names is the user's own business: Avenic prepares the file, the user
+    // fills it, and the dashboard reads it back out once it is filled.
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    assert.equal(await readFile(file, "utf8"), "{}\n");
     assert.equal((await loadRuntime(projectRoot)).runtime.agents.claude.authMethod, "api");
   });
 });
@@ -303,7 +299,7 @@ test("repeated init is a no-op when the project structure is intact", async () =
   await withTempProject(async (projectRoot) => {
     const first = runCli(projectRoot, "skills.mjs", ["claude", "init", "--auth", "account", "--scope", "project"]);
     assert.equal(first.status, 0, first.stderr);
-    assert.match(first.stdout, /Configuration   Updated/);
+    assert.match(first.stdout, /Settings\s+Updated/);
 
     const runtimeFile = path.join(projectRoot, ".agents", "runtime.json");
     const gitignoreFile = path.join(projectRoot, ".gitignore");
@@ -312,14 +308,16 @@ test("repeated init is a no-op when the project structure is intact", async () =
 
     const second = runCli(projectRoot, "skills.mjs", ["claude", "init"]);
     assert.equal(second.status, 0, second.stderr);
-    assert.match(second.stdout, /Configuration   Unchanged/);
-    assert.match(second.stdout, /Git ignore      Unchanged/);
-    assert.match(second.stdout, /Structure       Intact/);
+    assert.match(second.stdout, /Settings\s+Unchanged/);
+    assert.match(second.stdout, /Git ignore\s+Unchanged/);
+    assert.match(second.stdout, /Structure\s+Intact/);
     assert.match(second.stdout, /Already up to date/);
     assert.equal(await readFile(runtimeFile, "utf8"), runtimeBefore);
     assert.equal(await readFile(gitignoreFile, "utf8"), gitignoreBefore);
-    assert.match(second.stdout, /Authentication  Account · Project/);
-    assert.match(second.stdout, /Sessions        Project/);
+    // 报告这一段就是面板卡片本身：同一个词、同一个写法，命令刚写完的东西和
+    // `avenic status` 之后再读出来的东西不能是两句话。
+    assert.match(second.stdout, /Authentication\s+Account \(Project\)/);
+    assert.match(second.stdout, /Sessions\s+Project/);
   });
 });
 
@@ -346,9 +344,9 @@ test("init incrementally repairs missing directories without touching existing s
     assert.equal(existsSync(localDir), true);
     assert.equal(await readFile(runtimeFile, "utf8"), runtimeBefore);
     assert.equal(await readFile(gitignoreFile, "utf8"), gitignoreBefore);
-    assert.match(repaired.stdout, /Configuration   Unchanged/);
-    assert.match(repaired.stdout, /Git ignore      Unchanged/);
-    assert.match(repaired.stdout, /Structure       Repaired/);
+    assert.match(repaired.stdout, /Settings\s+Unchanged/);
+    assert.match(repaired.stdout, /Git ignore\s+Unchanged/);
+    assert.match(repaired.stdout, /Structure\s+Repaired/);
     assert.doesNotMatch(repaired.stdout, /Already up to date/);
   });
 });

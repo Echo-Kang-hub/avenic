@@ -469,7 +469,10 @@
     nodes.push(row);
 
     // --- Skills + quick actions + activity ------------------------------------
-    const bottom = el("div", "cards-row");
+    // The page's last row, and the one that takes the room the rows above it
+    // left: the reference's Overview reaches its own bottom edge whatever the
+    // project's lists happen to hold.
+    const bottom = el("div", "cards-row bottom-row");
     bottom.append(skillsCard(data));
     const stack = el("div", "stack");
     stack.append(quickCard(data));

@@ -48,10 +48,26 @@
 // a claim about this repo rather than about whatever is installed on the
 // machine — and the report records what that line actually said.
 //
-// Usage: node packages/vscode/test/host/run.mjs [--keep]
+// Usage: node packages/vscode/test/host/run.mjs [--keep] [--upgrade [--from=<version|path>] [--open-old]]
 //   expects packages/vscode/dist/avenic-agent-manager.vsix (npm run package).
 //   The editor comes from AVENIC_VSCODE_BIN or from `code` on PATH; the paths
 //   actually used are printed and recorded in the report.
+//
+// --upgrade is the in-place Marketplace update, as a check rather than a hope:
+// the profile gets the *previous* released VSIX first, the window is started and
+// driven with it (--open-old leaves its own dashboard page open, the default
+// leaves the extension merely installed), and only then is the new VSIX installed
+// over it with --force and no uninstall. The window is reloaded the way the
+// fallback notification offers to — Ctrl+Shift+P, "Reload Window" — and the rest
+// of the run is the ordinary one. That path is where
+// "No view is registered with id: avenic.launcher" came from: after an in-place
+// update the workbench serves the new manifest's view id while the extension host
+// is still running the previous release's code, which registered the four views
+// that release had (avenic.agents / avenic.catalog / avenic.skills /
+// avenic.overview). The pane body is read by name and the run fails on that
+// sentence rather than on "no 'Open Dashboard' row" three screens later.
+// Upgrade runs write their shots and report under their own directory
+// (dist/host-check/upgrade*), so the fresh run's evidence stays intact.
 
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
@@ -68,7 +84,12 @@ import { buildHostFixture } from "./fixture.mjs";
 // 「检查这个 checkout」变成「检查 packages 里的一个不存在的东西」。
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const VSIX = `${REPO}/packages/vscode/dist/avenic-agent-manager.vsix`;
-const OUT = `${REPO}/dist/host-check`;
+// Shots and report land in a directory of their own per mode: the fresh run's
+// evidence is what the release notes point at, and an upgrade run that overwrote
+// it would leave the report describing a window it never opened. Reassigned in
+// main(); the lock below stays on the base path, because the two modes share one
+// profile directory and one debug port.
+let OUT = `${REPO}/dist/host-check`;
 const LOCK = `${OUT}/run.pid`;
 const ROOT = path.join(tmpdir(), "avenic-host-check");
 const UD = path.join(ROOT, "ud");
@@ -84,6 +105,13 @@ const SHIM = path.join(ROOT, "bin");
 const PORT = 9333;
 const EXT_ID = "EchoKang.avenic-agent-manager";
 const KEEP = process.argv.includes("--keep");
+// In-place update mode: install the previous release first, update over it while
+// the window runs, reload, and then run the ordinary checks (see the header).
+const UPGRADE = process.argv.includes("--upgrade");
+// Leave the previous release's own dashboard page open when the update lands.
+const OPEN_OLD = process.argv.includes("--open-old");
+const FROM = process.argv.find((arg) => arg.startsWith("--from="))?.slice("--from=".length) ?? null;
+
 // Only for a launcher that is on PATH without its install tree beside it: the
 // window binary is what has to be started, and it cannot be derived from a shim
 // that lives somewhere else.
@@ -114,6 +142,51 @@ function resolveEditor() {
   const exe = [path.resolve(path.dirname(launcher), "..", "..", "Code.exe"), FALLBACK_CODE].find((candidate) => existsSync(candidate));
   if (exe === undefined) throw new Error(`no Code.exe in the install tree of ${launcher}, and none at ${FALLBACK_CODE} — set AVENIC_VSCODE_BIN to the install's bin/code.cmd`);
   return { launcher, exe };
+}
+
+// --------------------------------------------------------------- the update
+// Which released VSIX the in-place update starts from. Pure and exported because
+// this is the decision that makes the whole upgrade check meaningful or vacuous:
+// picking the version already installed (or picking nothing at all) turns "update
+// over a running previous release" into "update over itself", which passes while
+// proving nothing.
+//
+// `wanted` is --from: a version ("0.5.2"), a path, or null for "the highest
+// release that is not the one being shipped". Versions are compared numerically,
+// not as strings, so 0.5.10 does not sort below 0.5.9.
+export function pickPreviousVsix(candidates, currentVersion, wanted = null) {
+  const parse = (version) => String(version).split(".").map((part) => Number.parseInt(part, 10));
+  const newer = (a, b) => {
+    const [x, y] = [parse(a), parse(b)];
+    for (let i = 0; i < Math.max(x.length, y.length); i++) {
+      if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+    }
+    return false;
+  };
+  if (wanted !== null) {
+    const hit = candidates.find((c) => c.version === wanted || c.file === wanted || path.resolve(c.file) === path.resolve(wanted));
+    if (!hit) throw new Error(`--from=${wanted} matches none of the ${candidates.length} VSIX(s) on disk: ${candidates.map((c) => `${c.version} (${c.file})`).join(", ") || "none"}`);
+    return hit;
+  }
+  const older = candidates.filter((c) => c.version !== currentVersion);
+  return older.sort((a, b) => (newer(a.version, b.version) ? -1 : 1))[0] ?? null;
+}
+
+// Every `avenic-agent-manager-<version>.vsix` under dist/ (the release directories
+// keep them by version), which is where a previous release's own artifact is.
+function vsixOnDisk() {
+  const found = [];
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(file); continue; }
+      const version = entry.name.match(/^avenic-agent-manager-(\d+\.\d+\.\d+)\.vsix$/)?.[1];
+      if (version !== undefined) found.push({ version, file });
+    }
+  };
+  walk(path.join(REPO, "dist"));
+  return found;
 }
 
 // ------------------------------------------------------------------ CLI shim
@@ -456,6 +529,61 @@ const DOC = "document.getElementById('active-frame').contentDocument";
 // silent hang.
 const targets = async () => (await fetch(`http://127.0.0.1:${PORT}/json/list`, { signal: AbortSignal.timeout(5_000) })).json();
 
+// -------------------------------------------------------- the window reload
+// The same action the fallback notification offers, asked for the way a user
+// would: the command palette, by keyboard, over the same debug channel the clicks
+// use. Not a process restart and not a Page.reload — "Reload Window" is what the
+// in-place update asks for, and a run that proved something else would be
+// evidence for a different claim.
+async function pressKey(c, definition) {
+  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...definition });
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...definition });
+}
+
+// Typed one character at a time, as key events: the quick input is a real input
+// element and filters on the events, so a single insertText can leave it showing
+// an empty box (and then "Enter" picks the wrong command).
+async function typeKeys(c, text) {
+  for (const ch of text) {
+    await c.send("Input.dispatchKeyEvent", { type: "char", text: ch, unmodifiedText: ch, key: ch });
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch });
+    await sleep(25);
+  }
+}
+
+// Returns whether the command was actually picked: "the window reloaded" and "the
+// palette never opened" must not look the same in the report.
+export async function reloadWindow(c) {
+  await pressKey(c, { modifiers: 2 | 8, key: "P", code: "KeyP", windowsVirtualKeyCode: 80, nativeVirtualKeyCode: 80 });
+  const opened = await wbWait(() => evalIn(c, "!!document.querySelector('.quick-input-widget input')").catch(() => false), 12, 400);
+  if (!opened) { log("reload: the command palette never opened"); return false; }
+  await typeKeys(c, "reload window");
+  const first = await wbWait(() => evalIn(c, `(()=>{const r=document.querySelector('.quick-input-list .monaco-list-row');return r?(r.innerText||'').replace(/\\s+/g,' ').trim():null;})()`).catch(() => null), 8, 300);
+  if (first === null || !/reload window/i.test(first)) { log(`reload: the palette's first match reads ${JSON.stringify(first)}`); return false; }
+  // The keyUp after Enter can be answered by a dead socket: the renderer is going
+  // away, and that is the whole point of this call.
+  await pressKey(c, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }).catch(() => {});
+  return true;
+}
+
+// The reload replaces the page's document, not the debug target, so the question
+// is "does a fresh connection answer again with a painted workbench" — and it is
+// asked until it does, because a workbench that has not finished reloading is
+// "not yet", not a verdict.
+export async function waitForReloadedWorkbench(wsUrl) {
+  for (let i = 0; i < 60; i++) {
+    await sleep(2000);
+    try {
+      const fresh = await connect(wsUrl);
+      const ready = await wbWait(() => evalIn(fresh, "document.readyState === 'complete' && !!document.querySelector('.monaco-workbench')").catch(() => false), 3, 1000);
+      if (ready) return fresh;
+      fresh.close();
+    } catch { /* still coming back */ }
+  }
+  return null;
+}
+
+
 // A window that has painted its workbench is not yet a window whose extension
 // host has loaded anything: on a busy machine the container and the view's rows
 // arrive seconds later, and a miss caught at that moment is "not yet", not the
@@ -569,6 +697,18 @@ async function main() {
       log("VSIX missing — building:", VSIX);
       execFileSync("npm", ["run", "package"], { cwd: `${REPO}/packages/vscode`, stdio: "inherit", shell: true });
     }
+    const packaged = JSON.parse(readFileSync(`${REPO}/packages/vscode/package.json`, "utf8"));
+    // Which release this run updates *from*. Resolved before anything is written,
+    // because "no previous release on disk" must end the run before it destroys a
+    // profile, not after it has taken shots of a window that proves nothing.
+    const previous = UPGRADE ? pickPreviousVsix(vsixOnDisk(), packaged.version, FROM) : null;
+    if (UPGRADE && previous === null) {
+      throw new Error(`--upgrade needs a previous release's VSIX under dist/ (avenic-agent-manager-<version>.vsix, beside ${packaged.version}) — none found`);
+    }
+    if (previous !== null) {
+      OUT = path.join(OUT, `upgrade-${previous.version}${OPEN_OLD ? "-open" : ""}`);
+      log(`in-place update: ${previous.version} (${previous.file}) -> ${packaged.version} (${VSIX})${OPEN_OLD ? "; the previous release's own dashboard stays open across it" : ""}`);
+    }
     // Removed, not reused: "installs into a clean profile" is a claim the report
     // makes, and a profile left over from the previous run makes it false —
     // extensions, workspace state and logs all carry into the next one.
@@ -614,18 +754,35 @@ async function main() {
       `hub=${digest.hub}`);
 
     const codeCli = (...args) => execFileSync("cmd.exe", ["/c", editor.launcher, "--user-data-dir", UD, "--extensions-dir", EXT, ...args], { encoding: "utf8", timeout: 180_000 });
-    const installOut = codeCli("--install-extension", VSIX, "--force");
-    const listOut = codeCli("--list-extensions", "--show-versions");
-    log("installed:", listOut.trim());
     // Exiting 0 says the editor accepted the file; it does not say which version
     // is in the profile now. Same assertion verify-artifacts.mjs makes on the
     // released artifact, here against the profile this run actually drives.
-    const packaged = JSON.parse(readFileSync(`${REPO}/packages/vscode/package.json`, "utf8"));
-    const expectedInstalled = `${packaged.publisher}.${packaged.name}@${packaged.version}`;
-    const listedRow = listOut.split(/\r?\n/).map((line) => line.trim()).find((line) => /avenic/i.test(line)) ?? "";
-    if (listedRow.toLowerCase() !== expectedInstalled.toLowerCase()) {
-      throw new Error(`the extension list says ${JSON.stringify(listedRow)}, expected ${expectedInstalled} (from packages/vscode/package.json — a stale VSIX shows up as this)`);
+    const expectedRow = (version) => `${packaged.publisher}.${packaged.name}@${version}`;
+    const installedRow = () => {
+      const listed = codeCli("--list-extensions", "--show-versions");
+      const row = listed.split(/\r?\n/).map((line) => line.trim()).find((line) => /avenic/i.test(line)) ?? "";
+      return { listed, row };
+    };
+    const installAndRequire = (file, version, what) => {
+      const install = codeCli("--install-extension", file, "--force");
+      const list = installedRow();
+      log(`installed ${what}:`, list.row);
+      if (list.row.toLowerCase() !== expectedRow(version).toLowerCase()) {
+        throw new Error(`the extension list says ${JSON.stringify(list.row)} after installing ${what}, expected ${expectedRow(version)} (from packages/vscode/package.json — a stale VSIX shows up as this)`);
+      }
+      return install;
+    };
+    // The order is the whole point of --upgrade: the previous release goes in
+    // first and is what the window starts with; the new one is installed later,
+    // over it, while that window is running.
+    let installOut = null;
+    let priorInstallOut = null;
+    if (previous !== null) {
+      priorInstallOut = installAndRequire(previous.file, previous.version, `the previous release ${previous.version}`);
+    } else {
+      installOut = installAndRequire(VSIX, packaged.version, "this build");
     }
+    const listOut = installedRow().listed;
 
     reap();
     const child = spawn(editor.exe, ["--user-data-dir", UD, "--extensions-dir", EXT, `--remote-debugging-port=${PORT}`, "--new-window", PROJECT], { detached: true, stdio: "ignore", env: windowEnvironment() });
@@ -638,7 +795,7 @@ async function main() {
       try { wbTarget = (await targets()).find((t) => t.type === "page" && t.url.startsWith("vscode-file://")); } catch { /* not up yet */ }
     }
     if (!wbTarget) throw new Error("VS Code workbench never came up");
-    const wbc = await connect(wbTarget.webSocketDebuggerUrl);
+    let wbc = await connect(wbTarget.webSocketDebuggerUrl);
 
     // Open the dashboard the way a user does — activity bar icon, then the view's
     // "Open Dashboard" row. The extension has no auto-open, so this is also what
@@ -657,6 +814,75 @@ async function main() {
       if(r.width>0)return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};}}
     return null;})()`);
 
+    // ------------------------------------------------------- in-place update
+    // The window is running with the previous release installed. This is the
+    // moment the bug report describes: the new VSIX goes in over the old one, with
+    // no uninstall, while that window keeps running the old code with the new
+    // manifest on disk.
+    let upgrade = null;
+    if (previous !== null) {
+      const icon = await wbWait(() => wbFind("Avenic", ".activitybar .action-item"), 12, 2500);
+      if (!icon) throw new Error(`no Avenic activity bar item with ${previous.version} installed — the previous release did not contribute its container`);
+      await wbClick(icon.x, icon.y);
+      let oldPage = null;
+      if (OPEN_OLD) {
+        // The previous release's own dashboard, opened the way its users open it:
+        // the container's first view is a tree, so the page itself is the Overview
+        // view's body. Whichever of the two it lands on, the report says which.
+        const header = await wbWait(() => wbFind("Overview", ".pane-header"), 8, 1000);
+        if (header) { await wbClick(header.x, header.y); oldPage = "Overview"; }
+      }
+      const paneBefore = await evalIn(wbc, "document.querySelector('.part.sidebar')?.innerText ?? ''");
+      log(`before the update the sidebar reads ${JSON.stringify(paneBefore.replace(/\s+/g, " ").trim().slice(0, 160))}`);
+
+      // --force, no uninstall first: that is the in-place update.
+      const updateOut = codeCli("--install-extension", VSIX, "--force");
+      const afterInstall = installedRow();
+      log("after the update the profile reads", afterInstall.row);
+      if (afterInstall.row.toLowerCase() !== expectedRow(packaged.version).toLowerCase()) {
+        throw new Error(`after installing the new VSIX over ${previous.version} the profile reads ${JSON.stringify(afterInstall.row)}, expected ${expectedRow(packaged.version)}`);
+      }
+
+      const asked = await reloadWindow(wbc);
+      let reloadedBy = asked ? "the command palette (Ctrl+Shift+P, \"Reload Window\")" : null;
+      let reloaded = asked ? await waitForReloadedWorkbench(wbTarget.webSocketDebuggerUrl) : null;
+      if (reloaded === null) {
+        // The palette is a UI, and a UI can be missed. The fallback says so in the
+        // report rather than quietly becoming a different check.
+        log("reload: falling back to restarting the window process");
+        reap();
+        const again = spawn(editor.exe, ["--user-data-dir", UD, "--extensions-dir", EXT, `--remote-debugging-port=${PORT}`, "--new-window", PROJECT], { detached: true, stdio: "ignore", env: windowEnvironment() });
+        again.unref();
+        reloadedBy = "restarting the window process (the command palette did not take the reload)";
+        let target = null;
+        for (let i = 0; i < 45 && !target; i++) {
+          await sleep(2000);
+          try { target = (await targets()).find((t) => t.type === "page" && t.url.startsWith("vscode-file://")); } catch { /* not up yet */ }
+        }
+        if (!target) throw new Error("the window never came back after the in-place update");
+        wbTarget = target;
+        reloaded = await waitForReloadedWorkbench(target.webSocketDebuggerUrl);
+      }
+      if (reloaded === null) throw new Error("the window never finished reloading after the in-place update");
+      wbc = reloaded;
+      upgrade = { from: previous.version, fromFile: previous.file, openOld: OPEN_OLD, oldPage, paneBefore: paneBefore.replace(/\s+/g, " ").trim(), updateOut, updatedRow: afterInstall.row, reloadedBy, viewError: null };
+      log(`updated ${previous.version} -> ${packaged.version} and reloaded by ${reloadedBy}`);
+    }
+
+    // What the activity bar's own row says, by name. The bug this run exists for
+    // painted VS Code's own sentence there ("No view is registered with id:
+    // avenic.launcher") instead of the extension's entry rows, and three retries
+    // later that showed up as "no 'Open Dashboard' row" — which names the symptom
+    // and hides the cause. Asked once the container is on screen, in both modes.
+    const viewErrorText = async (where) => {
+      const text = (await evalIn(wbc, "document.querySelector('.part.sidebar')?.innerText ?? ''")).replace(/\s+/g, " ").trim();
+      const hit = text.match(/No view is registered with id:\s*(\S+)/i);
+      if (hit !== null) {
+        throw new Error(`${where}: VS Code's own "No view is registered with id: ${hit[1]}" is what the Avenic container shows — the view's provider was never registered (see packages/vscode/src/views/view-ids.ts)`);
+      }
+      return text;
+    };
+
     const ROWS = ".pane-body .monaco-list-row";
     let webview = null;
     // Retried: the sidebar is still settling right after the icon click, and a row
@@ -673,6 +899,12 @@ async function main() {
         log("clicking activity bar icon at", icon.x, icon.y);
         await wbClick(icon.x, icon.y);
         row = await wbWait(() => wbFind("Open Dashboard", ROWS), 12, 1500);
+        // Named before it is retried: if the container is painting VS Code's own
+        // sentence instead of our rows, that sentence is the finding, not the
+        // missing row. Throws, so it can never be recorded as "checked" without
+        // having been read.
+        const sidebar = await viewErrorText(UPGRADE ? "after the in-place update" : "on a fresh install");
+        if (!/Open Dashboard/i.test(sidebar)) log(`sidebar reads ${JSON.stringify(sidebar.slice(0, 200))}`);
       }
       if (!row) { log(`attempt ${attempt}: launcher view has not listed 'Open Dashboard' yet`); continue; }
       log(`attempt ${attempt}: clicking 'Open Dashboard' at`, row.x, row.y);
@@ -957,7 +1189,10 @@ async function main() {
     await wbc.send("Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "b", code: "KeyB", windowsVirtualKeyCode: 66, nativeVirtualKeyCode: 66 });
     await sleep(1500);
     await evalIn(wvc, "window.scrollTo(0, 0)");
-    await shoot("final-overview.png");
+    // Named for the claim it is evidence for: this is where the release's two
+    // screenshots come from — a fresh install and an in-place update.
+    const finalShot = upgrade === null ? "final-overview.png" : "final-overview-upgrade.png";
+    await shoot(finalShot);
     // The footer line, read off the page rather than assumed from the shim: the
     // probe crosses two process boundaries between this harness and the panel,
     // and "the window was started with the shim on PATH" is not the same
@@ -965,6 +1200,18 @@ async function main() {
     const footer = await json(wvc, `(()=>{const d=${DOC};const n=d.getElementById('version');
   return { text: (n ? n.textContent : '').trim(), line: (d.getElementById('version-line')?.textContent ?? '').trim() };})()`);
     log(`footer reads ${JSON.stringify(footer.line)}; expected ${JSON.stringify(FOOTER_LINE)}`);
+
+    // The profile's own answer to "which version is installed now", read at the
+    // end of the run: after an in-place update this is the one place where the
+    // whole sequence (install over, reload, drive the panel) is answered by the
+    // thing that owns the truth rather than by the installer's exit code.
+    const listFinal = previous === null ? null : installedRow();
+    // 与 installAndRequire 同一条比较：`code --list-extensions` 打的是清单里那个
+    // publisher 的原文（echokang），清单写的是 EchoKang —— 只有大小写不同。行里找
+    // 大小写也辨的那一行，别用 includes 去碰一个区分大小写的字符串。
+    if (listFinal !== null && listFinal.row.toLowerCase() !== expectedRow(packaged.version).toLowerCase()) {
+      throw new Error(`after the run the profile reads ${JSON.stringify(listFinal.row)}, expected ${expectedRow(packaged.version)}`);
+    }
 
     // ---------------------------------------------------- Extension Host log
     // The profile was recreated above, so its logs are this run's; the mtime
@@ -1024,12 +1271,28 @@ Generated ${new Date().toISOString()} by \`packages/vscode/test/host/run.mjs\`; 
 - editor window binary: \`${editor.exe}\` (${exeSize} bytes)
 
 ## Install
+${upgrade === null
+    ? `\`\`\`\n${installOut.trim()}\n\`\`\``
+    : `This is an **in-place update** run: the profile was given the previous release (\`${upgrade.fromFile}\`) first, the window was started with it — ${upgrade.openOld ? `its own dashboard page (${upgrade.oldPage ?? "the container's first view"}) left open across the update` : "the extension merely installed, no page of it opened"} — and the new VSIX was then installed over it with \`--force\` and no uninstall, with that window still running.
+
 \`\`\`
-${installOut.trim()}
+${priorInstallOut.trim()}
 \`\`\`
-\`code --list-extensions --show-versions\`:
+
+Installed over it while the window ran:
+
 \`\`\`
-${listOut.trim()}
+${upgrade.updateOut.trim()}
+\`\`\``}
+
+The previous release's sidebar, read just before the update landed:
+\`\`\`
+${upgrade === null ? "—" : upgrade.paneBefore.slice(0, 400) || "(empty)"}
+\`\`\`
+
+\`code --list-extensions --show-versions\` after the run:
+\`\`\`
+${(listFinal?.listed ?? listOut).trim()}
 \`\`\`
 
 Isolated profile: \`${UD}\` + \`${EXT}\` — removed and recreated for this run; your real profile's settings and extensions were not read or written (VS Code opens its own shared-storage database outside the profile either way). The window also runs with the Avenic state root inside this run (\`AVENIC_STATE_DIR=${STATE}\`), so what it reads about Skills is this fixture's catalog and nothing it writes can land in the machine's own state directory.
@@ -1055,6 +1318,15 @@ ${cardLines}
 - every credential-shaped string says "fixture"; the Claude model block in \`.claude/settings.local.json\` (\`env.ANTHROPIC_DEFAULT_*\`, \`CLAUDE_CODE_SUBAGENT_MODEL\`, \`CLAUDE_CODE_EFFORT_LEVEL\`) is what an earlier Avenic or the user left in the file Avenic wrote, not something this run asks Avenic to own
 
 No agent was launched and no session was resumed.
+
+## In-place update
+${upgrade === null
+    ? "Not this run: this is the fresh-install scenario (activity bar icon → the view's row → dashboard). Run it with `--upgrade` for the Marketplace update case."
+    : `- previous release: \`${upgrade.from}\` (\`${upgrade.fromFile}\`)
+- installed over it, no uninstall, window running: **${upgrade.updatedRow}**
+- what was on screen when the update landed: ${upgrade.openOld ? `the previous release's own dashboard page (${upgrade.oldPage ?? "the container's first view"})` : "the previous release's container, no page of it opened"}
+- reload: **${upgrade.reloadedBy}**
+- the Avenic container after the reload: **no \`No view is registered with id: …\` anywhere in the sidebar** (the run throws on that sentence — it is the one this scenario exists for), the view's own rows are there, and the dashboard it opens passes every check below`}
 
 ## Screenshots
 ${shots.map((s) => `- \`${OUT}/${s.name}\` — ${s.out}`).join("\n")}

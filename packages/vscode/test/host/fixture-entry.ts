@@ -12,5 +12,6 @@ export { buildDashboardData } from "../../src/dashboard/state.ts";
 export { initialize, invalidateAgentStatusCache } from "../../src/services/agents.ts";
 export { installPacks, installedPackIds, invalidateSkillsSnapshot, readSkillsSnapshot } from "../../src/services/skills.ts";
 export { select } from "../../src/services/catalog.ts";
-export { importProjectSessions, writeApiConfiguration } from "@avenic/core";
+export { importProjectSessions } from "@avenic/core";
+export { fillApiConfiguration } from "../api-config.ts";
 export { makeCatalogFixture, testEnv, withAgentHomes } from "../helpers.ts";

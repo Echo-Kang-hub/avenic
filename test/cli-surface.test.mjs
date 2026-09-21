@@ -12,8 +12,8 @@ import {
   createCanonicalSession,
   initializeAgent,
   setHistoryMode,
-  writeApiConfiguration,
 } from "../packages/core/src/index.mjs";
+import { fillApiConfiguration } from "./helpers/api-fixture.mjs";
 
 // End-to-end coverage of the full CLI command surface. Every command position
 // (main, agent runtime, skills, catalog, maintenance) is exercised through the
@@ -206,7 +206,7 @@ test("runtime overview and doctor cover all three agents", async () => {
     assert.match(status.stdout, /Claude Code/);
     assert.match(status.stdout, /Codex/);
     assert.match(status.stdout, /OpenCode/);
-    assert.match(status.stdout, /not initialized/);
+    assert.match(status.stdout, /Not configured/);
     assert.doesNotMatch(status.stdout, /\x1b\[/, "管道里不该出现终端控制序列");
     // The same model, unrendered, for hosts that draw it themselves.
     const json = runAgent(projectRoot, ["status", "--json"]);
@@ -234,9 +234,10 @@ test("an agent whose method was not answered reads as not chosen, not as not ini
     assert.equal(runAgent(projectRoot, ["init", "--agents", "claude", "--sessions", "project"]).status, 0);
     const status = runAgent(projectRoot, ["status"]);
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /Claude Code\s+found\s+not chosen/);
+    assert.match(status.stdout, /Claude Code\s+found\s+Not chosen/);
     assert.doesNotMatch(status.stdout, /Claude Code\s+found\s+not initialized/);
-    assert.match(status.stdout, /OpenCode\s+(found|not found)\s+native/);
+    // 自管认证的 agent 在表里也说的是面板那句话，而不是内部的 "native" 这个词。
+    assert.match(status.stdout, /OpenCode\s+(found|not found)\s+Native \(OpenCode UI\)/);
   });
 });
 
@@ -247,7 +248,7 @@ test("an agent that manages its own authentication is never told a launch will a
   await withTempDirectory("avenic-native-note-", async (projectRoot) => {
     const init = runAgent(projectRoot, ["opencode", "init", "--sessions", "project"]);
     assert.equal(init.status, 0, init.stderr);
-    assert.match(init.stdout, /Native \(OpenCode manages its own\)/);
+    assert.match(init.stdout, /Authentication\s+Native \(OpenCode UI\)/);
     assert.doesNotMatch(init.stdout, /no authentication method/);
   });
 });
@@ -421,40 +422,39 @@ test("agent auth reports the method, switches it, resets, and rejects unknown on
 
     const current = runAgent(projectRoot, ["claude", "auth"]);
     assert.equal(current.status, 0, current.stderr);
-    assert.match(current.stdout, /Authentication\s+Account/);
-    assert.match(current.stdout, /Account scope\s+Project/);
-    // Account mode names where the agent's own sign-in lives and what the local
-    // files say about it — and says nothing about a model, because it is not
-    // configuring one.
-    assert.match(current.stdout, /Auth home\s+\.agents\/local\/claude/);
-    assert.match(current.stdout, /Auth status\s+(Signed in|Not signed in|Unknown)/);
+    assert.match(current.stdout, /Authentication\s+Account \(Project\)/);
+    assert.match(current.stdout, /Account Scope\s+Project \(\.agents\/local\/claude\)/);
+    // Account mode names the status of the agent's own sign-in and where it
+    // lives — and says nothing about a model, because it is not configuring one.
+    assert.match(current.stdout, /Account Status\s+(Signed in|Not signed in|Unknown)/);
     assert.doesNotMatch(current.stdout, /Provider\s/);
-    assert.doesNotMatch(current.stdout, /Config source\s/);
+    assert.doesNotMatch(current.stdout, /Config Source/);
 
     // Switching to API prints the same page for the answer it just wrote, plus
     // the one sentence saying which file now carries the provider.
     const api = runAgent(projectRoot, ["claude", "auth", "api", "--scope", "project"]);
     assert.equal(api.status, 0, api.stderr);
     assert.match(api.stdout, /^◆ {2}Claude Code status/m);
-    assert.match(api.stdout, /Authentication\s+API/);
-    assert.match(api.stdout, /Configuration\s+Project/);
-    assert.match(api.stdout, /Config source\s+\.claude\/settings\.local\.json \(nothing written yet\)/);
-    assert.match(api.stdout, /API: the provider, endpoint and model belong in \.claude\/settings\.local\.json/);
+    assert.match(api.stdout, /Authentication\s+API \(Project\)/);
+    assert.match(api.stdout, /Config Source\s+\.claude\/settings\.local\.json/);
+    // 提醒行先把文件放在行首：整行必须活在 80 列以内，排在后半句的补救会被截掉。
+    assert.match(api.stdout, /fill in \.claude\/settings\.local\.json — nothing in it yet/);
+    assert.match(api.stdout, /API: Claude Code reads its provider, endpoint and model from \.claude\/settings\.local\.json/);
 
     // The override is this checkout's answer, and it says so.
     const overridden = runAgent(projectRoot, ["claude", "auth"]);
-    assert.match(overridden.stdout, /Authentication\s+API/);
-    assert.match(overridden.stdout, /Method source\s+Local override \(runtime\.local\.json\)/);
+    assert.match(overridden.stdout, /Authentication\s+API \(Project\)/);
+    assert.match(overridden.stdout, /runs on a local override \(\.agents\/local\/runtime\.local\.json\), not on the project's own answer/);
 
     const reset = runAgent(projectRoot, ["claude", "auth", "reset"]);
     assert.equal(reset.status, 0, reset.stderr);
-    assert.match(reset.stdout, /Authentication\s+Account/, "the project's own answer is what remains");
-    assert.match(reset.stdout, /Method source\s+Project configuration/);
-    assert.match(reset.stdout, /Account scope\s+Project/);
+    assert.match(reset.stdout, /Authentication\s+Account \(Project\)/, "the project's own answer is what remains");
+    assert.doesNotMatch(reset.stdout, /local override/);
+    assert.match(reset.stdout, /Account Scope\s+Project \(\.agents\/local\/claude\)/);
 
     const invalid = runAgent(projectRoot, ["claude", "auth", "bogus"]);
     assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Authentication method must be account or api: bogus/);
+    assert.match(invalid.stderr, /Authentication must be account or api: bogus/);
   });
 });
 
@@ -474,7 +474,7 @@ test("init validates options and auth/sessions modes", async () => {
   await withTempDirectory("avenic-init-validate-", async (projectRoot) => {
     const invalidAuth = runAgent(projectRoot, ["claude", "init", "--auth", "bogus"]);
     assert.equal(invalidAuth.status, 1);
-    assert.match(invalidAuth.stderr, /Authentication method must be account or api: bogus/);
+    assert.match(invalidAuth.stderr, /Authentication must be account or api: bogus/);
 
     const invalidSessions = runAgent(projectRoot, ["codex", "init", "--sessions", "bogus"]);
     assert.equal(invalidSessions.status, 1);
@@ -515,11 +515,14 @@ test("top-level init and change keep shared history separate from agent scopes",
   await withTempDirectory("avenic-project-setup-", async (projectRoot) => {
     const initialized = runAgent(projectRoot, ["init", "--agents", "claude,codex", "--auth", "account", "--sessions", "project", "--history", "isolated"]);
     assert.equal(initialized.status, 0, initialized.stderr);
-    assert.match(initialized.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+isolated/);
+    // 项目自己那一格（History）不借 agent 的格子说话：每个 agent 的块里那行 History
+    // 说的是这个项目当前的模式，末尾一块才是这一问本身的答案。
+    assert.match(initialized.stdout, /◇ {2}History\n│ {2}Isolated/);
+    assert.match(initialized.stdout, /│ {2}History\s+Isolated/);
 
     const changed = runAgent(projectRoot, ["change", "--history", "shared"]);
     assert.equal(changed.status, 0, changed.stderr);
-    assert.match(changed.stdout, /◇ {2}History[\s\S]*│ {2}Mode\s+shared/);
+    assert.match(changed.stdout, /◇ {2}History\n│ {2}Shared/);
     const runtime = JSON.parse(await readFile(path.join(projectRoot, ".agents", "runtime.json"), "utf8"));
     assert.equal(runtime.historyMode, "shared");
     assert.deepEqual(runtime.agents.claude, { enabled: true, authMethod: "account", accountScope: "global", sessionScope: "project" });
@@ -1100,44 +1103,78 @@ test("deinit --purge keeps the agent's own sign-in and names it, until asked twi
   });
 });
 
-// 手改过文件之后，页面不能继续把账本当现在时用：Provider/Model 行必须消失（那是
-// 文件里已经没有的值），剩下的那句要说清是「Avenic 写过的那份不在了」，并给出补救。
-test("a configuration edited out of the file is reported as gone, with the remedy", async () => {
-  await withTempDirectory("avenic-auth-stale-", async (projectRoot) => {
-    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "account", "--scope", "project"]);
+// 1.8.3 的 Codex 项目作用域配置写在 Avenic 自己的 `.agents/api/codex.json` 里，
+// 1.8.4 换到了 agent 自己的家目录。升级必须两件事都做到：把新文件准备好，并把旧的
+// 那一份指出来 —— 里面是用户自己的值，谁也不会替他们搬。
+test("a configuration an earlier Avenic wrote is named where it still is", async () => {
+  await withTempDirectory("avenic-legacy-config-", async (projectRoot) => {
+    const legacy = path.join(projectRoot, ".agents", "api", "codex.json");
+    await mkdir(path.dirname(legacy), { recursive: true });
+    const previous = '{"provider":"FixtureProvider","baseUrl":"https://provider.fixture.invalid/v1"}\n';
+    await writeFile(legacy, previous);
+
+    const initialized = runAgent(projectRoot, ["codex", "init", "--auth", "api", "--scope", "project"]);
     assert.equal(initialized.status, 0, initialized.stderr);
-    const switched = runAgent(projectRoot, ["claude", "auth", "api", "--scope", "project"]);
-    assert.equal(switched.status, 0, switched.stderr);
-    await writeApiConfiguration(projectRoot, "claude", "project", {
-      provider: "FixtureProvider",
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "codex", "config.toml")), true, "新的答案把文件准备在新的住处");
+
+    const status = runAgent(projectRoot, ["status"]);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /Codex: fill in \.agents\/local\/codex\/config\.toml — nothing in it yet/);
+    assert.match(status.stdout, /Codex: \.agents\/api\/codex\.json still holds the earlier configuration/);
+
+    const card = runAgent(projectRoot, ["codex", "auth"]);
+    assert.equal(card.status, 0, card.stderr);
+    assert.match(card.stdout, /\.agents\/api\/codex\.json still holds the earlier configuration/);
+
+    // 机器可读的那份给的是结构化的事实；而文件本身一个字节都没动。
+    const reported = JSON.parse(runAgent(projectRoot, ["status", "--json"]).stdout).agents.find((agent) => agent.id === "codex").auth;
+    assert.equal(reported.legacy.relative, ".agents/api/codex.json");
+    assert.equal(await readFile(legacy, "utf8"), previous);
+  });
+});
+
+// Provider 和 Model 这两行说的是文件里现在有什么，而文件是用户的：写进去就有行，
+// 拿掉就没有，页面不允许从别处补一个值回来（账本只证明这文件是谁建的，不证明它
+// 里面写的是什么）。
+test("the file's own contents decide the Provider and Model rows", async () => {
+  await withTempDirectory("avenic-auth-stale-", async (projectRoot) => {
+    const initialized = runAgent(projectRoot, ["claude", "init", "--auth", "api", "--scope", "project"]);
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const prepared = runAgent(projectRoot, ["claude", "auth"]);
+    assert.equal(prepared.status, 0, prepared.stderr);
+    assert.doesNotMatch(prepared.stdout, /Provider\s/, "Avenic 建的是一个空文件，里面没有 provider");
+    assert.doesNotMatch(prepared.stdout, /Model\s/);
+
+    // 用户（或用户自己的工具）把 provider 与 model 填进这个文件。
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    await fillApiConfiguration(projectRoot, "claude", "project", {
       baseUrl: "https://provider.fixture.invalid/v1",
       model: "fixture-model",
       credential: "fixture-credential-not-a-real-secret",
     });
     const written = runAgent(projectRoot, ["claude", "auth"]);
     assert.equal(written.status, 0, written.stderr);
-    assert.match(written.stdout, /Provider\s+FixtureProvider/);
+    assert.match(written.stdout, /Provider\s+provider\.fixture\.invalid/);
     assert.match(written.stdout, /Model\s+fixture-model/);
 
-    // 用户在 Avenic 之外删掉了配置块。
-    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    // 用户又把配置块拿了回来 —— 页面立刻不再有这两行。
     const document = JSON.parse(await readFile(file, "utf8"));
     delete document.env;
     await writeFile(file, `${JSON.stringify(document, null, 2)}\n`);
 
-    const stale = runAgent(projectRoot, ["claude", "auth"]);
-    assert.equal(stale.status, 0, stale.stderr);
-    assert.doesNotMatch(stale.stdout, /Provider\s/, "provider 不在文件里了，就不能再显示一个");
-    assert.doesNotMatch(stale.stdout, /Model\s/);
-    assert.match(stale.stdout, /Config source\s+\.claude\/settings\.local\.json \(gone — run avenic change\)/);
+    const emptied = runAgent(projectRoot, ["claude", "auth"]);
+    assert.equal(emptied.status, 0, emptied.stderr);
+    assert.doesNotMatch(emptied.stdout, /Provider\s/, "provider 不在文件里了，就不能再显示一个");
+    assert.doesNotMatch(emptied.stdout, /Model\s/);
+    assert.match(emptied.stdout, /fill in \.claude\/settings\.local\.json — nothing in it yet/);
 
     // 项目状态页说同一件事（两处各自用自己的语言，同一条事实），补救命令完整可见；
     // 机器可读的那份给出结构化的那个布尔值。
     const projectStatus = runAgent(projectRoot, ["status"]);
     assert.equal(projectStatus.status, 0, projectStatus.stderr);
-    assert.match(projectStatus.stdout, /Claude Code: API configuration gone — run: avenic change/);
+    assert.match(projectStatus.stdout, /Claude Code: fill in \.claude\/settings\.local\.json — nothing in it yet/);
     const reported = JSON.parse(runAgent(projectRoot, ["status", "--json"]).stdout).agents.find((agent) => agent.id === "claude").auth.configuration;
-    assert.equal(reported.owned, true, "账本还是证明得了这份配置曾经是 Avenic 写的");
-    assert.equal(reported.present, false, "但配置已不在文件里");
+    assert.equal(reported.owned, true, "账本还是证明得了这个文件是 Avenic 建的");
+    assert.equal(reported.configured, false, "但文件里没有配置");
   });
 });

@@ -55,19 +55,17 @@ test("an API launch never carries a project account home", async (t) => {
   assert.equal(runtime.scope, "project");
 });
 
-test("a project Codex API configuration reaches the agent through its own -c overrides", async (t) => {
+test("a project Codex API configuration reaches the agent through its own home, not through arguments", async (t) => {
   const root = await project(t, { agents: { codex: api }, historyMode: "shared" });
-  await mkdir(path.join(root, ".agents", "api"), { recursive: true });
-  await writeFile(path.join(root, ".agents", "api", "codex.json"), JSON.stringify({
-    provider: "Fixture Provider",
-    baseUrl: "https://provider.fixture.invalid/v1",
-    model: "fixture-model",
-    envKey: "FIXTURE_API_KEY",
-    wireApi: "chat",
-  }), "utf8");
+  // Codex has no project-scope configuration file of its own, so the project's
+  // answer is a home the project owns — and the file in it is the user's, read
+  // by Codex natively. Avenic adds no override of its own: a second copy of the
+  // same configuration is a second thing to keep in step.
+  await mkdir(path.join(root, ".agents", "local", "codex"), { recursive: true });
+  await writeFile(path.join(root, ".agents", "local", "codex", "config.toml"), 'model = "fixture-model"\n', "utf8");
   const runtime = await resolveEffectiveAgentRuntime(root, "codex", { environment: base });
-  assert.deepEqual(runtime.argumentsList.slice(0, 4), ["-c", "model=fixture-model", "-c", "model_provider=fixture-provider"]);
-  assert.equal(runtime.environment.CODEX_HOME, undefined);
+  assert.equal(runtime.environment.CODEX_HOME, path.join(root, ".agents", "local", "codex"));
+  assert.deepEqual(runtime.argumentsList, [], "the file says what the launch runs on, not the command line");
   assert.equal(runtime.environment.FIXTURE_API_KEY, undefined, "the key itself comes from the user's own environment");
 });
 
@@ -83,7 +81,7 @@ test("an unanswered project is asked, not guessed", async (t) => {
   const state = await loadRuntime(root);
   assert.equal(state.runtime.agents.claude.authMethod, undefined);
   const question = launchMethodQuestion("claude");
-  assert.equal(question.title, "Claude Code runtime");
+  assert.equal(question.title, "Claude Code authentication");
   assert.deepEqual(question.options.map((option) => option.value), ["account", "api"]);
   assert.equal(question.options[0].label, "Account");
   // Without an answer from a host, a launch refuses rather than assuming.

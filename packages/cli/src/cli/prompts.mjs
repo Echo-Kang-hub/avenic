@@ -106,13 +106,31 @@ export function section(stdout = process.stdout, title, options = {}) {
   }
 }
 
-/** 一条「标签  值」的信息行，带 │ 竖线（status 的分节内容）。 */
+/**
+ * 一条「标签  值」的信息行（status 的分节内容，也是向导落定后的摘要行）：
+ * 一个块里的值列必须是直的，所以标签补齐到这一块的宽度再截断整行。画法只有这一处 ——
+ * 打印的 field 和帧内的向导摘要共用它，两边的对齐才不会各算各的。
+ */
+export function fieldLine(label, value, { colors, width, labelWidth = 10 }) {
+  // 值列至少比标签宽一格：标签长过这一块的列宽时（状态页给的是固定宽度，
+  // 而这里给的可能是别的调用方算出来的），只按列宽补齐会把值和标签粘成一个词。
+  const column = Math.max(labelWidth, displayWidth(label) + 1);
+  const text = truncate(`${label.padEnd(column)}${value}`, width - 4);
+  return `${colors.muted("│")}  ${colors.muted(text.slice(0, column))}${text.slice(column)}`;
+}
+
 export function field(stdout = process.stdout, label, value, options = {}) {
   const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
-  const labelWidth = options.labelWidth ?? 10;
-  const label_ = label.padEnd(labelWidth);
-  const text = truncate(`${label_}${value}`, columns(stdout) - 4);
-  stdout.write(`${colors.muted("│")}  ${colors.muted(text.slice(0, labelWidth))}${text.slice(labelWidth)}\n`);
+  stdout.write(`${fieldLine(label, value, { colors, width: columns(stdout), labelWidth: options.labelWidth ?? 10 })}\n`);
+}
+
+/**
+ * 区块里的裸行：│  文本。有些值没有标签可说 —— History 那一格的答案就是「Shared」
+ * 这件事本身，给它编一个标签只会多出一个别处都没有的词。
+ */
+export function line(stdout = process.stdout, text, options = {}) {
+  const colors = options.colors ?? palette(stdout, options.environment ?? process.env);
+  stdout.write(`${colors.muted("│")}  ${truncate(text, columns(stdout) - 4)}\n`);
 }
 
 /** 区块里的一条提示行：│  ! 文本（黄）或 │  · 文本（灰）。 */
@@ -677,6 +695,14 @@ export function wizard(options = {}) {
   let index = 0;
   let applied = false;
   const editors = new Map();
+  // 一条步骤只有两种样子：正在被问（◆），或者已经过去（◇ 加摘要）。`kind: "note"`
+  // 的步骤（「旧的配置还在」那种）只有后一种 —— 它没有可答的东西，于是前后移动
+  // 都跳过它，它只是在它该在的位置上被读到。
+  const skipNotes = (at, delta) => {
+    let position = at;
+    while (position >= 0 && position < steps.length && steps[position].kind === "note") position += delta;
+    return Math.max(0, Math.min(position, Math.max(0, steps.length - 1)));
+  };
   const activeStep = () => steps[Math.min(index, Math.max(0, steps.length - 1))];
   const editorFor = (step) => {
     let model = editors.get(step.id);
@@ -706,6 +732,9 @@ export function wizard(options = {}) {
   // 同一组的连续步骤折叠成一块：一个 ◇ 标题，一行摘要里各条答案用 │ 串起来
   // （API 配置的五问答案是同一件事，分开画五行会把整场问答埋掉）。组标题取组内
   // 第一步的标题。
+  // 同一步的答案可以是几行（认证、配置来源、会话各占一行）：每一行都是「标签 值」，
+  // 并被补齐到这一块里最长的那个标签 —— 折叠摘要读起来必须和 Dashboard 的卡片一样
+  // 整齐，而那个卡片正是这一轮的唯一说法。
   const completedRows = (list) => {
     const rows = [];
     for (let at = 0; at < list.length; at += 1) {
@@ -715,10 +744,20 @@ export function wizard(options = {}) {
         ? list.slice(at).filter((entry) => entry.group === step.group)
         : [step];
       if (step.group) at += group.length - 1;
-      rows.push(`${colors.brandSoft("◇")}  ${colors.strong(truncate(step.title, width - 4))}`);
-      const parts = group.map((entry) => entry.summary?.(draft)).filter((summary) => summary);
-      if (parts.length > 0) {
-        rows.push(`${colors.muted("│")}  ${colors.muted(truncate(parts.join(" │ "), width - 4))}`);
+      rows.push(`${colors.brandSoft("◇")}  ${colors.strong(truncate(step.groupTitle ?? step.title, width - 4))}`);
+      const parts = group
+        .flatMap((entry) => {
+          const summary = entry.summary?.(draft);
+          if (!summary) return [];
+          return Array.isArray(summary) ? summary : [summary];
+        })
+        .filter(Boolean);
+      // 值列从「这一块最长的标签 + 一个空格」起算：块里只剩一行摘要时，那个标签
+      // 正好占满它自己那一列，值就会和它粘成一个词（"AuthenticationAPI (Project)"）。
+      const labelWidth = Math.max(0, ...parts.map((part) => (typeof part === "string" ? 0 : displayWidth(part.label) + 1)));
+      for (const part of parts) {
+        if (typeof part === "string") rows.push(`${colors.muted("│")}  ${colors.muted(truncate(part, width - 4))}`);
+        else rows.push(fieldLine(part.label, part.value, { colors, width, labelWidth }));
       }
     }
     return rows;
@@ -743,7 +782,7 @@ export function wizard(options = {}) {
     reduce(intent) {
       if (intent === "back") {
         if (index === 0) return false; // 第一步没有上一步：不重画，也不动状态
-        index -= 1;
+        index = skipNotes(index - 1, -1);
         return true;
       }
       return editorFor(activeStep()).reduce(intent);
@@ -756,8 +795,12 @@ export function wizard(options = {}) {
       if (!active.apply) {
         active.write?.(draft, answer.value);
         steps = stepsFor(draft);
+        // 答完这一步之后，这一步自己可能已经不在表里：只有 Remove 才会生下
+        // 「Remove old configuration?」那一问，答 No 之后它就不存在了。按 id 找不到
+        // 位置的意思正是「它和它后面那些问题都不必再问了」，所以落点是它刚在的那个
+        // 位置（它前面的步骤都原样还在），而不是第 0 题 —— 那会把整场问答重问一遍。
         const position = steps.findIndex((step) => step.id === active.id);
-        index = Math.min(position + 1, Math.max(0, steps.length - 1));
+        index = skipNotes(position === -1 ? index : Math.min(position + 1, steps.length), 1);
         return { repaint: true };
       }
       if (answer.value !== true) return { cancel: true };

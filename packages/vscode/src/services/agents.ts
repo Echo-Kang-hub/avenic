@@ -4,7 +4,6 @@ import {
   machineEnvironment,
   agentRuntimeEnvironment,
   beginLaunch,
-  classifyAgentExecutable,
   collectStatus,
   deinitializeAgent,
   detectAgentInstallationAsync,
@@ -72,37 +71,8 @@ export function projectStatus(projectRoot: string, environment: NodeJS.ProcessEn
   return pending;
 }
 
-// 「认证」的两半答案都要说出来：方法决定谁登录（Account）还是谁配置模型（API），
-// 作用域决定这份状态在哪。Account 的项目作用域在项目自己的 home 里登录；API 的项目
-// 作用域写在 agent 自己的项目配置文件里——后者由 core 给出相对路径，插件不猜文件名。
-// 树视图与仪表盘说同一句话：同一个事实只有一份措辞，两个视图才不会各自漂移。
-export function authText(auth: StatusAgent["auth"], runtime: StatusAgent["runtime"] = null): string {
-  // 自管认证的 agent：这一格不是 Avenic 的答案，也不是「还没答」。
-  if (runtime === "native") return "认证 Native（OpenCode 自己管理）";
-  // 没有方法 = 这个项目还没回答这一题（合法的状态），启动时会问 —— 不是「未初始化」。
-  if (!auth) return "认证 未选择 · 启动时会询问";
-  const scope = auth.scope === "project" ? "项目" : "全局";
-  if (auth.method === "account") {
-    const where = auth.home === null ? "本机账号" : auth.home;
-    const signed = auth.status === "signed-in" ? "" : auth.status === "not-signed-in" ? " · 未登录" : " · 登录状态未知";
-    return `认证 Account · ${scope}（${where}${signed}）`;
-  }
-  const configuration = auth.configuration;
-  // 与仪表盘同一组事实的另一种措辞：provider/model 只有在 present 时才是现在生效的
-  // 配置。被用户在 Avenic 之外改掉之后说「已不在文件中」——「尚未写入」是另一回事。
-  const present = configuration?.present === true;
-  const details = present ? [configuration?.provider, configuration?.model].filter(Boolean).join(" / ") : "";
-  const missing = configuration == null || present ? "" : configuration.owned ? " · 已不在文件中" : " · 尚未写入";
-  return `认证 API · ${scope}（${configuration?.relative ?? "—"}${details ? ` · ${details}` : ""}${missing}）`;
-}
-
 export function listAgents(): Agent[] {
   return Object.keys(AGENTS).map((id) => getAgent(id)); // AGENTS 值不含 id，getAgent 补齐
-}
-
-// dashboard 专用薄包装（只看 CLI 是否在 PATH 上：不运行子进程，因此可以在渲染路径上同步回答）
-export function agentInstalled(agentId: string): boolean {
-  return classifyAgentExecutable(agentId).executable !== null;
 }
 
 // 面板的安装/升级入口同样不该阻塞事件循环：探测一次即拿到 executable 与 version。

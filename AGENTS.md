@@ -13,7 +13,7 @@ Three packages, one direction of dependency:
 
 | Package | Artifact | Role |
 |---|---|---|
-| `packages/core` | `@avenic/core` | All business logic. ESM, no runtime dependencies: project config, agent runtime (authentication method + API configuration), session adapters, canonical (shared) history, capture/durability, Skills and Hub, the status model. |
+| `packages/core` | `@avenic/core` | All business logic. ESM, no runtime dependencies: project config, agent runtime (the Account/API answer and the configuration file API prepares), session adapters, canonical (shared) history, capture/durability, Skills and Hub, the status model, and the one label table. |
 | `packages/cli` | `avenic` (bins: `avenic`, `ave` → `scripts/skills.mjs`) | The terminal UI. Vendors core. |
 | `packages/vscode` | `avenic-agent-manager` (publisher `EchoKang`) | The extension. Consumes the same core API; renders QuickPick/Tree/Webview only. |
 
@@ -27,6 +27,22 @@ as JSON unchanged by `--json`, and as a dashboard by
 Vocabulary is deliberately small: **ProjectConfig, AgentRuntime, Session/Capture,
 Adapter/Projection, Skills/Hub**. There is no `Manager`, `Controller`,
 `Coordinator` or `Engine` layer, and new code should not add one.
+
+**The final VS Code Dashboard is the canonical source of truth for Avenic
+user-facing terminology. CLI, status, Configure and documentation must use the
+same vocabulary.** The words live once, in `packages/core/src/labels.mjs`, and
+every surface renders from there — `avenic init`'s summary and rail,
+`avenic status`, the extension's Configure wizard and the dashboard's cards,
+the tree view, and these documents. The pinned set is small and exact:
+**Account** / **API** (the Authentication answer), **Account Scope** and
+**Configuration Scope** (each answer's own scope, Global or Project),
+**Sessions** (Global/Project), **History** (Shared/Isolated), and OpenCode's
+**Native (OpenCode UI)**. Values read as `API (Project)` / `Account (Project)`.
+The implementation words are banned from anything a user reads: **Runtime**,
+Runtime scope, Authentication method, Model configuration, Model configuration
+scope, Session storage, Session history. `test/vocabulary.test.mjs` scans the
+hosts' string literals for them and compares four surfaces on one project; a
+host that wants a different word has to change it for every host at once.
 
 The canonical runtime schema has exactly these names (`runtime.json`,
 `schemaVersion: 3`): per agent `authMethod` (`account` \| `api`), the scope of
@@ -122,15 +138,17 @@ measured numbers: `docs/session-interop-design.md` → "Known limitations".
 
 ## Agent environment invariants
 
-These are permanent. They are the code of the converged model: **authentication
-method** and **model/provider configuration** are two different questions, and
-each one is answered by whichever party owns it — the agent, or the project.
+These are permanent. They are the code of the converged model: the
+**Authentication** answer and the **configuration it points at** are two
+different questions, and each one is answered by whichever party owns it — the
+agent, or the project.
 
-1. **Authentication method and model/provider configuration are separate.**
+1. **The Authentication answer and everything it implies are separate.**
    A project answers `authMethod: account | api` for each agent, and that answer
    decides who owns the rest: Account means the agent owns the sign-in and Avenic
-   configures no model; API means Avenic owns the provider/model/endpoint/
-   credential and no account state is loaded on top. The scope each answer
+   configures no model; API means the agent reads its provider, endpoint, model
+   and credential from its *own* configuration file — which is the user's to fill
+   in, and which Avenic prepares and never writes into. The scope each answer
    carries is its own (`accountScope`, `configScope`) and only one of them exists
    at a time; `sessionScope` and the project's `historyMode` are independent of
    both. Nothing derived is stored twice.
@@ -148,28 +166,34 @@ each one is answered by whichever party owns it — the agent, or the project.
    that one function, because a launch and its capture that disagree about the
    configuration root capture nothing and revert the wrong tree.
 
-3. **API mode owns the runtime configuration, in the agent's own file.** Avenic
-   writes provider, endpoint, model and credential into the agent's own
-   configuration (`runtime/api-config.mjs`): Claude's project scope prefers
-   `<project>/.claude/settings.local.json`, and Codex — which has no
-   project-scoped configuration file — receives `-c key=value` overrides on that
-   one launch. Every write goes through the ownership ledger, so exactly what
-   Avenic wrote can be given back, and a key the user wrote or later changed is
-   reported as a conflict and kept. A credential is reported as present or
-   absent and is never printed, copied into canonical history, or written into
-   launch state.
+3. **API prepares the agent's own configuration, and never writes into it.**
+   Avenic is not a provider or model configurator. It makes sure the file the
+   agent reads is where the agent will look — Claude's project scope is
+   `<project>/.claude/settings.local.json`, its global scope is
+   `$CLAUDE_CONFIG_DIR/settings.json` (or `~/.claude/settings.json`); Codex has
+   no project-scoped file of its own, so a Project answer lives in
+   `<project>/.agents/local/codex/config.toml` and reaches Codex through its own
+   `CODEX_HOME` variable at launch — and then it gets out of the way. A missing
+   file is created empty (`{}` for JSON, empty for TOML, mode 0600); a file that
+   is there is preserved byte for byte; nothing Avenic did not create is edited,
+   reformatted or deleted. Provider, endpoint, model and credential are the
+   user's to fill in (by hand or with their own tool) and the surfaces read them
+   back out of the file. A credential is reported as present or absent and is
+   never printed, copied into canonical history, or written into launch state.
 
-4. **An agent's native project settings stay under `.claude`.** Claude's
-   `.claude/settings.local.json` (and `settings.json`) is Claude's own
-   configuration, not an Avenic auth file: it is written only in API mode, only
-   for the keys the ledger records as Avenic's, and it is never deleted merely
-   because the project switched to Account. Existing files are not overwritten
-   because a command ran.
+4. **An agent's native settings stay the agent's.** `.claude/settings.local.json`
+   and `config.toml` are the agent's own configuration, not Avenic's: Avenic
+   creates one only when it is missing, records that in the ownership ledger
+   (path, `createdByAvenic`, the hash of what it wrote — never a value out of the
+   file), and may give back only a file it provably created and nobody has
+   changed since. It is never deleted merely because the project switched to
+   Account, and an existing file is never overwritten because a command ran.
 
 5. **OpenCode answers for its own authentication, provider and model.** Avenic
-   records only its session scope; `avenic opencode` launches straight into
-   OpenCode's own flow, and no `init`/`change`/Configure step may add an
-   authentication or model question for it.
+   records only its session scope, and its Authentication renders as
+   `Native (OpenCode UI)`; `avenic opencode` launches straight into OpenCode's
+   own flow, and no `init`/`change`/Configure step may add an authentication or
+   configuration question for it.
 
 6. **Live and durable environments are two different things.**
    `durableEnvironment` narrows what a detached watchdog *persists* (an
@@ -186,14 +210,17 @@ each one is answered by whichever party owns it — the agent, or the project.
 
 8. **Switching method keeps the old configuration unless the user says
    otherwise.** The question is asked after the new answers are collected and
-   before anything is applied — `Existing Account/API configuration detected.
-   Keep previous configuration? ▸ Keep / Remove`, default Keep. Removal happens
-   after the new configuration is written, is limited to artifacts Avenic
-   provably wrote for *this* project (the ledger, or an Avenic-owned key),
-   and asks again before destroying anything. It may never `rm -rf` a managed
-   whole directory, never touch the user's global account, and never touch
-   another project. **If it cannot be proven that Avenic generated a thing, that
-   thing stays.**
+   before anything is applied, and it names the file it is about:
+   `◇ Existing Claude Code configuration │ .claude/settings.local.json is still
+   present.` then `◆ What should Avenic do? ▸ ◉ Keep ○ Remove`, default Keep.
+   Remove is asked a second time, as its own step that opens on **No**, while
+   `esc` can still mean nothing has happened; a file Avenic cannot prove it
+   created is never asked about. Removal happens after the new configuration is
+   written and is limited to files Avenic provably created for *this* project and
+   nobody has changed since. It may never `rm -rf` a managed whole directory,
+   never touch the user's global account or an agent's own sign-in, and never
+   touch another project. **If it cannot be proven that Avenic generated a
+   thing, that thing stays.**
 
 9. **Nothing is guessed and nothing is probed.** Unknown or ambiguous state is
    asked about once at launch (with an optional "Remember for this project?",
@@ -328,7 +355,7 @@ warrants a semver bump:
 
 ```bash
 npm run test:release                     # after `npm test` and `npm run test:vscode`
-npm run release:gate                     # pack → verify → vscode → visual → host; Windows desktop, the last leg opens a window
+npm run release:gate                     # pack → verify → vscode → visual → host → host:upgrade → host:upgrade:open; Windows desktop, the last three legs open a window
 npm pack "$PWD/packages/cli"  --pack-destination "$PWD/dist/release-<stamp>"
 npm pack "$PWD/packages/core" --pack-destination "$PWD/dist/release-<stamp>"
 cp packages/vscode/dist/avenic-agent-manager.vsix "$PWD/dist/release-<stamp>/"
@@ -343,7 +370,37 @@ Ship with: version bumps, `CHANGELOG.md` entries (root for core+CLI,
 `packages/vscode/CHANGELOG.md` for the extension), a release-notes file, the
 tarballs and VSIX in `dist/release-<stamp>/`, and `SHA256SUMS.txt` beside them.
 Publishing to npm and uploading the VSIX are the owner's steps; do not attempt
-them.
+them. `npm publish` runs **inside each package** — `packages/core` first, then
+`packages/cli`. The root manifest is `private: true` on purpose (it is the
+workspace root, never a published package), so a publish from the repository
+root stops with `EPRIVATE` and publishes nothing.
+
+**In-place updates are a supported path, not a fresh install.** The Marketplace
+replaces the extension under a running window, so for a moment the new manifest
+is served by the previous release's code. Two rules follow, and both are
+enforced by tests (`test/manifest.test.ts`, `test/dashboard-open.test.ts`):
+
+- The Dashboard view id has **one** source, `packages/vscode/src/views/view-ids.ts`.
+  The manifest, the `createTreeView` registration and every `view == …` menu
+  binding read it; a second literal is a bug. When the manifest's id and the
+  running code's differing ids meet, VS Code paints its own
+  `No view is registered with id: …` into the activity bar — a sentence with no
+  cause and no action in it.
+- `activate()` mounts the view provider **first**, before anything that can
+  throw or await, and everything after it is inside a guarded shell. A data load
+  that fails may not be the reason the entry point is missing, and no open path
+  may ever surface that VS Code sentence: Avenic says
+  `Avenic Dashboard could not be opened.` and offers **Reload Window** /
+  **View Logs**, while the raw reason goes to the Avenic output channel.
+- Old command ids are reached only through the O(1) alias table in
+  `packages/vscode/src/views/legacy.ts` — no probing old state, no filesystem
+  scan, no CLI spawn on a keystroke's path. The table's keys are deliberately
+  absent from the manifest, so the palette never offers a name that is gone.
+- `npm run test:host:upgrade` installs the newest previously released VSIX,
+  starts a window with it, updates over it with `--force` while that window
+  runs, reloads, and requires the Dashboard to open with no view error;
+  `test:host:upgrade:open` does the same with the old page left open. Both run
+  in the release gate, in an isolated profile, offline.
 
 ## Security and data safety
 

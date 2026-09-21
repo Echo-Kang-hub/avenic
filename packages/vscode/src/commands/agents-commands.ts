@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { apiPrefill, applyProjectDraft, formatSessionDiagnostics, projectDraft, projectWizardSteps } from "@avenic/core";
+import { applyProjectDraft, formatSessionDiagnostics, modelConfigPresence, projectDraft, projectWizardSteps } from "@avenic/core";
 import { releaseSummary } from "../services/agents.ts";
 import type { ProjectDraft } from "@avenic/core";
 import * as agents from "../services/agents.ts";
@@ -53,9 +53,9 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (root === null) return;
     const current = await agents.readProjectConfiguration(root);
     const editing = Object.keys(current.agents).length > 0;
-    // 修改时每一步都预选当前值，API 那几个字段也一样：屏幕上空着的 provider 或端点
-    // 就是「提交上去的答案为空」，而把空答案写下去等于把配置撤掉。答案仍然由 core 读。
-    const draft = projectDraft(current, { api: await apiPrefill(root, current.agents) });
+    // 修改时每一步都预选当前值。API 那一侧带上的是文件本身在不在、是不是 Avenic
+    // 创建且没人动过 —— 「换了答案之后旧文件怎么办」这一问只对这样的文件存在。
+    const draft = projectDraft(current, { files: await modelConfigPresence(root, current.agents) });
     const host = quickPickHost<ProjectDraft>();
     try {
       // 整轮问答在队列外；只有提交那一刻的写入进队列（决议 1 / W2a）。

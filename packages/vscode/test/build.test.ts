@@ -7,6 +7,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { extensionBuildOptions } from "../build-options.mjs";
+import { LEGACY_COMMAND_ALIASES } from "../src/views/legacy.ts";
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -85,8 +86,12 @@ test("the bundle activates and registers exactly what the manifest declares", as
   const declared: string[] = manifest.contributes.commands.map((entry: { command: string }) => entry.command);
   const { activated } = await builtArtifact();
   assert.equal(activated.subscriptions > 0, true, "激活必须挂上订阅，否则命令随激活对象一起被回收");
+  // 旧 id 的别名是有意注册的：它们不进清单（命令面板里不该再出现旧名字），所以允许集合
+  // 是「清单声明 + 那张常量表」。表里每一条都指向清单里真有的命令，由
+  // dashboard-open.test.ts 反查——这里只保证它没变成一条偷偷注册别的东西的后门。
+  const allowed = new Set([...declared, ...Object.keys(LEGACY_COMMAND_ALIASES)]);
   for (const id of declared) assert.ok(activated.commands.includes(id), `清单声明了 ${id}，但产物没有注册`);
-  for (const id of activated.commands) assert.ok(declared.includes(id), `产物注册了未声明的命令 ${id}`);
+  for (const id of activated.commands) assert.ok(allowed.has(id), `产物注册了未声明的命令 ${id}`);
 });
 
 test("vsce package produces a VSIX via npm script", async () => {

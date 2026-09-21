@@ -132,8 +132,13 @@ export interface ProjectDraft {
    * from a re-read of a file a concurrent edit may have moved.
    */
   stored: Record<string, AgentConfigView>;
-  /** The API fields each agent answered, held apart from the stored scope. */
-  api: Record<string, ApiFields>;
+  /**
+   * What an earlier API answer left on disk, per agent, read once when the
+   * wizard opens. The keep/remove question is about exactly these files, so the
+   * answer must describe the file as it is — not as the configuration says it
+   * should be.
+   */
+  files: Record<string, ModelFilePresence>;
   historyMode: HistoryMode;
   /** The answer to the keep/remove question; absent until it is asked. */
   switchMode?: "keep" | "remove";
@@ -148,9 +153,19 @@ export interface ProjectWizardChoice<T = unknown> {
  * `ProjectDraft`; a host may declare steps over a smaller draft (the VS Code
  * per-agent Initialize flow does) and walk them with the same driver.
  */
+/** One line of a collapsed answer: the label and the value that belongs to it. */
+export interface WizardSummaryLine {
+  label: string;
+  value: string;
+}
 export interface ProjectWizardStep<D = ProjectDraft> {
   id: string;
-  kind: "single" | "multi" | "text";
+  /**
+   * `note` is a step nobody answers: it is read on the way past (the "your old
+   * configuration is still there" line) and has a summary but no question, so a
+   * host skips over it in both directions and shows it among the answered ones.
+   */
+  kind: "single" | "multi" | "text" | "note";
   title: string;
   description?: string;
   /** single/multi: the choices. A text step asks for free text instead. */
@@ -160,6 +175,8 @@ export interface ProjectWizardStep<D = ProjectDraft> {
    * folds them into a single answered line, titled by the group's first step.
    */
   group?: string;
+  /** The fold's heading, when it differs from the group's first step title. */
+  groupTitle?: string;
   /** multi: the currently chosen values. */
   values?: (draft: D) => string[];
   minSelected?: number;
@@ -176,17 +193,22 @@ export interface ProjectWizardStep<D = ProjectDraft> {
   optional?: boolean;
   placeholder?: string;
   write?: (draft: D, value: unknown) => void;
-  /** One dim line: what this step's answer was, for an answered step. */
-  summary?: (draft: D) => string;
+  /**
+   * The answered line: a bare string, or the label/value pairs the dashboard's
+   * own card shows — the terminal draws each pair as one row of the same
+   * two-column table the card uses, and a host that can only draw one line
+   * joins them with " │ ". A falsy summary means "nothing to show".
+   */
+  summary?: (draft: D) => string | WizardSummaryLine | WizardSummaryLine[] | null | undefined;
   apply?: boolean;
   appliedTitle?: string;
   /** A host's own line under the step (key hints, a reminder). */
   footer?: string;
 }
 export function agentChoices(): ProjectWizardChoice<string>[];
-export function projectDraft(config: ProjectConfig, options?: { api?: Record<string, ApiFields> }): ProjectDraft;
+export function projectDraft(config: ProjectConfig, options?: { files?: Record<string, ModelFilePresence> }): ProjectDraft;
 export function projectWizardSteps(draft: ProjectDraft, editing?: boolean): ProjectWizardStep<ProjectDraft>[];
-export function projectDraftSubmission(draft: ProjectDraft): { agents: Record<string, AgentRuntimeConfig>; api: Record<string, ApiFields>; historyMode: HistoryMode };
+export function projectDraftSubmission(draft: ProjectDraft): { agents: Record<string, AgentRuntimeConfig>; historyMode: HistoryMode };
 export function applyProjectDraft(
   projectRoot: string,
   draft: ProjectDraft,
@@ -333,56 +355,35 @@ export function resolveEffectiveAgentRuntime(
   },
 ): Promise<EffectiveAgentRuntime>;
 
-// ---- runtime: API configuration ----
-// API mode writes the provider, endpoint, model and credential into the
-// agent's *own* configuration file, in the agent's own shape: Claude's
-// `env` block, Codex's `model_provider` table. There is no Avenic model
-// catalog and no Avenic credential format — only the fields Avenic wrote,
-// recorded in a ledger so a later removal can prove what is its own.
-export interface ApiFields {
-  /** A label the user chose for this endpoint; never validated against a list. */
-  provider?: string;
-  baseUrl?: string;
-  model?: string;
-  /** A secret for Claude, an environment-variable *name* for Codex. */
-  credential?: string;
-}
-
-/** The one credential variable an agent's API configuration speaks. */
-export interface ApiCredential {
-  key: string;
-  /** Whether the value is a secret a host must not echo back. */
-  secret: boolean;
-  label: string;
-  hint: string;
-}
-export function apiCredential(agentId: string): ApiCredential;
-/** The agents whose API configuration Avenic can write. */
-export function apiAgents(): string[];
-/** The provider id a Codex provider table is keyed by: derived from the label, never asked. */
-export function providerIdFor(provider: string): string;
-export function codexWireApi(baseUrl: string): "responses" | "chat";
-export interface ApiTarget {
+// ---- runtime: model configuration ----
+// An API answer is where the agent reads its provider, endpoint and model from:
+// a configuration file of the agent's own, in the agent's own shape. Avenic
+// makes sure that file is there and then gets out of the way — the contents are
+// the user's (their own hand, or the tool they configured it with), so a file
+// that is present is preserved byte for byte and only a missing one is created,
+// empty. There is no Avenic model catalog and no Avenic credential format; the
+// ledger records only that Avenic created a path, never a value out of it.
+export interface ModelConfigTarget {
   file: string;
   /** The path as a host prints it, with `~` for the home scope. */
   relative: string;
   format: string;
-  native: boolean;
 }
-export function apiTarget(projectRoot: string | null, agentId: string, scope: Scope, options?: { homeDir?: string; projectRoot?: string }): ApiTarget | null;
+/** The agents whose provider configuration is a file Avenic can prepare. */
+export function modelConfigAgents(): string[];
+export function modelConfigTarget(projectRoot: string | null, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike; projectRoot?: string }): ModelConfigTarget | null;
 /** The same path as a host prints it, without needing a project root. */
-export function apiRelative(agentId: string, scope: Scope): string;
-/** The key paths one agent's API configuration owns, in its file's shape. */
-export function apiEntries(agentId: string, fields?: ApiFields): Array<{ path: string[]; value: unknown }>;
+export function modelConfigRelative(agentId: string, scope: Scope): string;
+/** Prepare the file the agent reads: create it empty when missing, touch nothing when it is there. */
+export function ensureModelConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<{ relative: string; file: string; created: boolean }>;
 /**
  * The model/effort keys an agent's own configuration can carry, read from the
- * file that is in effect: Claude's file answers with its role models and its
- * effort level, Codex's with its reasoning effort. A key the file does not hold
- * — absent, blank, or not a string — is null; nothing is filled in with a value
- * nobody wrote. Only the keys of that agent's own file are there: Codex's
- * project record answers with its one key and never a Claude role key.
+ * file itself: Claude's file answers with its role models and its effort level,
+ * Codex's with its reasoning effort. A key the file does not hold — absent,
+ * blank, or not a string — is null; nothing is filled in with a value nobody
+ * wrote.
  */
-export interface ApiSettings {
+export interface ModelSettings {
   primary?: string | null;
   opus?: string | null;
   sonnet?: string | null;
@@ -391,53 +392,83 @@ export interface ApiSettings {
   effort?: string | null;
   reasoning?: string | null;
 }
-/** What one scope's API configuration currently says. Never a secret — only whether one is set. */
-export interface ApiConfiguration {
+/** What one configuration file currently says. Never a secret — only whether one is set. */
+export interface ModelConfiguration {
   relative: string;
+  file: string;
+  /** Whether the file is on disk at all. */
   exists: boolean;
-  /** Whether the keys present are the ones Avenic wrote, per the ledger. */
-  owned: boolean;
+  /** Whether the file could be read as its own format. */
+  valid: boolean;
   /**
-   * Whether the file still holds those keys with the values Avenic wrote. A
-   * user who deletes or edits a key outside Avenic leaves `owned` true — the
-   * ledger can still prove what is Avenic's — and `present` false: provider
-   * and model are then the past, not the configuration in effect, and a
-   * surface must not show them as the latter.
+   * Whether the file names anything that is in effect: an endpoint, a provider,
+   * a model, a credential, a role or an effort. A file Avenic prepared but
+   * nobody filled in is `exists` and not `configured` — which is the whole
+   * difference between "the file is there" and "there is a configuration".
    */
-  present: boolean;
+  configured: boolean;
+  /** Whether Avenic created this exact path, per the ledger. */
+  owned: boolean;
+  /** Whether the file still hashes to what Avenic wrote when it created it. */
+  unchanged: boolean;
+  /** The endpoint's host (Claude) or the provider table's name or id (Codex). */
   provider: string | null;
   baseUrl: string | null;
   model: string | null;
   credentialSet: boolean;
-  /**
-   * The model block of the file in effect, read from that file itself — a key
-   * the user wrote there is part of it. Null exactly when `present` is false:
-   * like provider and model, it is present-tense only.
-   */
-  settings: ApiSettings | null;
+  /** Present-tense only: null exactly when `configured` is false. */
+  settings: ModelSettings | null;
 }
-export function readApiConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ApiConfiguration | null>;
+export function readModelConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ModelConfiguration | null>;
 /**
- * Where a project's API questions start: for each agent whose answer is API,
- * the fields to show, read from the file Avenic wrote — with `credentialSet`
- * saying a secret is already there, never what it is. Without this an edit
- * would open on empty fields, and applying them would take the configuration
- * away.
+ * What one agent's *own* home holds — the configuration the agent reads when it
+ * runs on its account. Read-only, for a surface that reports the agent's real
+ * configuration rather than Avenic's.
  */
-export function apiPrefill(
+export interface AccountConfiguration {
+  relative: string;
+  exists: boolean;
+  valid: boolean;
+  configured: boolean;
+  provider: string | null;
+  model: string | null;
+  settings: ModelSettings | null;
+}
+export function readAccountConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { environment?: ProcessEnvLike }): Promise<AccountConfiguration | null>;
+/**
+ * What the file a stored API answer points at is, asked once when a wizard
+ * opens: the questions can then describe what is really on disk without reading
+ * the filesystem on every repaint. `owned`/`unchanged` travel with it because
+ * the destructive question is about exactly those files — the ones Avenic
+ * created and nobody touched.
+ */
+export interface ModelFilePresence {
+  relative: string;
+  scope: Scope;
+  exists: boolean;
+  owned: boolean;
+  unchanged: boolean;
+}
+export function modelConfigPresence(
   projectRoot: string,
   agents: Record<string, { authMethod?: AuthMethod; configScope?: Scope }>,
   options?: { homeDir?: string; environment?: ProcessEnvLike },
-): Promise<Record<string, ApiFields & { credentialSet: boolean }>>;
-export function writeApiConfiguration(projectRoot: string, agentId: string, scope: Scope, fields?: ApiFields, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<unknown>;
+): Promise<Record<string, ModelFilePresence>>;
 /**
- * Remove only the keys the ledger proves Avenic wrote; a key the user has
- * since changed is a conflict, counted and left alone. `deleted` is true only
- * when the whole file was Avenic's own creation and is now empty.
+ * The file a project-scoped Codex API answer used to live in before 1.8.4
+ * (`.agents/api/codex.json`), named and never touched — it was written by an
+ * earlier Avenic and may carry a real credential. Null for every other agent.
  */
-export function removeApiConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<{ relative: string | null; removed: number; conflicts: number; kept: number; deleted: boolean }>;
-export function codexLaunchArguments(record: ApiFields): string[];
-export function readCodexProjectConfig(projectRoot: string): Promise<ApiFields | null>;
+export function legacyModelConfiguration(projectRoot: string, agentId: string): { relative: string; file: string; exists: boolean } | null;
+/** The file an API answer for this project would use, whether or not the project is on one. */
+export function modelConfigCandidate(projectRoot: string, agentId: string, options?: { homeDir?: string; environment?: ProcessEnvLike }): { relative: string; exists: boolean } | null;
+/**
+ * Give back a file Avenic prepared, when — and only when — Avenic can prove it
+ * prepared it: the ledger names this exact path and the file still hashes to
+ * what Avenic wrote. Anything else is the user's and stays, and the outcome says
+ * which of the four cases it was.
+ */
+export function removeModelConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<{ relative: string | null; outcome: "deleted" | "modified" | "foreign" | "missing"; removed: boolean }>;
 
 // ---- project-local agent home: an agent's own config and auth, under the project ----
 // The directory a Project-scope Account signs in to, reached by the agent's own
@@ -605,8 +636,8 @@ export function importProjectSessions(projectRoot: string, agentId: string, opti
  * `previous` is what the mode was, so a host can say what changed rather than
  * only what is; `imported` is the native sessions the switch pulled in.
  */
-export function setHistoryMode(projectRoot: string, mode: HistoryMode, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike; agents?: Record<string, AgentRuntimeConfig>; draft?: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode; api?: Record<string, ApiFields> } }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
-export function applyProjectConfiguration(projectRoot: string, draft: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode; api?: Record<string, ApiFields> }, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
+export function setHistoryMode(projectRoot: string, mode: HistoryMode, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike; agents?: Record<string, AgentRuntimeConfig>; draft?: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode } }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
+export function applyProjectConfiguration(projectRoot: string, draft: { agents?: Record<string, AgentRuntimeConfig>; historyMode?: HistoryMode }, options?: { environment?: ProcessEnvLike; environmentForAgent?: (agentId: string) => ProcessEnvLike; homeDir?: string }): Promise<{ previous: HistoryMode; mode: HistoryMode; imported: unknown[]; config: ProjectConfig }>;
 /** `session.title` is the display title — see listCanonicalSessions — and the stored file is not rewritten to produce it. */
 export function readCanonicalSession(projectRoot: string, id: string): Promise<{ session: Record<string, unknown>; events: CanonicalEvent[]; mappings: { projections: Record<string, NativeSessionMapping> } }>;
 // One canonical conversation, read as a timeline. Both hosts render this and
@@ -1097,7 +1128,27 @@ export interface StatusAgent {
     home: string | null;
     /** "signed-in" | "not-signed-in" | "unknown", read from the agent's own credential file. */
     status: string | null;
-    configuration: ApiConfiguration | null;
+    /**
+     * What the agent's *own* home says while it runs on its account: read from
+     * the agent's configuration file, so a model the agent really uses is
+     * reported and nothing is invented for one it does not name.
+     */
+    account: AccountConfiguration | null;
+    /** The file this API answer points at, and what that file currently says. */
+    configuration: ModelConfiguration | null;
+    /**
+     * A configuration the same agent left in a file Avenic no longer uses (a
+     * pre-1.8.4 project-scoped Codex answer), named and never read, moved or
+     * deleted. Present only when that file is still on disk, so an upgrade
+     * cannot look like a provider that silently stopped applying.
+     */
+    legacy: { relative: string; file: string; exists: boolean } | null;
+    /**
+     * A project-scope configuration that is on disk while this project runs on
+     * an Account: present, and not in effect. A surface says so rather than
+     * showing it as the configuration that is being used.
+     */
+    detected: { relative: string } | null;
   } | null;
   sessions: Scope | null;
   history: {
@@ -1160,3 +1211,80 @@ export interface StatusModel {
   };
 }
 export function collectStatus(projectRoot: string, options?: { environment?: ProcessEnvLike }): Promise<StatusModel>;
+
+// ---- one agent's card: the rows every surface draws ----
+//
+// `avenic <agent>`, the extension's Configure page and the dashboard card all
+// draw *these* rows, in this order, under these words. A host styles by `key`
+// and must never match on `label`: the label is the user-visible word and the
+// word may change without a host breaking.
+export interface AgentCardRow {
+  key: string;
+  label: string;
+  value: string;
+}
+export interface StatusAgentCard {
+  id: string;
+  displayName: string;
+  runtime: StatusAgent["runtime"];
+  auth: StatusAgent["auth"];
+  sessions: Scope | null;
+}
+export function agentCard(projectRoot: string, agentId: string, options?: { environment?: ProcessEnvLike; homeDir?: string }): Promise<StatusAgentCard>;
+export function agentCardRows(agent: StatusAgentCard | StatusAgent, historyMode: HistoryMode | null): AgentCardRow[];
+
+// ---- the one vocabulary: labels.mjs ----
+//
+// The final VS Code dashboard is the source of truth for Avenic's user-facing
+// terminology. The CLI's wizard, `avenic status`, the extension's Configure
+// page, the dashboard and the documentation all describe the same two
+// dimensions with the same words, and the words are the dashboard's.
+export const LABELS: {
+  authentication: string;
+  account: string;
+  api: string;
+  accountScope: string;
+  accountScopeQuestion: string;
+  configurationScope: string;
+  configurationScopeQuestion: string;
+  accountHome: string;
+  accountStatus: string;
+  configFile: string;
+  configSource: string;
+  configStatus: string;
+  provider: string;
+  model: string;
+  opusModel: string;
+  sonnetModel: string;
+  haikuModel: string;
+  subAgentModel: string;
+  defaultEffort: string;
+  reasoningEffort: string;
+  credential: string;
+  sessions: string;
+  history: string;
+  /** "Native (OpenCode UI)" — the one name an agent's own authentication has. */
+  native: string;
+  scope: { global: string; project: string };
+  historyMode: { shared: string; isolated: string };
+  signIn: { "signed-in": string; "not-signed-in": string; unknown: string };
+  /** "Detected but inactive" — a configuration that is present and not in effect. */
+  detectedButInactive: string;
+  notConfigured: string;
+  notChosen: string;
+  method: {
+    account: { label: string; description: string };
+    api: { label: string; description: string };
+  };
+};
+/** `<Agent> <noun>` — how the wizard titles a question the user answers per agent. */
+export function agentQuestion(name: string, noun: string): string;
+/** `account` · `model` · `api` · `native` — the one name the answer has for a reader. */
+export function methodLabel(method: string | null | undefined): string;
+export function scopeLabel(scope: string | null | undefined): string;
+export function historyLabel(mode: string | null | undefined): string;
+export function signInLabel(status: string | null | undefined): string;
+/** `API (Project)`, `Account (Global)`, `Native (OpenCode UI)`. */
+export function authenticationValue(entry: { authMethod?: string | null; authScope?: string | null; configScope?: string | null } | null | undefined): string;
+/** `Project (.agents/local/codex)` — the scope and the home it lives in. */
+export function scopedHomeValue(scope: string, home: string | null | undefined): string;

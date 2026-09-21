@@ -51,14 +51,19 @@ function fixtureStatus() {
       updatedAt: "2026-09-19T09:51:00.000Z",
     },
     // One golden, all three answers: an API configuration that names the file
-    // the launch reads, an account whose sign-in lives in the project and has
-    // not happened yet, and an agent whose authentication is its own business.
+    // the launch reads and what the user put in it, an account whose sign-in
+    // lives in the project and has not happened yet, and an agent whose
+    // authentication is its own business.
     agents: [
       {
         id: "claude", displayName: "Claude Code", command: "claude", available: true, initialized: true, runtime: null,
         auth: {
           method: "api", scope: "project", source: "project", home: null, status: null,
-          configuration: { relative: ".claude/settings.local.json", owned: true, present: true, provider: "DeepSeek", model: "deepseek-chat", credentialSet: true },
+          configuration: {
+            relative: ".claude/settings.local.json", file: "", exists: true, valid: true, configured: true,
+            owned: true, unchanged: false, provider: "DeepSeek", baseUrl: "https://api.deepseek.invalid/anthropic",
+            model: "deepseek-chat", credentialSet: true, settings: null,
+          },
         },
         sessions: "project", history: { sessions: 10, sync: "current" },
       },

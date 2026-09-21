@@ -58,21 +58,20 @@ export async function loadFixtureApi() {
   return import(pathToFileURL(BUNDLE).href);
 }
 
-// The API configuration this project owns for Claude: a provider on an
-// invented endpoint, and a credential that cannot be read as a real one.
+// The API configuration this project owns for Claude, written the way the
+// user's own hand writes it: an invented endpoint, a model, and a credential
+// that cannot be read as a real one.
 const CLAUDE_API = {
-  provider: "DeepSeek",
-  baseUrl: "https://provider.fixture.invalid/v1",
+  baseUrl: "https://api.deepseek.invalid/anthropic",
   model: "claude-sonnet-5",
   credential: "fixture-avenic-host-check-not-a-real-credential",
 };
 
-// The model block Avenic does *not* write: `writeApiConfiguration` owns the
-// base URL, the model and the token, and these five keys are what an earlier
-// Avenic — or the user, or another tool — left in the same file. They are
-// ordinary Claude Code configuration, so a project that has them is a project
-// with answers on the card instead of empty rows. Plausible ids, no real
-// account behind any of them.
+// The model block Avenic does *not* write: the user's own file carries the base
+// URL, the model and the token, and these five keys are what an earlier Avenic —
+// or the user, or another tool — left beside them. They are ordinary Claude Code
+// configuration, so a project that has them is a project with answers on the
+// card instead of empty rows. Plausible ids, no real account behind any of them.
 const CLAUDE_MODEL_BLOCK = {
   ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5",
   ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-5",
@@ -161,7 +160,7 @@ function openCodeExport(sessionId, at, title, text, projectRoot) {
  */
 export async function buildHostFixture(projectRoot, { catalogDir, stateDir, home }) {
   const api = await loadFixtureApi();
-  const { buildDashboardData, importProjectSessions, initialize, installPacks, invalidateAgentStatusCache, makeCatalogFixture, select, testEnv, withAgentHomes, writeApiConfiguration } = api;
+  const { buildDashboardData, importProjectSessions, initialize, installPacks, invalidateAgentStatusCache, makeCatalogFixture, select, testEnv, withAgentHomes, fillApiConfiguration } = api;
   for (const directory of [projectRoot, catalogDir, stateDir, home]) mkdirSync(directory, { recursive: true });
   // testEnv is the copy the services get; the agent homes are redirected for
   // the length of the build, so nothing this fixture writes can land in a real
@@ -171,7 +170,7 @@ export async function buildHostFixture(projectRoot, { catalogDir, stateDir, home
   return withAgentHomes(home, async () => {
     // 1. Claude: the project owns the API configuration.
     await initialize(projectRoot, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(projectRoot, "claude", "project", CLAUDE_API);
+    await fillApiConfiguration(projectRoot, "claude", "project", CLAUDE_API);
     // The file Avenic just wrote, given the model block that belongs to the
     // project's own configuration rather than to Avenic's ledger.
     const settingsFile = path.join(projectRoot, ".claude", "settings.local.json");

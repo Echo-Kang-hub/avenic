@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CREDENTIAL_FILE, getAgent } from "./agents.mjs";
-import { apiTarget, removeApiConfiguration, writeApiConfiguration } from "./api-config.mjs";
+import { ensureModelConfiguration, modelConfigTarget, removeModelConfiguration } from "./model-config.mjs";
+import { agentHomeRoot, agentSessionsRoot, runtimePaths } from "./project-paths.mjs";
 import { ensureRuntimeGitignore, removeRuntimeGitignore } from "./gitignore.mjs";
 
 // One question per axis, and no axis answered by an implication of another:
@@ -54,7 +55,7 @@ async function writeJsonIfChanged(file, value) {
 
 export function validateAuthMethod(method) {
   if (!AUTH_METHODS.has(method)) {
-    throw new Error(`Authentication method must be account or api: ${method}`);
+    throw new Error(`Authentication must be account or api: ${method}`);
   }
   return method;
 }
@@ -68,36 +69,12 @@ export function validateScope(scope, what = "Scope") {
 
 export function validateHistoryMode(mode) {
   if (!HISTORY_MODES.has(mode)) {
-    throw new Error(`Session history must be shared or isolated: ${mode}`);
+    throw new Error(`History must be shared or isolated: ${mode}`);
   }
   return mode;
 }
 
-export function runtimePaths(projectRoot) {
-  const agentsRoot = path.join(projectRoot, ".agents");
-  const localRoot = path.join(agentsRoot, "local");
-  return {
-    localRoot,
-    runtimeFile: path.join(agentsRoot, "runtime.json"),
-    localRuntimeFile: path.join(localRoot, "runtime.local.json"),
-    sessionsRoot: path.join(agentsRoot, "sessions"),
-  };
-}
-
-// The project-local home a Project-scope account lives in: the agent's own
-// config and auth directory, moved under the project by the agent's own
-// configuration-root variable (never by Avenic inventing a credential format).
-// It is not session storage — sessions stay under `.agents/sessions`.
-export function agentHomeRoot(projectRoot, agentId) {
-  return path.join(runtimePaths(projectRoot).localRoot, agentId);
-}
-
-// Where one agent's portable session copies live inside the project. Every
-// adapter and the import path derive it, and a mistyped join would silently
-// grow a second history.
-export function agentSessionsRoot(projectRoot, agentId) {
-  return path.join(runtimePaths(projectRoot).sessionsRoot, agentId);
-}
+export { agentHomeRoot, agentSessionsRoot, runtimePaths };
 
 // A released version projected a provider configuration into the agent's own
 // *native* project file — for Claude, `.claude/settings.local.json`, which is
@@ -108,8 +85,8 @@ export function agentSessionsRoot(projectRoot, agentId) {
 // entry keeps the sign-in axis it recorded instead. Read-only: migration never
 // writes, moves or deletes a user file.
 async function usableOverlay(projectRoot, agentId) {
-  const target = apiTarget(projectRoot, agentId, "project");
-  if (!target?.native || !existsSync(target.file)) return false;
+  const target = modelConfigTarget(projectRoot, agentId, "project");
+  if (!target || agentId !== "claude" || !existsSync(target.file)) return false;
   try {
     const parsed = JSON.parse((await readFile(target.file, "utf8")).replace(/^﻿/, ""));
     const env = parsed?.env;
@@ -287,20 +264,30 @@ export async function configureProject(projectRoot, draft = {}, options = {}) {
   }
   for (const directory of directories) await mkdir(directory, { recursive: true });
   const configChanged = await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
-  // The API half of a draft, written where each agent natively reads it: after
-  // the runtime file, so a native write that fails still leaves a project that
-  // knows what it answered. Only an agent whose draft answer *is* API is
-  // written — leaving API mode is the explicit keep/remove step, never a side
-  // effect of choosing something else.
-  for (const [agentId, fields] of Object.entries(draft.api ?? {})) {
-    const entry = nextAgents[agentId];
-    if (entry?.authMethod !== "api" || !fields) continue;
-    await writeApiConfiguration(projectRoot, agentId, entry.configScope ?? "global", fields, options);
+  // The API half of a draft: the agent's own configuration file, made to exist
+  // where that agent reads it. Written after the runtime file, so a native
+  // failure still leaves a project that knows what it answered — and only for
+  // an agent whose draft answer *is* API: leaving API mode is the explicit
+  // keep/remove step, never a side effect of choosing something else. An
+  // existing file is never touched; a file this run created is taken back out
+  // if the rest of the apply fails, so a failed run leaves nothing behind.
+  const prepared = [];
+  try {
+    for (const [agentId, entry] of Object.entries(nextAgents)) {
+      if (entry?.authMethod !== "api") continue;
+      const outcome = await ensureModelConfiguration(projectRoot, agentId, entry.configScope ?? "global", options);
+      if (outcome.created) prepared.push({ agentId, scope: entry.configScope ?? "global" });
+    }
+    const gitignoreChanged = Object.keys(nextAgents).length > 0
+      ? await ensureRuntimeGitignore(projectRoot)
+      : false;
+    return { ...state, configChanged, gitignoreChanged, config: projectConfig(state) };
+  } catch (error) {
+    for (const { agentId, scope } of prepared) {
+      await removeModelConfiguration(projectRoot, agentId, scope, options).catch(() => {});
+    }
+    throw error;
   }
-  const gitignoreChanged = Object.keys(nextAgents).length > 0
-    ? await ensureRuntimeGitignore(projectRoot)
-    : false;
-  return { ...state, configChanged, gitignoreChanged, config: projectConfig(state) };
 }
 
 export async function getActiveCanonicalSessionId(projectRoot) {
@@ -434,15 +421,14 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     };
   }
 
-  // Avenic's own API configuration goes with the answer that asked for it:
-  // deinit is the user saying this project no longer configures that agent, and
-  // a credential Avenic wrote, left behind in a file the agent still reads, is
-  // the configuration outliving its own removal. Ownership-bounded like every
-  // other release — only what the ledger proves Avenic wrote, and never a
-  // value it cannot give back.
+  // The file Avenic prepared goes with the answer that asked for it: deinit is
+  // the user saying this project no longer configures that agent, and a file it
+  // made, left behind where the agent still reads it, is the configuration
+  // outliving its own removal. Ownership-bounded like every other release —
+  // only a file the ledger proves Avenic created and nobody has touched since.
   const entry = state.runtime.agents[agentId];
   if (entry.authMethod === "api") {
-    await removeApiConfiguration(projectRoot, agentId, entry.configScope ?? "global", options);
+    await removeModelConfiguration(projectRoot, agentId, entry.configScope ?? "global", options);
   }
   delete state.runtime.agents[agentId];
   if (Object.keys(state.runtime.agents).length === 0) {
@@ -501,6 +487,15 @@ export async function setLocalAuth(projectRoot, agentId, choice) {
     await mkdir(agentHomeRoot(projectRoot, agentId), { recursive: true });
   }
   await writeJsonIfChanged(state.paths.localRuntimeFile, state.local);
+  // An API answer is a file the agent reads, so answering API has to leave that
+  // file where the agent will look — the same step a wizard's draft takes, and
+  // for the same reason: an answer that names a file nobody made is an answer
+  // the user has to finish by hand without being told. After the write, so a
+  // native failure still leaves a project that knows what it answered. Nothing
+  // is written into it, and a file that is already there is left alone.
+  if (entry.authMethod === "api") {
+    await ensureModelConfiguration(projectRoot, agentId, entry.configScope ?? "global");
+  }
   await ensureRuntimeGitignore(projectRoot);
   return effectiveAgentConfig(state, agentId);
 }

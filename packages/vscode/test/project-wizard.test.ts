@@ -57,8 +57,8 @@ function noMethod(agentId = "claude"): ProjectConfig {
   return { agents: { [agentId]: { sessionScope: "project" } }, historyMode: "shared" };
 }
 
-async function run(answers: WizardAnswer[], config: ProjectConfig = oneAgent(), api?: Record<string, unknown>) {
-  const draft = projectDraft(config, { api: api as never });
+async function run(answers: WizardAnswer[], config: ProjectConfig = oneAgent(), files?: Record<string, unknown>) {
+  const draft = projectDraft(config, { files: files as never });
   const { seen, host } = scriptedHost(answers);
   const commits: ProjectDraft[] = [];
   const outcome = await runProjectWizard(draft, (d) => projectWizardSteps(d), host, async (d) => { commits.push(d); return d; });
@@ -97,87 +97,36 @@ test("answered steps are handed over collapsed, and the apply step never is", as
 
   const last = seen.at(-1)!;
   assert.equal(last.id, "apply");
-  assert.deepEqual(last.answered.map((line) => line.title), [
-    "Select agents",
-    "Claude Code authentication",
-    "Claude Code account scope",
-    "Claude Code sessions",
-    "Session history",
+  // 同一个 agent 的几答折成一块，块标题是 agent 自己的名字，块里每一行是「标签 值」，
+  // 行与行之间用 │ 串起来 —— 这与终端轨道上折出来的那一块是同一份答案、同一种排法。
+  // 值本身与 Dashboard 的卡片逐字相同：认证那一行说的是方法与它自己的作用域
+  // （"Account (Project)"），账号作用域那一行把作用域和承载它的目录一起写出来。
+  assert.deepEqual(last.answered.map((line) => line.title), ["Select agents", "Claude Code", "History"]);
+  assert.deepEqual(last.answered.map((line) => line.summary), [
+    "Claude Code",
+    "Authentication Account (Project) │ Account Scope Project (.agents/local/claude) │ Sessions Global",
+    "Isolated",
   ]);
-  assert.deepEqual(last.answered.map((line) => line.summary), ["Claude Code", "Account", "Project", "Global", "Isolated"]);
 });
 
-// 一组问题在已答区是一行：API 的五个字段（作用域/提供商/地址/模型/凭据）只占
-// 一个 ◇ 块，标题取组内第一步，摘要用 " │ " 连起来——与终端的折法逐字相同。
-test("the API block folds into one answered line, with nothing of the credential in it", async () => {
-  const { seen } = await run([
-    { value: ["claude"] },
-    { value: "api" },
-    { value: "project" },
-    { value: "Fixture Provider" },
-    { value: "https://provider.fixture.invalid/v1" },
-    { value: "fixture-model" },
-    { value: "fixture-token-not-a-real-secret" },
-    { value: "project" },
-    { value: "shared" },
-    { value: true },
-  ], noMethod());
-  const answered = seen.at(-1)!.answered;
-  assert.deepEqual(answered.map((line) => line.title), ["Select agents", "Claude Code authentication", "Claude Code API configuration", "Claude Code sessions", "Session history"]);
-  assert.equal(answered[2].summary, "Project │ Provider Fixture Provider │ Model fixture-model │ Credential set");
-  assert.equal(JSON.stringify(answered).includes("fixture-token"), false, "凭据本身永不出现在已答摘要里");
-});
-
-// 空文本不是答案：地址/模型/凭据留空会原地重问，而不是把空值写进配置。
-test("a text step with an empty answer is re-asked rather than accepted", async () => {
+// API 那一块在已答区是一行：这一问的答案就是「配置住在哪个文件」，摘要写的就是那个
+// 文件本身（core 给的相对路径），因此面板上那一行与 `avenic status` 的那一格逐字相同。
+test("the API block folds into one answered line naming the file it writes", async () => {
   const { seen, draft } = await run([
     { value: ["claude"] },
     { value: "api" },
-    { value: "global" },
-    { value: "Fixture Provider" },
-    { value: "   " },
-    { value: "https://provider.fixture.invalid/v1" },
-    { value: "fixture-model" },
-    { value: "fixture-token-not-a-real-secret" },
+    { value: "project" },
     { value: "project" },
     { value: "shared" },
     { value: true },
   ], noMethod());
-  assert.deepEqual(seen.slice(3, 6).map((v) => v.id), ["api-provider:claude", "api-url:claude", "api-url:claude"], "空白地址原地重问");
-  assert.equal(draft.api?.claude?.baseUrl, "https://provider.fixture.invalid/v1");
-});
-
-// 凭据是唯一一个空答案仍是答案的文本步骤：它从不回填（密钥不回显），所以当项目
-// 已经写过它时，留空＝保持。若这里也照别的文本步骤重问，用户就被困在一道答不出
-// 的题前 —— 除非把密钥重新打一遍，或者整场取消。
-test("a credential the project already has is kept by leaving the field empty", async () => {
-  const config: ProjectConfig = {
-    agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
-    historyMode: "shared",
-  };
-  const { draft, seen, commits } = await run([
-    { value: ["claude"] },
-    { value: "api" },
-    { value: "project" },
-    { value: "Fixture Provider" },
-    { value: "https://provider.fixture.invalid/v1" },
-    { value: "fixture-model" },
-    { value: "" },          // 空着确认：保持已经写下的那个
-    { value: "project" },
-    { value: "shared" },
-    { value: true },
-  ], config, {
-    claude: { provider: "Fixture Provider", baseUrl: "https://provider.fixture.invalid/v1", model: "fixture-model", credentialSet: true },
-  });
-  assert.deepEqual(seen.slice(3, 7).map((v) => v.id), [
-    "api-provider:claude", "api-url:claude", "api-model:claude", "api-credential:claude",
-  ], "空凭据往前走了一步，而不是原地重问");
-  assert.equal(draft.api?.claude?.credential, "");
   const answered = seen.at(-1)!.answered;
-  assert.equal(answered.find((line) => line.title === "Claude Code API configuration")!.summary.includes("Credential kept"), true);
-  const submitted = projectDraftSubmission(commits.at(-1)!);
-  assert.equal(submitted.api.claude.credential, "", "空答案交给写盘的那一侧，由它决定「保持」的含义");
-  assert.equal("credentialSet" in submitted.api.claude, false, "credentialSet 是给用户看的，不是写下去的答案");
+  assert.deepEqual(answered.map((line) => line.title), ["Select agents", "Claude Code", "History"]);
+  const claude = answered.find((line) => line.title === "Claude Code")!.summary;
+  assert.equal(claude.includes("Config Source .claude/settings.local.json"), true, "说的是承载配置的那个文件，不是「Project」两个字");
+  assert.equal(claude.includes("Authentication API (Project)"), true, "方法与作用域是同一句话的两半");
+  assert.equal(claude.includes("Provider"), false, "Avenic 不问 provider、地址、模型或凭据：文件是用户的");
+  assert.equal(draft.agents.claude.configScope, "project");
 });
 
 test("shift+tab re-opens the previous step holding the answer it already has", async () => {
@@ -198,7 +147,7 @@ test("shift+tab re-opens the previous step holding the answer it already has", a
   assert.equal(seen[5].value, "global", "返回时必须展开上一次的答案");
   assert.equal(seen[6].id, "account-scope:claude");
   assert.equal(seen[6].value, "project");
-  assert.deepEqual(seen[6].answered.map((a) => a.title), ["Select agents", "Claude Code authentication"], "返回后后面的步骤退回未答");
+  assert.deepEqual(seen[6].answered.map((a) => a.title), ["Select agents", "Claude Code"], "返回后后面的步骤退回未答");
   assert.equal(outcome.applied, true);
   assert.deepEqual(
     commits.at(-1)!.agents.claude,
@@ -301,12 +250,8 @@ test("applying an existing project starts from what the project is", async () =>
   const { draft, seen } = await run([
     { value: ["codex"] },
     { value: "api" },                       // 保持 api，因此没有 switch 那一问
-    { value: "global" },
-    { value: "Fixture Provider" },
-    { value: "https://provider.fixture.invalid/v1" },
-    { value: "fixture-model" },
-    { value: "FIXTURE_API_KEY" },
-    { value: "global" },
+    { value: "global" },                    // 配置来源（codex 的全局配置）
+    { value: "global" },                    // 会话
     { value: "isolated" },
     { value: true },
   ], config);
@@ -319,7 +264,12 @@ test("applying an existing project starts from what the project is", async () =>
 });
 
 // 换方法会留下上一个答案写下的东西，所以回退的最后一问是「留还是删」，
-// 默认 Keep；它出现在新答案已经答完之后、写盘之前。
+// 默认 Keep；它出现在新答案已经答完之后、写盘之前 —— 而那一问之前还有一行
+// 只读的 ◇：旧文件还在，读的人得先知道这件事，才知道下面这一问是关于什么的。
+function switchedFiles() {
+  return { claude: { relative: ".claude/settings.local.json", scope: "project", exists: true, owned: true, unchanged: true } };
+}
+
 test("replacing a method asks the keep/remove question before Apply, defaulting to Keep", async () => {
   const config: ProjectConfig = {
     agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
@@ -333,9 +283,51 @@ test("replacing a method asks the keep/remove question before Apply, defaulting 
     { value: "shared" },    // history
     { value: "keep" },      // 那一问
     { value: true },
-  ], config);
+  ], config, switchedFiles());
+  // note 那一行没有人答，两个方向都跳过它：它只是「已答」区里的一行。
+  assert.deepEqual(seen.map((view) => view.id), [
+    "agents", "auth:claude", "account-scope:claude", "sessions:claude", "history", "switch", "apply",
+  ], "只读的那一行从不成为当前问题");
   assert.equal(seen.at(-2)!.id, "switch");
   assert.equal(seen.at(-2)!.value, "keep", "默认项是 Keep");
-  assert.deepEqual(seen.at(-1)!.answered.at(-1), { title: "Existing Account/API configuration detected. Keep previous configuration?", summary: "Keep" });
+  const answered = seen.at(-1)!.answered.map((line) => line.title);
+  assert.equal(answered.includes("Existing Claude Code configuration"), true, "旧文件那一行在已答区里读得到");
+  assert.deepEqual(seen.at(-1)!.answered.at(-1), { title: "What should Avenic do?", summary: "Keep" });
   assert.equal(draft.switchMode, "keep");
+});
+
+// Remove 是唯一会删东西的答案，所以它被问第二次，而第二次的第一项是 No ——
+// 前一问的答案绝不能是一个空回车就能重复的。
+test("Remove asks a second time, and the second question opens on No", async () => {
+  const config: ProjectConfig = {
+    agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } },
+    historyMode: "shared",
+  };
+  const { draft, seen } = await run([
+    { value: ["claude"] },
+    { value: "account" },
+    { value: "project" },
+    { value: "project" },
+    { value: "shared" },
+    { value: "remove" },
+    { value: "keep" },      // 第二次回答：No
+    { value: true },
+  ], config, switchedFiles());
+  const confirm = seen.find((view) => view.id === "switch-confirm")!;
+  assert.equal(confirm.value, "keep", "第二个问题打开在 No 上");
+  assert.equal(draft.switchMode, "keep", "答 No 之后什么都不删");
+  // 一个 Avenic 建不出、也因此删不掉的旧文件（用户自己写的）不会被问第二次：
+  // 能删的只有「Avenic 创建、且没人动过」的那些。
+  const foreign = await run([
+    { value: ["claude"] },
+    { value: "account" },
+    { value: "project" },
+    { value: "project" },
+    { value: "shared" },
+    { value: "remove" },
+    { value: true },
+  ], config, { claude: { relative: ".claude/settings.local.json", scope: "project", exists: true, owned: false, unchanged: false } });
+  assert.equal(foreign.seen.some((view) => view.id === "switch-confirm"), false, "只找到的文件不进入那一问");
+  assert.equal(foreign.seen.at(-2)!.id, "switch");
+  assert.equal(foreign.draft.switchMode, "remove");
 });

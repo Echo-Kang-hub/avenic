@@ -1,7 +1,7 @@
 // Capture the payloads the visual harness renders, from real projects.
 //
 // Every scenario below builds a throwaway project on disk with core's own calls
-// (initialize / writeApiConfiguration / installPacks / importProjectSessions),
+// (initialize / fillApiConfiguration / installPacks / importProjectSessions),
 // then records what buildDashboardData — the exact function the panel calls —
 // returns for it. The JSON files land in test/visual/fixtures/ and are what
 // shot.mjs renders, so a scenario can never show data the host cannot produce.
@@ -43,7 +43,7 @@ await build({
 });
 
 const api = await import(pathToFileURL(bundlePath).href);
-const { applyProjectConfiguration, buildDashboardData, initialize, invalidateAgentStatusCache, installPacks, importProjectSessions, makeCatalogFixture, select, testEnv, withAgentHomes, writeApiConfiguration } = api;
+const { applyProjectConfiguration, buildDashboardData, initialize, invalidateAgentStatusCache, installPacks, importProjectSessions, makeCatalogFixture, select, testEnv, withAgentHomes, fillApiConfiguration } = api;
 
 // The footer's two versions are the host's own: the panel passes the extension
 // version it is running and the cached answer to "which Avenic CLI is on this
@@ -155,9 +155,8 @@ const SCENARIOS = {
     await mkdir(project, { recursive: true });
     const env = testEnv(path.join(root, "state"));
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
@@ -187,9 +186,8 @@ const SCENARIOS = {
     await mkdir(project, { recursive: true });
     const env = pathOnlyTo(await shimPath("d-isolated", ["claude", "codex", "opencode"]), testEnv(path.join(root, "state")));
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
@@ -252,9 +250,8 @@ const SCENARIOS = {
     await mkdir(project, { recursive: true });
     const env = pathOnlyTo(await shimPath("h-long-text", ["claude", "codex", "opencode"]), testEnv(path.join(root, "state")));
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek Internal Platform Team (apac-production-cluster-2)",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://deepseek-internal-platform-team-apac-production-cluster-2.fixture.invalid/anthropic",
       model: "deepseek-ai/DeepSeek-V3.2-Reasoning-Preview-2026-08-14",
       credential: "fixture-value-not-a-real-credential",
     });

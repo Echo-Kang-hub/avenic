@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { configureProject, importProjectSessions, setActiveCanonicalSession, writeApiConfiguration } from "@avenic/core";
+import { configureProject, importProjectSessions, setActiveCanonicalSession } from "@avenic/core";
+import { fillApiConfiguration } from "./api-config.ts";
 import { buildDashboardData } from "../src/dashboard/state.ts";
 import { isWebviewMessage } from "../src/dashboard/protocol.ts";
 import { initialize, invalidateAgentStatusCache, projectStatus } from "../src/services/agents.ts";
@@ -106,18 +107,23 @@ test("an API configuration shows its file, provider and model — never a creden
     invalidateAgentStatusCache();
     const before = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
     assert.equal(fieldOf(before, "Authentication")?.value, "API (Project)");
-    assert.equal(fieldOf(before, "Config Source")?.value, ".claude/settings.local.json", "要说出承载配置的那个文件");
+    // Avenic 准备的就是这个文件（它的路径来自 core），里面还什么都没有 —— 于是这一行
+    // 说的是「文件在这儿，还没写」，而不是把一份没人写过的配置画成现有配置。
+    assert.equal(fieldOf(before, "Config Source")?.value, ".claude/settings.local.json (nothing in it yet)", "要说出承载配置的那个文件，和它现在的处境");
     assert.equal(fieldOf(before, "Provider"), undefined, "还没写过 provider 就不能显示一个");
+    assert.equal(fieldOf(before, "Model"), undefined, "文件里没有模型就不能显示一个");
 
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
     invalidateAgentStatusCache();
     const card = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
-    assert.equal(fieldOf(card, "Provider")?.value, "DeepSeek");
+    // 用户填的是什么，面板就说什么：Provider 是端点本身（Claude 不写显示名，写的是
+    // ANTHROPIC_BASE_URL），Model 是文件里的那一个。两者都从文件里读。
+    assert.equal(fieldOf(card, "Provider")?.value, "api.deepseek.invalid", "Provider 是文件里那个端点的域名");
+    assert.equal(fieldOf(card, "Config Source")?.value, ".claude/settings.local.json", "配好了就不加任何修饰");
     const model = fieldOf(card, "Model");
     assert.equal(model?.kind, "select");
     assert.equal(model?.value, "deepseek-chat", "select 显示的是配置文件里真正生效的模型");
@@ -139,9 +145,8 @@ test("an API card carries the model roles the file really holds, and only those"
     const env = testEnv(path.join(root, "state"));
     await mkdir(project, { recursive: true });
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
@@ -183,9 +188,8 @@ test("every icon the host puts on a card has a glyph in the stylesheet", async (
     // 一个项目里同时走到三条分支：API（Config Source / Provider / Model）、
     // Account（状态与 home）、原生（OpenCode 自己那一格）。
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
@@ -625,8 +629,9 @@ test("a pack row carries the id its Install button has to send, and the state co
   }
 });
 
-// 用户在 Avenic 之外把配置删掉之后：Provider/Model 两格必须消失（账本里的旧值是
-// 过去时，不是现在生效的值），Config Source 那一格要说出配置已不在文件里。
+// 用户在 Avenic 之外动了那份文件：清空之后 Provider/Model 两格必须消失（那两行是
+// 文件的现在时，不是记忆），删掉文件之后 Config Source 要说它已经不在了。两种处境
+// 说的话不一样 —— 「还没写」和「被删了」是不同的补救。
 test("an API card stops showing provider and model once the file no longer holds them", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-stale-api-"));
   try {
@@ -634,25 +639,37 @@ test("an API card stops showing provider and model once the file no longer holds
     const env = testEnv(path.join(root, "state"));
     await mkdir(project, { recursive: true });
     await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(project, "claude", "project", {
-      provider: "DeepSeek",
-      baseUrl: "https://provider.fixture.invalid/v1",
+    const file = path.join(project, ".claude", "settings.local.json");
+    await fillApiConfiguration(project, "claude", "project", {
+      baseUrl: "https://api.deepseek.invalid/anthropic",
       model: "deepseek-chat",
       credential: "fixture-value-not-a-real-credential",
     });
     invalidateAgentStatusCache();
     const fresh = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
-    assert.equal(fieldOf(fresh, "Provider")?.value, "DeepSeek");
+    assert.equal(fieldOf(fresh, "Provider")?.value, "api.deepseek.invalid");
 
-    await writeFile(path.join(project, ".claude", "settings.local.json"), "{}\n");
+    // 用户把文件清空（保留了 Avenic 准备的那个空文档的形状）：行没了，文件还在。
+    await writeFile(file, "{}\n");
     invalidateAgentStatusCache();
-    const stale = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
-    assert.equal(fieldOf(stale, "Provider"), undefined, "账本里的旧 provider 不是现在生效的配置");
-    assert.equal(fieldOf(stale, "Model"), undefined);
+    const empty = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
+    assert.equal(fieldOf(empty, "Provider"), undefined, "文件里没有的值不是现在生效的配置");
+    assert.equal(fieldOf(empty, "Model"), undefined);
     assert.equal(
-      fieldOf(stale, "Config Source")?.value,
-      ".claude/settings.local.json (no longer holds Avenic's configuration)",
-      "那一格要说出来文件里已经没有这份配置",
+      fieldOf(empty, "Config Source")?.value,
+      ".claude/settings.local.json (nothing in it yet)",
+      "那一格要说出来文件里还没有配置",
+    );
+
+    // 用户把文件删了：同一个 Agent、同一个答案，文件本身不在了。
+    await rm(file, { force: true });
+    invalidateAgentStatusCache();
+    const gone = (await buildDashboardData(project, env, { cliVersion: "0" })).agents.find((a) => a.id === "claude")!;
+    assert.equal(fieldOf(gone, "Provider"), undefined);
+    assert.equal(
+      fieldOf(gone, "Config Source")?.value,
+      ".claude/settings.local.json (no longer there)",
+      "Avenic 建过的那份文件不在了：说的是这件事，而不是展示一份已经不存在的配置",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

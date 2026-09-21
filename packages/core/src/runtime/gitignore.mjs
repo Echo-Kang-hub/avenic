@@ -3,10 +3,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Every path Avenic creates on a machine rather than for the repository, and
-// nothing else. An API configuration carries a credential and is written by the
-// wizard or not at all; the ledger beside it records what Avenic wrote there so
-// removal can give the user their own values back. Neither belongs in a commit,
-// and a project that never picks API mode is unaffected by the rules for them.
+// nothing else. `.claude/settings.local.json` and `.agents/local/` are the two
+// the user's own hand fills — a provider, a credential, an agent's sign-in — so
+// they must never reach a commit, and a project that never picks API mode is
+// unaffected by the rules for them.
 const REQUIRED_RULES = [
   ".claude/skills/",
   ".claude/settings.local.json",
@@ -18,6 +18,12 @@ const REQUIRED_RULES = [
   ".agents/tmp/",
   ".agents/direct/",
   ".agents/licenses/",
+  // Two paths Avenic no longer writes and must still keep out of a commit: a
+  // project that answered API before 1.8.4 holds `.agents/api/<agent>.json` (a
+  // file with a real credential in it, written by that version) and a
+  // `.agents/projection.json` from before the canonical store. Neither is
+  // removed — `removeRuntimeGitignore` drops a rule only once the path it
+  // protects is gone — and a project that never had them is unaffected.
   ".agents/api/",
   ".agents/projection.json",
 ];

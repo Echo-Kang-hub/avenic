@@ -13,6 +13,6 @@ export {
   applyProjectConfiguration,
   importProjectSessions,
   setActiveCanonicalSession,
-  writeApiConfiguration,
 } from "@avenic/core";
+export { fillApiConfiguration } from "../api-config.ts";
 export { makeCatalogFixture, testEnv, withAgentHomes } from "../helpers.ts";

@@ -42,6 +42,18 @@ export interface WizardOutcome<D, R = unknown> {
   result: R | null;
 }
 
+// 一条摘要可以是一句话，也可以是 Dashboard 卡片上那一行「标签 值」，或者好几行
+// （认证、配置来源、会话各占一行）。终端把每一行画成同一张两列表；QuickPick 只有
+// 一行可用，于是按同一顺序连起来 —— 同一份答案，两个宿主说同样的话。
+function summaryText(summary: ReturnType<NonNullable<ProjectWizardStep["summary"]>>): string {
+  if (!summary) return "";
+  const lines = Array.isArray(summary) ? summary : [summary];
+  return lines
+    .map((line) => (typeof line === "string" ? line : `${line.label} ${line.value}`))
+    .filter(Boolean)
+    .join(" │ ");
+}
+
 function answeredSteps<D>(steps: readonly ProjectWizardStep<D>[], draft: D, upTo: number): AnsweredStep[] {
   const answered: AnsweredStep[] = [];
   const list = steps.slice(0, upTo);
@@ -49,13 +61,14 @@ function answeredSteps<D>(steps: readonly ProjectWizardStep<D>[], draft: D, upTo
     const step = list[at];
     // The apply step is the confirmation itself; it has no answer to collapse.
     if (step.apply || typeof step.summary !== "function") continue;
-    // Consecutive steps in one group are one answer to the user — five API
-    // fields fold into one line, joined with " │", exactly as the terminal
-    // folds them. The group's title is its first step's.
+    // Consecutive steps in one group are one answer to the user — one question
+    // and its scope fold into one line, joined with " │", exactly as the
+    // terminal folds them. The group's title is its first step's (or the name
+    // the group itself carries, when a step is only readable as a pair).
     const group = step.group ? list.slice(at).filter((entry) => entry.group === step.group) : [step];
     if (step.group) at += group.length - 1;
-    const parts = group.map((entry) => entry.summary?.(draft)).filter((summary) => Boolean(summary));
-    answered.push({ title: step.title, summary: parts.join(" │ ") });
+    const parts = group.map((entry) => summaryText(entry.summary?.(draft))).filter((summary) => Boolean(summary));
+    answered.push({ title: step.groupTitle ?? step.title, summary: parts.join(" │ ") });
   }
   return answered;
 }
@@ -77,6 +90,16 @@ export async function runProjectWizard<D, R = unknown>(
 ): Promise<WizardOutcome<D, R>> {
   let steps = stepsFor(draft);
   let index = 0;
+  // A step is either being asked (◆) or already past (◇ with a summary). A
+  // `note` step is only ever the second: nobody answers "your old
+  // configuration is still there", so both directions step over it and it is
+  // read where it belongs — among the answered lines. The terminal's wizard
+  // walks its steps by this same rule (prompts.mjs).
+  const skipNotes = (list: readonly ProjectWizardStep<D>[], at: number, delta: number): number => {
+    let position = at;
+    while (position >= 0 && position < list.length && list[position]?.kind === "note") position += delta;
+    return Math.max(0, Math.min(position, Math.max(0, list.length - 1)));
+  };
   while (index < steps.length) {
     const step = steps[index];
     const answer = await host.ask({
@@ -90,7 +113,7 @@ export async function runProjectWizard<D, R = unknown>(
     if (answer === "back") {
       // The first step has nowhere to go back to; the host hides its Back
       // button, and a stray Back is ignored rather than cancelling.
-      if (index > 0) index -= 1;
+      if (index > 0) index = skipNotes(steps, index - 1, -1);
       continue;
     }
     if (step.apply) {
@@ -117,10 +140,16 @@ export async function runProjectWizard<D, R = unknown>(
       step.write?.(draft, answer.value);
     }
     steps = stepsFor(draft);
-    // The answer may have removed the steps that followed (a deselected
-    // agent); land on the step after the one just answered, by id.
+    // The answer may have removed the steps that followed (a deselected agent);
+    // land on the step after the one just answered, by id. The answered step
+    // itself can be the one that is gone — only a Remove gives birth to
+    // `switch-confirm`, and answering No there is what takes it away again — and
+    // not finding it means "it and everything after it are no longer questions",
+    // so the landing is where it just was (everything before it is unchanged),
+    // not the first question, which would ask the whole wizard over.
     const position = steps.findIndex((candidate) => candidate.id === step.id);
-    index = Math.min(position + 1, Math.max(0, steps.length - 1));
+    const landed = position === -1 ? index : Math.min(position + 1, Math.max(0, steps.length - 1));
+    index = skipNotes(steps, landed, 1);
   }
   return { applied: false, draft, result: null };
 }

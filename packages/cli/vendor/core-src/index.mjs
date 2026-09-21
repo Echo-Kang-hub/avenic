@@ -62,21 +62,18 @@ export { durableEnvironment } from "./runtime/environment.mjs";
 export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
 export { machineEnvironment, agentRuntimeEnvironment, effectiveAgentEnvironment, launchMethodQuestion, launchMethodReadiness, resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export {
-  PROJECTION_FILE,
-  apiAgents,
-  apiCredential,
-  apiEntries,
-  apiPrefill,
-  apiRelative,
-  apiTarget,
-  codexLaunchArguments,
-  codexWireApi,
-  providerIdFor,
-  readApiConfiguration,
-  readCodexProjectConfig,
-  removeApiConfiguration,
-  writeApiConfiguration,
-} from "./runtime/api-config.mjs";
+  ensureModelConfiguration,
+  legacyModelConfiguration,
+  modelConfigAgents,
+  modelConfigCandidate,
+  modelConfigPresence,
+  modelConfigRelative,
+  modelConfigTarget,
+  readAccountConfiguration,
+  readModelConfiguration,
+  removeModelConfiguration,
+} from "./runtime/model-config.mjs";
+export { LABELS, agentQuestion, authenticationValue, historyLabel, methodLabel, scopeLabel, scopedHomeValue, signInLabel } from "./labels.mjs";
 export { quoteShellLine, spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {
   captureCanonicalSession,
@@ -90,8 +87,8 @@ export {
   finishLaunch,
   importProjectSessions,
   joinLaunchGroup,
+  leftoverTargets,
   methodSwitches,
-  removalTargets,
   observeSharedNativeSessions,
   recoverSharedNativeSessions,
   releasePreviousMethod,
@@ -149,7 +146,7 @@ export {
   renderBriefing,
 } from "./runtime/projection.mjs";
 export { readTranscript, transcriptModel, transcriptSummary, transcriptTurns, turnPreview } from "./runtime/transcript.mjs";
-export { collectStatus } from "./status.mjs";
+export { agentCard, agentCardRows, collectStatus } from "./status.mjs";
 
 export { fail } from "./util/fail.mjs";
 export { isInside, removeEmptyDirectory } from "./util/fs.mjs";

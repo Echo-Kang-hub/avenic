@@ -7,16 +7,16 @@
 {brandSoft}└{/}  {muted}↑↓ move · space select · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
 {muted}│{/}  {muted}Claude Code{/}
 {brand}◆{/}  {strong}Claude Code authentication{/}
-{muted}│{/}  {muted}Account — use Claude Code's native account sign-in · API — use a provider/model/API configurati…{/}
+{muted}│{/}  {muted}Account — use the Agent's native account sign-in · API — use a provider/model/API configuration{/}
 {muted}│{/}
 {muted}│{/}    {muted}○{/}  Account
 {muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}API{/}
 {muted}│{/}
 {brandSoft}└{/}  {muted}↑↓ move · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
 {muted}│{/}  {muted}Claude Code{/}
-{brandSoft}◇{/}  {strong}Claude Code authentication{/}
-{muted}│{/}  {muted}API{/}
-{brand}◆{/}  {strong}Claude Code API configuration{/}
+{brandSoft}◇{/}  {strong}Claude Code{/}
+{muted}│{/}  {muted}Authentication {/}API (Project)
+{brand}◆{/}  {strong}Claude Code configuration scope{/}
 {muted}│{/}  {muted}Global — write ~/.claude/settings.json · Project — write .claude/settings.local.json{/}
 {muted}│{/}
 {muted}│{/}    {muted}○{/}  Global
@@ -24,14 +24,14 @@
 {muted}│{/}
 {brandSoft}└{/}  {muted}↑↓ move · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Select agents{/}
 {muted}│{/}  {muted}Claude Code{/}
-{brandSoft}◇{/}  {strong}Claude Code authentication{/}
-{muted}│{/}  {muted}API{/}
-{brandSoft}◇{/}  {strong}Claude Code API configuration{/}
-{muted}│{/}  {muted}Project{/}
-{brand}◆{/}  {strong}Claude Code provider{/}
-{muted}│{/}  {muted}the provider this endpoint belongs to — a label, shown back to you and stored with the keys Ave…{/}
+{brandSoft}◇{/}  {strong}Claude Code{/}
+{muted}│{/}  {muted}Authentication {/}API (Project)
+{muted}│{/}  {muted}Config Source  {/}.claude/settings.local.json
+{brand}◆{/}  {strong}Claude Code sessions{/}
+{muted}│{/}  {muted}Global — every project shares one record · Project — this project's own, under .agents/sessions{/}
 {muted}│{/}
-{muted}│{/}  {brandStrong}▸{/} {brand}▏{/}
+{muted}│{/}    {muted}○{/}  Global
+{muted}│{/}  {brandStrong}▸{/} {brand}◉{/}  {brandBold}Project{/}
 {muted}│{/}
-{brandSoft}└{/}  {muted}type · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Claude Code provider{/}
+{brandSoft}└{/}  {muted}↑↓ move · enter confirm · shift+tab back · esc cancel{/}{repaint}{brandSoft}◇{/}  {strong}Claude Code sessions{/}
 {error}✖{/}  {muted}cancel{/}

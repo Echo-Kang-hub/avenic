@@ -4,8 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { writeApiConfiguration } from "../packages/core/src/index.mjs";
 import { withClaudeProject, removeTree } from "./helpers/session-fixture.mjs";
+import { fillApiConfiguration } from "./helpers/api-fixture.mjs";
 
 // A launch reads the credentials a developer's shell exports, and an agent needs
 // them — but nothing Avenic writes down does. The unit tests pin the narrowing
@@ -301,17 +301,16 @@ test("an API configuration's credential reaches only the files the project keeps
         assert.equal(initialized.status, 0, initialized.stderr);
       }
 
-      // The four answers the API half of the wizard collects, written where the
-      // wizard writes them. Claude's own project configuration file carries the
-      // credential; the ledger beside it makes the write reversible and keeps a
-      // hash rather than the value. Codex has no project file of its own, so its
-      // project answer is Avenic's record, and its "credential" is the *name* of
-      // an environment variable — a name is not a secret, which is exactly why
-      // that is the field Codex takes.
+      // The user fills the files Avenic prepared — their own key, their own
+      // hand or their own tool. Claude's own project configuration carries the
+      // credential; Codex's carries the *name* of the environment variable that
+      // holds its key, which is what a Codex configuration takes and is why the
+      // name is not a secret. Neither file is Avenic's to write, so the only
+      // thing Avenic can do with the credential is fail to copy it anywhere.
       const key = SECRETS.ANTHROPIC_AUTH_TOKEN;
       const fields = { provider: "Fixture", baseUrl: "https://fixture.invalid/v1", model: "fixture-main" };
-      await writeApiConfiguration(projectRoot, "claude", "project", { ...fields, credential: key });
-      await writeApiConfiguration(projectRoot, "codex", "project", { ...fields, credential: "FIXTURE_CODEX_KEY" });
+      await fillApiConfiguration(projectRoot, "claude", "project", { ...fields, credential: key });
+      await fillApiConfiguration(projectRoot, "codex", "project", { ...fields, credential: "FIXTURE_CODEX_KEY" });
 
       // A launch reads the configuration rather than carrying one: the key is
       // already in the agent's process environment, which is where it belongs.
@@ -327,7 +326,7 @@ test("an API configuration's credential reaches only the files the project keeps
       assert.match(status.stdout, /Agent\s+CLI\s+Auth\s+Sessions\s+History\s+Sync/);
       // The page names the file the launch reads; the machine-readable form
       // says whether a credential is in it — as a boolean, never a value.
-      assert.match(status.stdout, /Config source \.claude\/settings\.local\.json/);
+      assert.match(status.stdout, /Claude Code: \.claude\/settings\.local\.json, Provider fixture\.invalid, Model/);
       const json = run("status --json", ["status", "--json"]);
       assert.equal(json.status, 0, json.stderr);
       const reported = JSON.parse(json.stdout).agents.find((agent) => agent.id === "claude").auth.configuration;
@@ -336,41 +335,38 @@ test("an API configuration's credential reaches only the files the project keeps
 
       await settleWatches(auditRoot);
       const { leaks } = await scanForMarkers([projectRoot, home, root, auditRoot]);
-      const allowed = [
-        path.join(projectRoot, ".claude", "settings.local.json"),
-        // A write is staged before it is put in place, so the staged copy may
-        // hold a credential too: the directory is gitignored as a whole rather
-        // than pretending a key-bearing backup cannot exist.
-        `${path.join(projectRoot, ".agents", "tmp")}${path.sep}`,
-        // Avenic's own records: the ledger keeps a hash, and Codex's record
-        // keeps the variable's name. Neither is expected to hold the value —
-        // they are listed so a leak into them is reported as itself instead of
-        // as an unexplained file.
-        path.join(projectRoot, ".agents", "projection.json"),
-        path.join(projectRoot, ".agents", "api", "codex.json"),
-      ];
-      const tolerated = (file) => allowed.some((entry) => file === entry || file.startsWith(entry));
+      // One file may hold it: the one the user filled in. Everything else — the
+      // project's own `.agents` tree, the launch state in TEMP, the machine
+      // state dir, the agent's home — is a leak, and the ledger is the one to
+      // watch, because a record of what Avenic wrote is the natural place for a
+      // copy of it to end up by accident.
       assert.deepEqual(
-        leakedPaths(leaks.filter(({ file }) => !tolerated(file))),
+        leakedPaths(leaks.filter(({ file }) => file !== path.join(projectRoot, ".claude", "settings.local.json"))),
         [],
-        "a credential written by an API configuration reached a file outside the protected set",
+        "a credential the user wrote into their own configuration reached a file outside it",
       );
-      // ...and the protected file must really hold it, or the assertion above
-      // would pass on a run that never stored the credential at all.
+      // ...and the file the user filled in must really hold it, or the
+      // assertion above would pass on a run that never had a credential at all.
       assert.ok(leaks.some(({ file }) => file === path.join(projectRoot, ".claude", "settings.local.json")),
         "the agent's own project configuration is where the credential lives");
-      assert.equal(leaks.some(({ file }) => file === path.join(projectRoot, ".agents", "projection.json")), false,
-        "the ledger records what Avenic wrote, never the secret it wrote");
+      assert.equal(leaks.some(({ file }) => file.startsWith(path.join(projectRoot, ".agents") + path.sep)), false,
+        "nothing under .agents holds a value Avenic never wrote and cannot write");
+      const ledger = path.join(projectRoot, ".agents", "local", "ownership.json");
+      assert.equal(existsSync(ledger), true, "the ledger exists — the leak check above is about a real file");
+      assert.equal((await readFile(ledger, "utf8")).includes(key), false, "the ledger records a path and a hash, never a value");
 
       const ignore = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
-      for (const rule of [".claude/settings.local.json", ".agents/api/", ".agents/projection.json", ".agents/tmp/"]) {
+      for (const rule of [".claude/settings.local.json", ".agents/tmp/", ".agents/local/"]) {
         assert.match(ignore, new RegExp(`^${rule.replace(/\./g, "\\.")}$`, "m"), `${rule} is Avenic's own state and must never be committed`);
       }
       if (process.platform !== "win32") {
         // chmod is meaningless on Windows, where the user profile's ACL is what
-        // protects a file; POSIX has to carry the restriction itself.
-        for (const file of [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".agents", "api", "codex.json")]) {
-          assert.equal((await stat(file)).mode & 0o777, 0o600, `${file} holds a provider answer and must not be world readable`);
+        // protects a file; POSIX has to carry the restriction itself. Avenic
+        // creates a configuration file owner-only and writing into it does not
+        // widen it, so the file the user filled in keeps the mode it was made
+        // with — which is the whole reason it is created that way.
+        for (const file of [path.join(projectRoot, ".claude", "settings.local.json"), path.join(projectRoot, ".agents", "local", "codex", "config.toml")]) {
+          assert.equal((await stat(file)).mode & 0o777, 0o600, `${file} is created owner-only and must not be world readable`);
         }
       }
     });

@@ -9,6 +9,7 @@ import { continueSession } from "../services/continue.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { importSkillsFlow, type ImportUi } from "../ui/skill-import.ts";
 import type { ActivityLog } from "../ui/activity.ts";
+import { reportDashboardFailure, type FailureUi } from "../views/dashboard-failure.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
 
@@ -26,6 +27,8 @@ export interface DashboardDeps {
   queue: MutationQueue;
   refresh: () => void;
   activity: ActivityLog;
+  /** 面板打不开时用户读到的那句话与那两个动作（extension.ts 接的线）。 */
+  failure: FailureUi;
 }
 
 export function registerDashboardCommands(deps: DashboardDeps): void {
@@ -33,16 +36,21 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   const panel = (section?: DashboardSection) => DashboardPanel.show(context, { root: deps.root, dispatch: (action) => void handle(action) }, () => activity.rows(), section);
   const register = (id: string, fn: () => void) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
+  // 打开面板的每一条路都走这里。失败时用户拿到的必须是 Avenic 自己的句子和两个动作：
+  // 面板建不出来（或 reveal 被拒）时宿主抛出的内部消息对用户没有任何可做的（P0-A）。
+  const openPanel = (section?: DashboardSection): void => {
+    try {
+      panel(section);
+      activity.record("Dashboard opened");
+    } catch (error) {
+      void reportDashboardFailure(error, deps.failure);
+    }
+  };
+
   // 两个入口进的是同一块面板，只是落点不同：「Avenic」从概览开始，「Sessions」直接
   // 停在会话分区。命令名各自写全（不走前缀模板），因为这是两个不同的命名空间。
-  register("avenic.dashboard.open", () => {
-    panel();
-    activity.record("Dashboard opened");
-  });
-  register("avenic.sessions.open", () => {
-    panel("sessions");
-    activity.record("Dashboard opened");
-  });
+  register("avenic.dashboard.open", () => openPanel());
+  register("avenic.sessions.open", () => openPanel("sessions"));
   // 刷新由 deps.refresh 统一做（它清缓存、刷每个可见视图，面板也在这条链上）。
 
   const projectRoot = async (): Promise<string | null> => {
@@ -112,7 +120,8 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
           return;
         }
         case "viewSession":
-          await panel().open(action.id);
+          openPanel();
+          DashboardPanel.current?.open(action.id);
           return;
         case "setActive": {
           if (root === null) return;

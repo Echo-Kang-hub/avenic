@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import {
+  agentCardRows,
   agentLabel,
   listCanonicalSessionRecords,
   readCanonicalSession,
@@ -27,8 +28,9 @@ import { AGENT_IDS, type ActivityRow, type AgentCard, type AgentId, type BadgeTo
 // 两件事在这里被刻意**不**做：
 //   1. 不读事件日志。会话标题在导入时就已经由 core 按「原生 summary → 首条用户发言
 //      → 短 id」定下来了，概览页再解析一遍就是为画 5 行字打开几十兆。
-//   2. 不替 agent 回答它自己管的事。Account 模式的模型、OpenCode 的 provider 都不在
-//      core 的解答里，于是面板上就没有那一格 —— 空着好过编一个。
+//   2. 不替 agent 回答它自己管的事。OpenCode 的 provider 不在 core 的解答里，于是
+//      面板上就没有那一格 —— 空着好过编一个；Account 模式的模型来自 agent 自己的
+//      配置文件（core 读了它），不是插件为它猜的。
 
 // 会话数超过这个数就不再逐条列出：概览是「最近发生了什么」，完整列表在 Sessions 页。
 const LIST_LIMIT = 5;
@@ -61,78 +63,46 @@ export function relativeTime(iso: string | null | undefined, now = Date.now()): 
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-// 卡片上半部分：这个 agent 的认证答案。方法与作用域必须一起说 —— 说「项目认证」
-// 而不说那份状态在哪儿，等于让人去找一个没写出来的目录。
-function authFields(row: StatusAgent): FieldRow[] {
-  if (row.runtime === "native") {
-    return [{
-      label: "Authentication",
-      kind: "badge",
-      value: "Native (OpenCode UI)",
-      tone: "purple",
-      icon: "key",
-    }];
-  }
-  const auth = row.auth;
-  if (auth === null) {
-    // 没有方法不是「未初始化」的一种说法，而是这一题还没回答 —— 启动时会问。
-    return [{ label: "Authentication", kind: "badge", value: "Not chosen", tone: "muted", icon: "key" }];
-  }
-  const scope = SESSION_SCOPE_LABEL[auth.scope] ?? auth.scope;
-  const fields: FieldRow[] = [{
-    label: "Authentication",
-    kind: "badge",
-    value: `${auth.method === "api" ? "API" : "Account"} (${scope})`,
-    tone: auth.method === "api" ? "muted" : "blue",
-    icon: "account",
-  }];
-  if (auth.method === "account") {
-    const status = auth.status === "signed-in" ? "Signed in" : auth.status === "not-signed-in" ? "Not signed in" : "Unknown";
-    fields.push({ label: "Account Status", kind: "status", value: status, tone: auth.status === "signed-in" ? "green" : "muted", icon: "account" });
-    // 参考图里这一格叫 Account Scope，值把作用域和承载它的目录一起写出来：
-    // Project (.agents/local/claude)。只写目录，读的人还得回头找它属于谁；只写作
-    // 用域，那一行和上面的认证徽章就重复了。home 未知时仍然给出作用域。
-    if (auth.home !== null) fields.push({ label: "Account Scope", kind: "value", value: `${scope} (${auth.home})`, tone: "muted", icon: "folder" });
-    return fields;
-  }
-  // API：说清楚哪个文件承载配置、选了哪个 provider / model。凭据本身从不进入载荷 ——
-  // core 只报「设了没有」，面板连那个布尔值都不显示。
-  // owned 和 present 是两件事：账本记得写过（owned），文件里现在还有（present）。
-  // 只有 present 时 provider/model 才是现在生效的配置；被用户在 Avenic 之外删掉或
-  // 改掉之后，Config Source 那一格自己说出这件事，而不是继续展示旧值。
-  const configuration = auth.configuration;
-  const present = configuration?.present === true;
-  const source = configuration === null ? "—"
-    : present || !configuration.owned ? configuration.relative
-      : `${configuration.relative} (no longer holds Avenic's configuration)`;
-  fields.push({ label: "Config Source", kind: "value", value: source, tone: "muted", icon: "file-code" });
-  if (present && configuration !== null) {
-    if (configuration.provider) {
-      fields.push({ label: "Provider", kind: "value", value: configuration.provider, tone: "muted", icon: "package", href: configuration.relative });
-    }
-    if (configuration.model) {
-      // 可选项就是文件里那一个值：面板不提供一份自己维护的模型表，改动走 Change 向导。
-      fields.push({ label: "Model", kind: "select", value: configuration.model, tone: "muted", icon: "symbol-structure", options: [configuration.model] });
-    }
-    // 角色键（Opus/Sonnet/Haiku/子代理）与 effort 是这份文件里真正写着的那几条：
-    // 没写的角色不会得到一行，因此这些行可以说「这就是现在生效的配置」。Claude 的
-    // 角色键与 Codex 的 reasoning 是各自 agent 的形状，这里只是把它们排成行。
-    const settings = configuration.settings;
-    for (const [label, value] of [
-      ["Opus Model", settings?.opus],
-      ["Sonnet Model", settings?.sonnet],
-      ["Haiku Model", settings?.haiku],
-      ["Sub Agent Model", settings?.subagent],
-    ] as const) {
-      if (value) fields.push({ label, kind: "value", value, tone: "muted", icon: "symbol-structure" });
-    }
-    // effort 的原值是小写的枚举（medium/max/…），参考图里写成首字母大写；值本身
-    // 不动，只有这一行的写法跟着图走。
-    for (const [label, value] of [["Default Effort", settings?.effort], ["Reasoning Effort", settings?.reasoning]] as const) {
-      if (value) fields.push({ label, kind: "value", value: value.charAt(0).toUpperCase() + value.slice(1), tone: "muted", icon: "dashboard" });
-    }
-  }
-  return fields;
+// 卡片上半部分：这个 agent 的认证答案。**行的名字与值不在这里** —— 它们来自 core
+// 的 `agentCardRows`，也就是 `avenic <agent>` 那张卡片印的同一组行：一行该不该出现、
+// 值是什么、用哪个词，全部由 core 决定，两个宿主因此不可能各说各的。这里只决定画法
+// （kind/tone/icon），按 core 给出的 `key` 排 —— 按 label 排就等于让插件依赖一句
+// 会变的文案。
+const FIELD_STYLE: Record<string, Pick<FieldRow, "kind" | "tone" | "icon">> = {
+  authentication: { kind: "badge", tone: "blue", icon: "account" },
+  accountStatus: { kind: "status", tone: "muted", icon: "account" },
+  accountScope: { kind: "value", tone: "muted", icon: "folder" },
+  configSource: { kind: "value", tone: "muted", icon: "file-code" },
+  provider: { kind: "value", tone: "muted", icon: "package" },
+  // 可选项就是文件里那一个值：面板不提供一份自己维护的模型表，改动走 Change 向导。
+  model: { kind: "select", tone: "muted", icon: "symbol-structure" },
+  opusModel: { kind: "value", tone: "muted", icon: "symbol-structure" },
+  sonnetModel: { kind: "value", tone: "muted", icon: "symbol-structure" },
+  haikuModel: { kind: "value", tone: "muted", icon: "symbol-structure" },
+  subAgentModel: { kind: "value", tone: "muted", icon: "symbol-structure" },
+  effort: { kind: "value", tone: "muted", icon: "dashboard" },
+  reasoningEffort: { kind: "value", tone: "muted", icon: "dashboard" },
+};
+// 会话与历史在卡片上是两个角标，不是这一列里的行。
+const CHIP_ROWS = new Set(["sessions", "history"]);
+
+function authFields(row: StatusAgent, historyMode: StatusModel["project"]["historyMode"]): FieldRow[] {
+  return agentCardRows(row, historyMode)
+    .filter((row_) => !CHIP_ROWS.has(row_.key))
+    .map((row_) => {
+      const field: FieldRow = { label: row_.label, value: row_.value, ...(FIELD_STYLE[row_.key] ?? { kind: "value", tone: "muted", icon: "file-code" }) };
+      // 徽章的颜色说的是哪一半答案：Account 是蓝色，API 是灰，自管的 agent 是紫色；
+      // 图标同理 —— 自管认证和还没回答用的都是钥匙（那一格不是 Avenic 的答案）。
+      if (row_.key === "authentication") {
+        field.tone = row.runtime === "native" ? "purple" : row.auth?.method === "account" ? "blue" : "muted";
+        field.icon = row.runtime === "native" || !row.auth ? "key" : "account";
+      }
+      if (row_.key === "accountStatus") field.tone = row.auth?.status === "signed-in" ? "green" : "muted";
+      // 端点那一位点下去打开的是承载它的文件 —— 面板不链接到 provider 自己。
+      if (row_.key === "provider" && row.auth?.configuration) field.href = row.auth.configuration.relative;
+      if (row_.key === "model") field.options = [row_.value];
+      return field;
+    });
 }
 
 function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["historyMode"]): AgentCard {
@@ -152,7 +122,7 @@ function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["histor
     detail: id === "opencode"
       ? "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them."
       : null,
-    fields: authFields(row),
+    fields: authFields(row, historyMode),
     sessions: { label: scope, count: row.history.sessions, tone: row.sessions === "project" ? "brand" : "blue" },
     // 共享与隔离是两种不同的项目：颜色是这句话在面板上的那一半。
     history: { label: historyMode === "shared" ? "Shared" : "Isolated", tone: historyMode === "shared" ? "brand" : "muted" },

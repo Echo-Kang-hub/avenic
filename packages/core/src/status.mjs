@@ -14,9 +14,11 @@ import process from "node:process";
 import { countCanonicalEvents, listCanonicalSessionRecords } from "./runtime/canonical-sessions.mjs";
 import { getSessionAdapter } from "./runtime/adapters/index.mjs";
 import { AGENTS, classifyAgentExecutable, getAgent } from "./runtime/agents.mjs";
-import { accountHome, accountSignInStatus } from "./runtime/agent-runtime.mjs";
+import { accountSignInStatus } from "./runtime/agent-runtime.mjs";
+import { accountHome } from "./runtime/agent-home.mjs";
+import { LABELS, authenticationValue, historyLabel, scopeLabel, scopedHomeValue, signInLabel } from "./labels.mjs";
 import { environmentHome } from "./runtime/environment.mjs";
-import { readApiConfiguration } from "./runtime/api-config.mjs";
+import { legacyModelConfiguration, modelConfigCandidate, readAccountConfiguration, readModelConfiguration } from "./runtime/model-config.mjs";
 import {
   agentSessionsRoot,
   effectiveAgentConfig,
@@ -136,6 +138,82 @@ function tildify(directory, environment) {
   return directory.startsWith(machine + path.sep) ? `~${directory.slice(machine.length)}` : directory;
 }
 
+/**
+ * What one agent's authentication answer is, as facts. The two methods answer
+ * with different facts, and a host shows the one the method owns: an Account
+ * says where its sign-in lives and whether it has happened; an API
+ * configuration says which file carries it and what it selects — never the
+ * credential itself, only whether one is set.
+ *
+ * Split out because it is asked twice: by the status page, and by `init`/`change`
+ * reporting the configuration it has just written. The two must not be able to
+ * describe the same project differently.
+ */
+async function authFacts(projectRoot, agentId, configured, environment) {
+  if (!configured?.authMethod) return null;
+  const scope = configured.authMethod === "account" ? configured.accountScope : configured.configScope;
+  // The home is the Account's: where the agent's own sign-in lives. It is
+  // reported for *both* scopes — the project's relative to the root, the
+  // machine's own with `~` — because that is the directory the sign-in state
+  // below was just read from, and a `null` there described no file at all.
+  // An API configuration names its file instead, so it has no home here.
+  const home = configured.authMethod === "account" ? accountHome(projectRoot, agentId, scope, environment) : null;
+  // An Account answer is checked against the file an API answer for this
+  // project would use: a file that is there while the project runs on its
+  // account is not "wrong", it is simply not in effect, and saying which of
+  // the two it is beats leaving the user to guess why their edits do nothing.
+  const detected = configured.authMethod === "account" ? modelConfigCandidate(projectRoot, agentId, { environment }) : null;
+  // 这一份与「现在生效的是哪份」无关，只与「换过地方的那份还在不在」有关 ——
+  // Codex 的项目配置换过一次住处，旧的那份属于用户，页面上要能看见。
+  const legacy = configured.authMethod === "api" ? legacyModelConfiguration(projectRoot, agentId) : null;
+  return {
+    method: configured.authMethod,
+    scope,
+    source: configured.source,
+    // Forward-slashed either way: this value is shown to people and to other
+    // hosts, and `~\\.claude` on Windows reads like a different directory next
+    // to the `~/.claude` in the docs and in every command hint.
+    home: home === null ? null
+      : (scope === "project" ? path.relative(projectRoot, home) : tildify(home, environment)).split(path.sep).join("/"),
+    status: configured.authMethod === "account" ? await accountSignInStatus(agentId, home) : null,
+    // What the agent's *own* home says while it runs on its account: read
+    // from the agent's file, so a model the agent really uses is reported and
+    // nothing is invented for one it does not name.
+    account: configured.authMethod === "account" ? await readAccountConfiguration(projectRoot, agentId, scope, { environment }) : null,
+    // What the file an API answer points at says — read from the file itself,
+    // never from Avenic's records: a provider or a model the user filled in is
+    // the configuration in effect whether or not Avenic put the file there.
+    configuration: configured.authMethod === "api" ? await readModelConfiguration(projectRoot, agentId, scope, { environment }) : null,
+    // Present but not in effect: the project runs on its account while the file
+    // an API answer would use is sitting there with content in it.
+    detected: detected?.exists ? detected : null,
+    // 上一个版本写的那份配置还在不在。升级之后它是用户唯一还能找到旧值的地方，
+    // 所以它是这个项目的事实之一，而不是某个渲染器自己补的一句话。
+    legacy: legacy?.exists ? legacy : null,
+  };
+}
+
+/**
+ * One agent's card, read straight from the project — the same rows `avenic
+ * status` shows and the dashboard draws, for a caller that has one agent to
+ * describe rather than a whole project (a command reporting what it just
+ * wrote). Nothing here reads the network, the Hub or another agent.
+ */
+export async function agentCard(projectRoot, agentId, options = {}) {
+  const environment = options.environment ?? process.env;
+  const agent = getAgent(agentId);
+  const configured = options.config ?? effectiveAgentConfig(options.state ?? await loadRuntime(projectRoot), agentId);
+  return {
+    id: agentId,
+    displayName: agent.displayName,
+    // OpenCode answers for its own authentication and provider; the one thing
+    // Avenic records for it is where its sessions live.
+    runtime: agent.managesOwnAuth ? "native" : null,
+    auth: await authFacts(projectRoot, agentId, configured, environment),
+    sessions: configured?.sessionScope ?? null,
+  };
+}
+
 async function agentOverview(projectRoot, agentId, context) {
   const agent = getAgent(agentId);
   // The scope this agent actually runs under, local override included: an
@@ -149,34 +227,7 @@ async function agentOverview(projectRoot, agentId, context) {
   const launchGroup = await launchGroupState(agentId, projectRoot);
   const projection = context.projections[agentId] ?? null;
   const projectionMissing = await projectionSessionMissing(projectRoot, agentId, projection, context);
-  // The two methods answer with different facts, and a host shows the one the
-  // method owns: an Account says where its sign-in lives and whether it has
-  // happened; an API configuration says which file carries it and what it
-  // selects — never the credential itself, only whether one is set.
-  let auth = null;
-  if (configured?.authMethod) {
-    const scope = configured.authMethod === "account" ? configured.accountScope : configured.configScope;
-    // The home is the Account's: where the agent's own sign-in lives. It is
-    // reported for *both* scopes — the project's relative to the root, the
-    // machine's own with `~` — because that is the directory the sign-in state
-    // below was just read from, and a `null` there described no file at all.
-    // An API configuration names its file instead, so it has no home here.
-    const home = configured.authMethod === "account" ? accountHome(projectRoot, agentId, scope, context.environment) : null;
-    auth = {
-      method: configured.authMethod,
-      scope,
-      source: configured.source,
-      // Forward-slashed either way: this value is shown to people and to other
-      // hosts, and `~\\.claude` on Windows reads like a different directory next
-      // to the `~/.claude` in the docs and in every command hint.
-      home: home === null ? null
-        : (scope === "project" ? path.relative(projectRoot, home) : tildify(home, context.environment)).split(path.sep).join("/"),
-      status: configured.authMethod === "account" ? await accountSignInStatus(agentId, home) : null,
-      configuration: configured.authMethod === "api"
-        ? await readApiConfiguration(projectRoot, agentId, scope, { environment: context.environment })
-        : null,
-    };
-  }
+  const auth = await authFacts(projectRoot, agentId, configured, context.environment);
   return {
     id: agentId,
     displayName: agent.displayName,
@@ -278,11 +329,85 @@ async function hubOverview(projectRoot, environment) {
 }
 
 /**
+ * One agent's card, as rows: the same rows, in the same order, under the same
+ * words, whether they are read in a terminal, on the extension's Configure page
+ * or on the dashboard card. The vocabulary is labels.mjs, which is the
+ * dashboard's, so a host that wants a different word for one of these has to
+ * change it for every host at once.
+ *
+ * `key` is what a host styles by — an icon, a colour, a link. A host must never
+ * match on `label`: the label is the user-visible word, and the word is allowed
+ * to change without a host breaking.
+ *
+ * Only facts that exist become rows. A provider, a model or a role key the file
+ * does not carry is `null` and gets no row — a row reading "Provider —" would
+ * be a claim about a configuration nobody wrote. For the same reason the
+ * Account's Model row comes from the agent's own configuration file, which is
+ * what actually runs, and never from a guess Avenic made for it.
+ */
+/**
+ * 那份文件现在的处境，接在 Config Source 的路径后面。文件不在、读不出来、在但
+ * 还空着，都不是「一份配置」，而这一行是页面上唯一说得出这件事的地方 ——
+ * provider 和 model 两行在文件没配好的时候根本不出现，于是「为什么没有它们」
+ * 只有这里能回答。文件配好了就不加任何字。
+ */
+function configurationState(configuration) {
+  if (!configuration.exists) return configuration.owned ? " (no longer there)" : " (missing)";
+  if (!configuration.valid) return " (cannot be read)";
+  return configuration.configured ? "" : " (nothing in it yet)";
+}
+
+export function agentCardRows(agent, historyMode) {
+  const rows = [];
+  const push = (key, label, value) => {
+    if (value !== null && value !== undefined && value !== "") rows.push({ key, label, value });
+  };
+  if (agent.runtime === "native") {
+    push("authentication", LABELS.authentication, LABELS.native);
+  } else if (!agent.auth) {
+    // 没有方法不是「未初始化」的一种说法，而是这一题还没回答 —— 启动时会问。
+    push("authentication", LABELS.authentication, LABELS.notChosen);
+  } else {
+    const auth = agent.auth;
+    push("authentication", LABELS.authentication, authenticationValue({ authMethod: auth.method, authScope: auth.scope }));
+    if (auth.method === "account") {
+      push("accountStatus", LABELS.accountStatus, signInLabel(auth.status));
+      // 作用域和承载它的目录一起写：只写目录，读的人还得回头找它属于谁。
+      if (auth.home !== null) push("accountScope", LABELS.accountScope, scopedHomeValue(auth.scope, auth.home));
+      // 这一行说的是这个账号真正在读的配置，因此它来自 agent 自己的家目录。
+      push("model", LABELS.model, auth.account?.model ?? null);
+    } else {
+      const configuration = auth.configuration ?? {};
+      push("configSource", LABELS.configSource, configuration.relative ? `${configuration.relative}${configurationState(configuration)}` : null);
+      // 配置好了才谈 provider 和 model：文件在、里面还是空的，等于这一行什么都
+      // 没配 —— 面板上要出现一份没人写过的配置，比留白更坏。
+      if (configuration.configured) {
+        push("provider", LABELS.provider, configuration.provider ?? null);
+        push("model", LABELS.model, configuration.model ?? null);
+        const settings = configuration.settings ?? {};
+        push("opusModel", LABELS.opusModel, settings.opus ?? null);
+        push("sonnetModel", LABELS.sonnetModel, settings.sonnet ?? null);
+        push("haikuModel", LABELS.haikuModel, settings.haiku ?? null);
+        push("subAgentModel", LABELS.subAgentModel, settings.subagent ?? null);
+        // effort 存的是小写枚举（medium/max/…）：值本身不动，只有这一行的写法
+        // 跟着面板走，两个宿主才不会把同一个值印成两种。
+        push("effort", LABELS.defaultEffort, titled(settings.effort));
+        push("reasoningEffort", LABELS.reasoningEffort, titled(settings.reasoning));
+      }
+    }
+  }
+  push("sessions", LABELS.sessions, agent.sessions ? scopeLabel(agent.sessions) : null);
+  push("history", LABELS.history, historyMode ? historyLabel(historyMode) : null);
+  return rows;
+}
+
+const titled = (value) => (typeof value === "string" && value !== "" ? value.charAt(0).toUpperCase() + value.slice(1) : null);
+
+/**
  * The status of one project: its configuration, its shared history, one row per
  * agent, and the state of the skills and the Hub. Read-only and never
  * networked, so it is safe to call from a file watch or a render pass.
- */
-export async function collectStatus(projectRoot, options = {}) {
+ */export async function collectStatus(projectRoot, options = {}) {
   const environment = options.environment ?? process.env;
   const root = path.resolve(projectRoot);
   const state = await loadRuntime(root);

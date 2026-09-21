@@ -1,12 +1,12 @@
 # Avenic
 
-一个命令统一管理编码 Agent（Claude Code、Codex、OpenCode）的运行时配置、会话历史与 Skills，支持 Windows、macOS 和 Linux。
+一个命令统一管理编码 Agent（Claude Code、Codex、OpenCode）在这个项目里的配置、会话历史与 Skills，支持 Windows、macOS 和 Linux。
 
 ```bash
 npm install -g avenic@latest
 
 cd <你的项目>
-avenic init          # 交互式配置：Agent、认证、会话存储、历史模式
+avenic init          # 交互式配置：Agent、Authentication、Sessions、History
 avenic claude        # 进入 Claude Code；codex / opencode 同理
 avenic sessions      # 查看与管理共享会话
 avenic change        # 随时改配置

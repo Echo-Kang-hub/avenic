@@ -2,7 +2,7 @@
 // project itself: the extension reads the same object and draws it as a tree,
 // and `--json` prints it unchanged, so all three hosts answer the same
 // question with the same answer.
-import { collectStatus, shortTimestamp } from "#core";
+import { LABELS, authenticationValue, collectStatus, methodLabel, scopedHomeValue, shortTimestamp, signInLabel } from "#core";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
 import { collectLines, field, note, palette, section, table } from "./prompts.mjs";
 import { compactBrand } from "./brand.mjs";
@@ -54,62 +54,72 @@ function hubSummary(hub) {
   return `${hub.name} · ${hub.cache} · ${detail}`;
 }
 
-const METHOD_LABELS = { account: "Account", api: "API" };
-
-// Authentication and session storage are two answers, so they are two columns:
-// the method with the scope it owns, and where this agent's sessions live. The
-// facts a scope alone cannot give — the configuration file, the account home,
+// Authentication and Sessions are two answers, so they are two columns: the
+// answer with the scope it owns, and where this agent's sessions live. The
+// facts a scope alone cannot give — the configuration file, the account scope,
 // whether the sign-in has happened — belong to the lines below, not here.
 function agentRow(agent) {
   const auth = agent.auth;
   return [
     agent.displayName,
     agent.available ? "found" : "not found",
-    // 没有方法不等于没有初始化：一个项目可以只回答案了「会话存哪儿」，把认证留到
-    // 启动时再问（合法状态）。那一格该说的是「还没选」，不是「未初始化」。
-    auth ? `${METHOD_LABELS[auth.method]} · ${auth.scope === "project" ? "Project" : "Global"}` : (agent.runtime ?? (agent.initialized ? "not chosen" : "not initialized")),
+    // 没有方法不等于没有初始化：一个项目可以只回答了「会话存哪儿」，把认证留到
+    // 启动时再问（合法状态）。那一格该说的是「Not chosen」，不是「未初始化」。
+    // 自管认证的 agent 那一格说的是面板上那句话：`native` 是内部的值，这一页
+    // 是给人看的，同一个概念在四个宿主上必须是同一个词。
+    auth ? authenticationValue({ authMethod: auth.method, authScope: auth.scope })
+      : (agent.runtime ? methodLabel(agent.runtime) : (agent.initialized ? LABELS.notChosen : LABELS.notConfigured)),
     agent.initialized ? agent.sessions : "—",
     String(agent.history.sessions),
     SYNC_LABELS[agent.history.sync] ?? agent.history.sync,
   ];
 }
 
-// What the method's own scope means on disk, said once per agent. An Account
-// points at a home the agent signs into itself; an API configuration points at
-// the file the launch reads and selects from — and says so as missing, with its
-// remedy, rather than as an error, because a project whose configuration is not
-// written yet still launches.
+// What the answer means on disk, said once per agent. An Account points at the
+// scope and home the agent signs into itself; an API configuration names the
+// file the launch reads and what that file selects — and says so as missing,
+// with its remedy, rather than as an error, because a project whose
+// configuration is not written yet still launches.
 function authNotes(agent, at) {
   const auth = agent.auth;
   if (!auth) return [];
   const name = agent.displayName;
   if (auth.method === "api") {
     const configuration = auth.configuration ?? {};
-    const file = configuration.relative ?? auth.scope;
-    if (!configuration.present) {
-      // 「没写过」和「写过、现在不在了」是两种处境，补救相同、事实不同：账本证明得了
-      // 前者没有、后者有过，就说哪一种。后半句要能活过 80 列终端的截断——被截掉的
-      // 补救命令等于没有。
-      if (configuration.owned) return [[`${name}: API configuration gone — run: avenic change`, { ...at, mark: "!" }]];
-      return [[`${name}: API configuration — ${file} holds no configuration Avenic wrote (run: avenic change)`, { ...at, mark: "!" }]];
-    }
-    const provider = configuration.provider ? `, Provider ${configuration.provider}` : "";
-    const model = configuration.model ? `, Model ${configuration.model}` : "";
-    const credential = configuration.credentialSet ? "" : ", credential not set — the launch reads it from your own environment";
-    return [[`${name}: Config source ${file}${provider}${model}${credential}`, at]];
+    const file = configuration.relative ?? "—";
+    // 「文件不在」「文件在但读不出来」「文件在、还没写」是三种处境：补救相同
+    // （avenic change），事实不同，就说哪一种。整行必须活在 80 列以内，而补救
+    // 排在事实后面 —— 所以事实要短到能把补救留在可见的那一段里：被截掉的补救
+    // 命令等于没有。
+    // 1.8.4 之前那份配置换了住处：新文件还没配好的时候要说它在哪儿，因为旧值只
+    // 在那一份里，而升级不该看起来像 provider 自己失效了。
+    const older = auth.legacy ? [[`${name}: ${auth.legacy.relative} still holds the earlier configuration`, { ...at, mark: "!" }]] : [];
+    if (!configuration.exists) return [[`${name}: ${file} is missing — run: avenic change`, { ...at, mark: "!" }], ...older];
+    if (!configuration.valid) return [[`${name}: ${file} cannot be read — run: avenic change`, { ...at, mark: "!" }], ...older];
+    if (!configuration.configured) return [[`${name}: fill in ${file} — nothing in it yet`, { ...at, mark: "!" }], ...older];
+    // 配置好了就只说文件里在的那两件事：这一页给的是面板同一批字段，而面板没有
+    // Credential 这一行 —— 凭据从用户自己的环境来，不是这个文件的事。
+    const provider = configuration.provider ? `, ${LABELS.provider} ${configuration.provider}` : "";
+    const model = configuration.model ? `, ${LABELS.model} ${configuration.model}` : "";
+    return [[`${name}: ${file}${provider}${model}`, at]];
   }
   const notes = [];
-  if (auth.home) notes.push([`${name}: Auth home ${auth.home}`, at]);
+  // 作用域和承载它的家目录一起写：只写目录，读的人还得回头找它属于谁。
+  if (auth.home !== null && auth.home !== undefined) notes.push([`${name}: ${LABELS.accountScope} ${scopedHomeValue(auth.scope, auth.home)}`, at]);
   if (auth.status === "signed-in") {
     // The positive answer is the one a reader most often wants, and it is the
     // only one the page can give without a remedy attached.
-    notes.push([`${name}: Auth status Signed in`, at]);
+    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)}`, at]);
   } else if (auth.status === "not-signed-in") {
-    notes.push([`${name}: Auth status Not signed in — run: avenic ${agent.id} to sign in`, { ...at, mark: "!" }]);
+    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)} — run: avenic ${agent.id} to sign in`, { ...at, mark: "!" }]);
   } else if (auth.status === "unknown") {
     // Naming the uncertainty is the honest answer: this platform can hold the
     // credential somewhere no file read can see, and a probe is not a status.
-    notes.push([`${name}: Auth status Unknown — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, at]);
+    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)} — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, at]);
+  }
+  // 文件在、却没生效：项目跑在账号上，而 API 那一份配置就摆在旁边。
+  if (auth.detected) {
+    notes.push([`${name}: ${LABELS.detectedButInactive} — ${auth.detected.relative} is present, and this project runs on an Account`, { ...at, mark: "!" }]);
   }
   return notes;
 }

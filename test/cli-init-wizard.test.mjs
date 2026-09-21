@@ -96,7 +96,7 @@ test("avenic init writes exactly what the wizard asked for", async () => {
     for (const title of [
       "Claude Code authentication", "Claude Code account scope", "Claude Code sessions",
       "Codex authentication", "Codex account scope", "Codex sessions",
-      "Session history",
+      "History",
     ]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
       keys(stdin, ENTER);
@@ -118,7 +118,7 @@ test("avenic init writes exactly what the wizard asked for", async () => {
     const settled = frame(stdout);
     assert.match(settled, /◇ {2}Configuration applied/);
     assert.match(settled, /◇ {2}Select agents\n│ {2}Claude Code, Codex/);
-    assert.match(settled, /◇ {2}Session history\n│ {2}Shared/);
+    assert.match(settled, /◇ {2}History\n│ {2}Shared/);
     assert.match(settled, /└ {2}Avenic project initialized/);
     assert.ok(existsSync(path.join(projectRoot, ".agents", "runtime.json")), "the project config is on disk");
   });
@@ -139,9 +139,27 @@ test("answered steps collapse to one rail line and only the active step is expan
     // Only one step is open, and its options are on screen; the others' are not.
     assert.equal(current.match(/◆/g).length, 1, `exactly one active step:\n${current}`);
     assert.equal(current.match(/◇/g).length, 1, `only the answered step is on the rail:\n${current}`);
-    assert.ok(!current.includes("Session history"), "a step that has not been asked yet is not on the rail");
+    assert.ok(!current.includes("History"), "a step that has not been asked yet is not on the rail");
     assert.ok(!current.includes("OpenCode"), "the previous step's option rows are gone");
     assert.ok(!current.includes("Shared — "), "an option's long description is not repeated as a summary");
+    keys(stdin, "\x1b"); // leave without writing
+    assert.equal(await promise, 0);
+  });
+});
+
+// 折叠块只有一行摘要时，那个标签正好占满它自己那一列：值和标签粘在一起，
+// 读起来就成了 "AuthenticationAPI (Project)"。值列从「这一块最长的标签 + 一个空格」
+// 起算，所以无论块里有几行，值和标签之间都分得开，几行的值也都从同一列开始。
+test("a collapsed block keeps its labels and values apart", async () => {
+  await withWizardProject(async ({ wizard }) => {
+    const { stdin, stdout, promise } = wizard("init");
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", ENTER);
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
+    keys(stdin, DOWN, ENTER); // API
+    await waitFor(() => /◆ {2}Claude Code configuration scope/.test(frame(stdout)), "the configuration scope");
+    // 这一刻 claude 那一块里只有认证这一行：最长标签就是它自己。
+    assert.match(frame(stdout), /◇ {2}Claude Code\n│ {2}Authentication API\n/, `标签和值必须分得开：\n${frame(stdout)}`);
     keys(stdin, "\x1b"); // leave without writing
     assert.equal(await promise, 0);
   });
@@ -158,7 +176,7 @@ test("Shift+Tab re-opens the previous step with its previous answer, and does no
     keys(stdin, " ", ENTER); // Claude Code
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
     keys(stdin, DOWN, ENTER); // API — the method, not a scope
-    await waitFor(() => /◆ {2}Claude Code API configuration/.test(frame(stdout)), "the API configuration the method asks for");
+    await waitFor(() => /◆ {2}Claude Code configuration scope/.test(frame(stdout)), "the configuration the method asks for");
 
     keys(stdin, BACK);
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the previous step re-opened");
@@ -194,7 +212,7 @@ test("modifying an answer and moving forward submits the new one", async () => {
     keys(stdin, DOWN, ENTER); // Project — a project-only account
     await waitFor(() => /◆ {2}Codex sessions/.test(frame(stdout)), "forward again");
     keys(stdin, ENTER); // Codex sessions: Project
-    keys(stdin, ENTER); // Session history: Shared
+    keys(stdin, ENTER); // History: Shared
     await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
     keys(stdin, ENTER);
     assert.equal(await promise, 0);
@@ -227,7 +245,7 @@ test("a deselected agent's answers stay in memory but are not submitted, and com
     keys(stdin, ENTER);
     await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "the steps that remain");
     keys(stdin, ENTER, ENTER, ENTER); // Claude Code's three answers
-    await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "history, with no Codex step in between");
+    await waitFor(() => /◆ {2}History/.test(frame(stdout)), "history, with no Codex step in between");
     assert.ok(!frame(stdout).includes("Codex authentication"), "a disabled agent is no longer asked about");
 
     // Back in, enable Codex again: its earlier answer is still there.
@@ -280,7 +298,7 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
     const interrupted = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(interrupted.stdout)), "the agent picker");
     keys(interrupted.stdin, " ", ENTER);
-    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "History"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(interrupted.stdout)), title);
       keys(interrupted.stdin, ENTER);
     }
@@ -293,7 +311,7 @@ test("a wizard that is cancelled leaves no half-written configuration", async ()
     const escapedAtEnd = wizard("init");
     await waitFor(() => /◆ {2}Select agents/.test(frame(escapedAtEnd.stdout)), "the agent picker");
     keys(escapedAtEnd.stdin, " ", ENTER);
-    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "Session history"]) {
+    for (const title of ["Claude Code authentication", "Claude Code account scope", "Claude Code sessions", "History"]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(escapedAtEnd.stdout)), title);
       keys(escapedAtEnd.stdin, ENTER);
     }
@@ -326,7 +344,7 @@ test("avenic change adds an agent and switches history mode from the wizard", as
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
       keys(stdin, ENTER); // the answers the project already has
     }
-    await waitFor(() => /◆ {2}Session history/.test(frame(stdout)), "the history mode");
+    await waitFor(() => /◆ {2}History/.test(frame(stdout)), "the history mode");
     keys(stdin, DOWN, ENTER); // Shared → Isolated
     await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
     keys(stdin, ENTER); // Yes
@@ -338,17 +356,21 @@ test("avenic change adds an agent and switches history mode from the wizard", as
     assert.equal(written.historyMode, "isolated");
     const settled = frame(stdout);
     assert.match(settled, /◇ {2}Configuration updated/);
-    assert.match(settled, /◇ {2}Session history\n│ {2}Isolated/, "the settled rail carries the new mode once");
+    assert.match(settled, /◇ {2}History\n│ {2}Isolated/, "the settled rail carries the new mode once");
   });
 });
 
 test("editing a project that already has an API configuration offers it back, and keeping it changes nothing", async () => {
   await withWizardProject(async ({ projectRoot, wizard }) => {
-    // The configuration is already there before the wizard opens, written the
-    // way the project would have written it.
-    const { initializeAgent, writeApiConfiguration } = await import("../packages/core/src/index.mjs");
-    await initializeAgent(projectRoot, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
-    await writeApiConfiguration(projectRoot, "claude", "project", {
+    // The configuration is already there before the wizard opens: the file
+    // Avenic prepared, and then the values the user put in it.
+    const { readModelConfiguration } = await import("../packages/core/src/index.mjs");
+    const { fillApiConfiguration } = await import("./helpers/api-fixture.mjs");
+    await runCli({
+      argumentsList: ["claude", "init", "--auth", "api", "--scope", "project", "--sessions", "project"],
+      projectRootOverride: projectRoot,
+    });
+    await fillApiConfiguration(projectRoot, "claude", "project", {
       provider: "Fixture Provider",
       baseUrl: "https://provider.fixture.invalid/v1",
       model: "fixture-model",
@@ -361,12 +383,13 @@ test("editing a project that already has an API configuration offers it back, an
     const { stdin, stdout, promise } = wizard("change");
     await waitFor(() => /◆ {2}Select enabled agents/.test(frame(stdout)), "the agent picker");
     keys(stdin, ENTER); // Keep the agents that are enabled
-    // Every API question opens on the answer the project already gave — the
-    // provider and the endpoint included. Enter takes each of them as it is.
+    // Every question opens on the answer the project already gave — the method
+    // and the file it reads included — and Enter takes each of them as it is.
+    // There is no provider, endpoint, model or credential to ask for: those are
+    // the user's, in a file Avenic never writes into.
     for (const title of [
-      "Claude Code authentication", "Claude Code API configuration",
-      "Claude Code provider", "Claude Code base URL", "Claude Code model",
-      "Claude Code API credential", "Claude Code sessions", "Session history",
+      "Claude Code authentication", "Claude Code configuration scope",
+      "Claude Code sessions", "History",
     ]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
       keys(stdin, ENTER);
@@ -376,13 +399,54 @@ test("editing a project that already has an API configuration offers it back, an
     assert.equal(await promise, 0);
 
     // Pressing Enter through an edit is not an answer that takes the
-    // configuration away: every value, the secret included, is still there.
+    // configuration away: every value, the secret included, is still there, and
+    // the wizard never asked for one of them.
     assert.equal(await readFile(file, "utf8"), before);
-    const { readApiConfiguration } = await import("../packages/core/src/index.mjs");
-    const read = await readApiConfiguration(projectRoot, "claude", "project");
+    const read = await readModelConfiguration(projectRoot, "claude", "project");
     assert.equal(read.owned, true);
-    assert.equal(read.provider, "Fixture Provider");
+    assert.equal(read.provider, "provider.fixture.invalid", "the provider is the endpoint's host, read from the file");
     assert.equal(read.model, "fixture-model");
     assert.equal(read.credentialSet, true);
+  });
+});
+
+// 「留还是删」那一问里，No 是唯一一个答完就让问题本身消失的答案：switchMode 不再是
+// remove，那一问就不存在了。走出它的落点不能在步骤表里按 id 找 —— 找不到的意思正是
+// 「这是最后一问，接下来就是 Apply」，而不是「回到第一题，把整场问答重问一遍」。
+test("No at the destructive question goes on to Apply instead of restarting the questions", async () => {
+  await withWizardProject(async ({ projectRoot, wizard, config }) => {
+    // 先把项目配成 API：Avenic 建了那个文件，没有人动过它，于是它真的可删 ——
+    // 这会问出第二个问题，而这一轮要证明的正是从第二个问题里走出来的那一步。
+    const initialized = await runCli({
+      argumentsList: ["claude", "init", "--auth", "api", "--scope", "project", "--sessions", "project"],
+      projectRootOverride: projectRoot,
+    });
+    assert.equal(initialized, 0);
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    assert.equal(existsSync(file), true);
+
+    const { stdin, stdout, promise } = wizard("change");
+    await waitFor(() => /◆ {2}Select enabled agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, ENTER); // keep the agent that is enabled
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
+    keys(stdin, UP, ENTER); // Account — the switch away from API（光标开在 API 上）
+    for (const title of ["Claude Code account scope", "Claude Code sessions", "History"]) {
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
+      keys(stdin, ENTER);
+    }
+    await waitFor(() => /◆ {2}What should Avenic do\?/.test(frame(stdout)), "the keep/remove question");
+    keys(stdin, DOWN, ENTER); // Remove
+    await waitFor(() => /◆ {2}Remove old configuration\?/.test(frame(stdout)), "the destructive question");
+    keys(stdin, ENTER); // No — the question opens on it
+    const next = await Promise.race([
+      waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation").then(() => "apply"),
+      new Promise((resolve) => setTimeout(() => resolve("still asking"), 2000)),
+    ]);
+    assert.equal(next, "apply", `答 No 之后紧接着的就是 Apply：\n${frame(stdout)}`);
+    keys(stdin, ENTER); // Yes
+    assert.equal(await promise, 0);
+
+    assert.equal((await config()).agents.claude.authMethod, "account");
+    assert.equal(existsSync(file), true, "No 什么都不删");
   });
 });

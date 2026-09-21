@@ -2,9 +2,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { CREDENTIAL_FILE, getAgent } from "./agents.mjs";
-import { apiCredential, codexLaunchArguments, readApiConfiguration, readCodexProjectConfig } from "./api-config.mjs";
-import { agentHomeRoot, effectiveAgentConfig, loadRuntime } from "./config.mjs";
-import { environmentHome } from "./environment.mjs";
+import { AGENT_HOME_VARIABLE, accountHome } from "./agent-home.mjs";
+import { effectiveAgentConfig, loadRuntime } from "./config.mjs";
+import { LABELS } from "../labels.mjs";
+import { readModelConfiguration } from "./model-config.mjs";
+import { agentHomeRoot } from "./project-paths.mjs";
 
 /**
  * The environment one agent process runs in.
@@ -32,26 +34,10 @@ export function machineEnvironment() {
   return process.env;
 }
 
-// The variable each agent reads to find its own configuration and auth home,
-// and the directory it defaults to. Naming them is the whole mechanism: the
-// agent's login writes its own files there, in its own format, and Avenic never
-// invents one. One map, because "where does this agent's home live" is asked by
-// the launcher, the watchdog and the status page, and they must not answer it
-// differently.
-const AGENT_HOME_VARIABLE = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" };
-const NATIVE_HOME = { claude: ".claude", codex: ".codex" };
-
-// The home an Account's sign-in lives in for a scope: the project's own, or the
-// agent's global one, which the same variable can relocate.
-export function accountHome(projectRoot, agentId, scope, environment = process.env) {
-  const variable = AGENT_HOME_VARIABLE[agentId];
-  // An agent with no configuration-home variable of its own has no home to
-  // name here: its state is its own, and a caller that asks anyway gets a
-  // sentence rather than a path built out of `undefined`.
-  if (!variable) throw new Error(`${getAgent(agentId).displayName} keeps its own configuration home`);
-  if (scope === "project") return agentHomeRoot(projectRoot, agentId);
-  return environment[variable] || path.join(environmentHome(environment), NATIVE_HOME[agentId]);
-}
+// The variable each agent reads to find its own configuration and auth home
+// lives with the home itself (agent-home.mjs), because the launcher, the
+// watchdog, the configuration writer and the status page all have to answer
+// "where does this agent's home live" the same way.
 
 // Signed in, signed out, or an answer this reader cannot support: a platform
 // where the credential may live outside the file (macOS keeps Claude's in the
@@ -95,8 +81,16 @@ export async function accountSignInStatus(agentId, home) {
  * conversation went.
  */
 export function agentRuntimeEnvironment(projectRoot, agentId, config, environment = process.env) {
-  const scoped = config?.authMethod === "account" && (config.accountScope ?? "global") === "project";
-  if (!scoped || !AGENT_HOME_VARIABLE[agentId]) return environment;
+  const scope = config?.authMethod === "account" ? config.accountScope : config?.configScope;
+  // Claude's own project file (`.claude/settings.local.json`) is read from the
+  // project itself, so a Project-scope API answer needs no redirect — its home
+  // keeps the user's own settings, which is what an answer about a *file* means.
+  // Codex has no project-scope configuration file of its own: its Project answer
+  // lives in a home the project owns and is reached through its own variable,
+  // exactly as its project account is.
+  const redirect = (config?.authMethod === "account" && scope === "project")
+    || (config?.authMethod === "api" && scope === "project" && agentId === "codex");
+  if (!redirect) return environment;
   return { ...environment, [AGENT_HOME_VARIABLE[agentId]]: agentHomeRoot(projectRoot, agentId) };
 }
 
@@ -121,18 +115,19 @@ export async function effectiveAgentEnvironment(projectRoot, agentId, environmen
  */
 export function launchMethodQuestion(agentId, readiness = null) {
   const name = getAgent(agentId).displayName;
-  const account = `use ${name}'s native account sign-in`;
-  const api = "use a provider/model/API configuration";
+  const account = LABELS.method.account.description.replace("the Agent's", `${name}'s`);
+  const api = LABELS.method.api.description;
   return {
-    id: `runtime:${agentId}`,
-    title: `${name} runtime`,
+    id: `auth:${agentId}`,
+    title: `${name} authentication`,
     options: [
       // Both methods can already be set up here — switching keeps the previous
       // configuration unless you say otherwise — so the question says which
       // ones are, instead of offering two choices that look alike. Readiness is
-      // read from local files only: the agent's own credential, the ledger.
-      { value: "account", label: "Account", description: readiness?.account ? `${account} — already signed in here` : account },
-      { value: "api", label: "API", description: readiness?.api ? `${api} — ${readiness.api} is already written` : api },
+      // read from local files only: the agent's own credential, the file an
+      // earlier answer prepared.
+      { value: "account", label: LABELS.method.account.label, description: readiness?.account ? `${account} — already signed in here` : account },
+      { value: "api", label: LABELS.method.api.label, description: readiness?.api ? `${api} — ${readiness.api} is ready` : api },
     ],
     rememberTitle: "Remember for this project?",
   };
@@ -165,11 +160,10 @@ export async function launchMethodReadiness(projectRoot, agentId, options = {}) 
   // project answered API, and otherwise whichever scope the kept configuration
   // was written at.
   for (const scope of config?.authMethod === "api" ? [config.configScope ?? "global"] : ["project", "global"]) {
-    const record = await readApiConfiguration(projectRoot, agentId, scope, options);
-    // present，不是 owned：这个方法说的是「启动会带着哪份配置跑」。一份被用户在
-    // 外面删掉的配置，账本还记得（owned），但启动不会带上它——把它列成可用的
-    // 方法，用户会选中一个起不来任何 provider 的答案。
-    if (record?.present) { api = record.relative; break; }
+    const facts = await readModelConfiguration(projectRoot, agentId, scope, options);
+    // 文件本身说了算，不是账本：这一问说的是「启动会带着哪份配置跑」，一份空的
+    // 或只有别人写的骨架的配置，列出来等于让用户选一个起不来的答案。
+    if (facts?.configured) { api = facts.relative; break; }
   }
   return { account: signedIn === "signed-in", api };
 }
@@ -199,39 +193,19 @@ export async function resolveEffectiveAgentRuntime(projectRoot, agentId, options
   // A launch that adds nothing hands the agent the environment it was given,
   // unchanged and by identity: "this launch changes nothing" is then a fact a
   // caller can check, not a promise.
-  const environment = agentRuntimeEnvironment(projectRoot, agentId, { authMethod, accountScope: scope }, inherited);
-  let argumentsList = options.argumentsList ?? [];
+  const environment = agentRuntimeEnvironment(projectRoot, agentId, { authMethod, accountScope: scope, configScope: scope }, inherited);
+  const argumentsList = options.argumentsList ?? [];
   if (authMethod === "api" && !getAgent(agentId).managesOwnAuth) {
-    const agent = getAgent(agentId);
-    if (agentId === "codex" && scope === "project") {
-      // Codex has no project-scope configuration file, so the project's answer
-      // arrives the way Codex documents for one run: `-c key=value` overrides.
-      const record = await readCodexProjectConfig(projectRoot);
-      if (record) {
-        argumentsList = [...codexLaunchArguments(record), ...argumentsList];
-        const envKey = record.envKey || apiCredential("codex").key;
-        if (!environment[envKey]) {
-          notes.push(`${envKey} is not set: Codex reads this provider's key from that environment variable.`);
-        }
-      } else {
-        notes.push(`No API configuration is stored for ${agent.displayName} — run \`avenic change\` to set one.`);
-      }
-    } else {
-      const api = await readApiConfiguration(projectRoot, agentId, scope, options);
-      if (!api?.present) {
-        // Three ways for "not in effect", three different truths. The
-        // configuration Avenic wrote may have been edited away outside Avenic
-        // (the ledger still proves it was ours); the file may hold a
-        // configuration Avenic did not write, the user's own, put there before
-        // this project answered API — or by the version it upgraded from; or
-        // there may be nothing at all. The remedy is the same, and calling the
-        // middle case missing is the one the note must not do.
-        notes.push(api?.owned
-          ? `${api.relative} no longer holds the API configuration Avenic wrote — run \`avenic change\` to write it again.`
-          : api?.exists
-            ? `${api.relative} holds a provider configuration Avenic did not write — run \`avenic change\` to put it under Avenic's management.`
-            : `No API configuration is stored for ${agent.displayName} in ${api?.relative ?? scope} — run \`avenic change\` to set one.`);
-      }
+    // The file is the configuration: the agent reads it natively, in its own
+    // format, from the home or the project this answer named. Avenic adds no
+    // override of its own — inventing one would be a second configuration
+    // beside the file, and the two would drift. All that is left to say is
+    // whether the file presently names anything.
+    const facts = await readModelConfiguration(projectRoot, agentId, scope, options);
+    if (!facts?.configured) {
+      notes.push(facts?.exists
+        ? `${facts.relative} does not name a provider or a model yet — fill it in, then run ${getAgent(agentId).displayName} again.`
+        : `${facts?.relative ?? "The configuration file"} is not there — run \`avenic change\` to prepare it.`);
     }
   }
   return {
