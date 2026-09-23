@@ -100,7 +100,12 @@ async function setupVerb(verb, argumentsList, context) {
   if (values.length > 0) return fail(io, `Unknown option for avenic hook ${verb}: ${values[0]}. ${USAGE[verb]}`);
 
   const plan = await planFor(target.agentId, target.scope, context);
-  if (!plan.supported) return fail(io, plan.note);
+  // 只有「装」要问这个版本带不带得动这些钩子；「卸」不问。要把钩子拿掉的人里，有一个
+  // 正是刚刚换到更早一版（或者换到一台读不到版本的机器上）的人 —— 钩子还在响，而它是
+  // 那个已经不在的 CLI 装的。卸那一条路自己只动属于 Avenic 的那一块（core 的
+  // `uninstallHooks`），别人的内容一个字节都不碰，所以这里没有要拦的东西。编辑器那一页
+  // 的行上写的是同一句话：装着就该拿得掉。
+  if (verb === "install" && !plan.supported) return fail(io, plan.note);
   if (asJson && dryRun) {
     io.log(JSON.stringify({ agent: plan.agent, scope: plan.scope, file: plan.file, supported: plan.supported, installed: plan.installed, diff: diffLines(plan) }));
     return 0;

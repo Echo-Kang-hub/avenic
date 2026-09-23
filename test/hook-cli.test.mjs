@@ -102,6 +102,30 @@ test("install writes the project's hooks, and uninstall takes exactly them away"
   }
 });
 
+test("the hooks come out even on a machine whose version could not carry them", async () => {
+  // 卸的前提是「文件里有 Avenic 的东西」，不是「这个版本支持钩子」：把 CLI 换成一个比
+  // 钩子机制还早的版本（或者换一台读不到版本的机器）的人，正是最需要把钩子拿掉的人 ——
+  // 钩子还在响，而它是那个已经不在的 CLI 装的。编辑器那一页的行上早就是这样做：装着就该
+  // 拿得掉，命令行不能反着来。
+  const run = await machine({ versions: { claude: "2.1.274" } });
+  const older = await machine({ versions: { claude: "2.0.0" } });
+  try {
+    const installed = capturing();
+    assert.equal(await dispatchHookCommand(["install", "--agent", "claude", "--scope", "project"], run.context(installed)), 0, installed.errors.join("\n"));
+    const file = path.join(run.project, ".claude", "settings.local.json");
+    assert.match(await readFile(file, "utf8"), /avenic hook emit --agent claude/);
+
+    const removed = capturing();
+    const code = await dispatchHookCommand(["uninstall", "--agent", "claude", "--scope", "project"], { io: removed, environment: older.environment, cwd: run.project });
+    assert.equal(code, 0, removed.errors.join("\n"));
+    assert.match(removed.lines.join("\n"), /^Removed: /m);
+    assert.doesNotMatch(await readFile(file, "utf8"), /avenic hook emit --agent claude/, "旧的 CLI 走了，它装的钩子也该走");
+  } finally {
+    await run.done();
+    await older.done();
+  }
+});
+
 test("--dry-run shows what would change and writes nothing", async () => {
   const run = await machine({ versions: { claude: "2.1.274" } });
   try {
