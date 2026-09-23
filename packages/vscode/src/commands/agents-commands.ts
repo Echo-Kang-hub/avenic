@@ -4,6 +4,7 @@ import { releaseSummary } from "../services/agents.ts";
 import type { ProjectDraft } from "@avenic/core";
 import * as agents from "../services/agents.ts";
 import { updateCommandForInstallation } from "../services/agent-versions.ts";
+import { en, sentence } from "../i18n/text.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { assertIdle } from "../ui/flows.ts";
 import { runProjectWizard } from "../ui/project-wizard.ts";
@@ -34,12 +35,12 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
       } catch (err) { await showError(err); return undefined; }
     }));
 
-  const busy = () => !assertIdle(deps.queue, (message) => void vscode.window.showWarningMessage(message));
+  const busy = () => !assertIdle(deps.queue, (key) => void vscode.window.showWarningMessage(sentence(vscode.env.language, key)));
 
   // 树节点触发时 args[0] 是 T5 的 TreeItem（item.id 已设为 agent id）；命令面板触发时走 QuickPick
   const agentTarget = async (treeItem?: vscode.TreeItem): Promise<{ root: string; id: string } | null> => {
     const root = await deps.resolveRoot();
-    if (root === null) { await vscode.window.showWarningMessage("未选择项目文件夹"); return null; }
+    if (root === null) { await vscode.window.showWarningMessage(sentence(vscode.env.language, "ui.no-folder")); return null; }
     const id = treeItem?.id ?? (await vscode.window.showQuickPick(agents.listAgents().map((a) => ({ label: a.displayName, id: a.id }))))?.id;
     return id === undefined ? null : { root, id };
   };
@@ -51,7 +52,17 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
   register("avenic.agents.configureProject", async () => {
     if (busy()) return;
     const root = await deps.resolveRoot();
-    if (root === null) return;
+    if (root === null) {
+      // 活动栏那一行正是在没有文件夹的时候画出来的，所以这一击必须给出下一步，
+      // 不能静默返回（否则就是一行点了没反应的入口）。多根工作区里按下 Esc 是
+      // 另一种情况：那是用户自己取消的，不再追问。
+      if ((vscode.workspace.workspaceFolders ?? []).length === 0) {
+        const open = en("shell.open-folder");
+        const answer = await vscode.window.showWarningMessage(sentence(vscode.env.language, "agents.configure-nofolder"), open);
+        if (answer === open) await vscode.commands.executeCommand("workbench.action.files.openFolder");
+      }
+      return;
+    }
     const current = await agents.readProjectConfiguration(root);
     const editing = Object.keys(current.agents).length > 0;
     // 修改时每一步都预选当前值。API 那一侧带上的是文件本身在不在、是不是 Avenic
@@ -75,8 +86,9 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
       if (!outcome.applied || outcome.result === null) return;
       // 一句话说清这一轮到底改了什么，尤其是「旧配置留着还是删了」——以及给不回来
       // 的那种键（组成在 services/releaseSummary，与 CLI 说同一组事实）。
-      const detail = releaseSummary(outcome.result.released ?? []);
-      await vscode.window.showInformationMessage(`Avenic ${editing ? "配置已更新" : "初始化完成"}${detail ? ` · ${detail}` : ""} · ${root}`);
+      const detail = releaseSummary(outcome.result.released ?? [], vscode.env.language);
+      const what = sentence(vscode.env.language, editing ? "agents.config-updated" : "agents.initialized");
+      await vscode.window.showInformationMessage(`Avenic ${what}${detail ? ` · ${detail}` : ""} · ${root}`);
     } finally {
       host.dispose();
     }
@@ -115,14 +127,15 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (target === null) return false;
     const status = await agents.agentStatus(target.root, target.id);
     if (!status.initialized) {
-      await vscode.window.showWarningMessage(`${status.agent.displayName} 尚未初始化，请先执行「Avenic: Configure Project」`);
+      // 与 prepareAgentLaunch 抛的是同一个键：这是同一件事，两处各写一遍就会各说各的。
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.not-initialized", { agent: status.agent.displayName }));
       return false;
     }
     if (!status.executableAvailable) {
-      await vscode.window.showWarningMessage(`未找到 ${status.agent.displayName} 官方可执行文件（${status.agent.executable}），请先安装官方 CLI`);
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.no-executable", { agent: status.agent.displayName, executable: status.agent.executable }));
       return false;
     }
-    const prepared = await runMutation(deps.queue, () => agents.prepareAgentLaunch(target.root, target.id), () => deps.refresh());
+    const prepared = await runMutation(deps.queue, () => agents.prepareAgentLaunch(target.root, target.id, { language: vscode.env.language }), () => deps.refresh());
     const { definition, finishRun } = prepared;
     if (definition.note !== null) {
       // core 说了这次启动为什么和配置不一样（还没有认证方式、API 配置还没写入、
@@ -145,15 +158,23 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (busy()) return;
     const target = await agentTarget(treeItem);
     if (target === null) return;
-    await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.deinitialize(target.root, target.id).then(() => { report("完成"); })), () => deps.refresh());
+    const language = vscode.env.language;
+    const result = await runMutation(deps.queue, () => withProgress(sentence(language, "agents.operation"), (report) => agents.deinitialize(target.root, target.id).then((r) => { report(sentence(language, "flow.done")); return r; })), () => deps.refresh());
+    // 与 `avenic <agent> deinit` 说同一组事实：设置移除了没有、数据留没留、还剩几个
+    // Agent 配着。什么都没改更要说——否则点下去只剩一个消失的进度条，用户不知道是
+    // 做完了还是没做事。
+    const who = agents.listAgents().find((a) => a.id === target.id)?.displayName ?? target.id;
+    await vscode.window.showInformationMessage(sentence(language, result.changed ? "agent.deinit-removed" : "agent.deinit-absent", { agent: who, remaining: result.remaining }));
   });
 
   register("avenic.agents.sessionsImport", async (treeItem) => {
     if (busy()) return;
     const target = await agentTarget(treeItem);
     if (target === null) return;
-    const result = await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.importSessions(target.root, target.id).then((r) => { report("完成"); return r; })), () => deps.refresh());
-    const message = `发现 ${result.discovered} 个会话；导入 ${result.imported} 个；未变更 ${result.unchanged} 个；失败 ${result.failed} 个。`;
+    const result = await runMutation(deps.queue, () => withProgress(sentence(vscode.env.language, "agents.operation"), (report) => agents.importSessions(target.root, target.id).then((r) => { report(sentence(vscode.env.language, "flow.done")); return r; })), () => deps.refresh());
+    const message = sentence(vscode.env.language, "sessions.import-summary", {
+      discovered: result.discovered, imported: result.imported, unchanged: result.unchanged, failed: result.failed,
+    });
     // core 的同一个格式化器也服务于 CLI：原生历史的每一类问题只有一处措辞，
     // 且诊断对象永远不会被直接拼进消息（那只会打印 [object Object]）。
     const { warnings, notes } = formatSessionDiagnostics(result.diagnostics);
@@ -166,7 +187,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (busy()) return;
     const target = await agentTarget(treeItem);
     if (target === null) return;
-    const result = await runMutation(deps.queue, () => withProgress("Avenic Agent 操作", (report) => agents.writebackSessions(target.root, target.id).then((r) => { report("完成"); return r; })), () => deps.refresh());
-    await vscode.window.showInformationMessage(`已写回 ${result.count} 个会话`);
+    const result = await runMutation(deps.queue, () => withProgress(sentence(vscode.env.language, "agents.operation"), (report) => agents.writebackSessions(target.root, target.id).then((r) => { report(sentence(vscode.env.language, "flow.done")); return r; })), () => deps.refresh());
+    await vscode.window.showInformationMessage(sentence(vscode.env.language, "sessions.writeback", { count: result.count }));
   });
 }

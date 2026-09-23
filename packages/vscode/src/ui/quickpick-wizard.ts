@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { sentence } from "../i18n/text.ts";
 import type { WizardAnswer, WizardHost, WizardView } from "./project-wizard.ts";
 
 // 渐进式 QuickPick：疑问句在标题栏，已答步骤折叠成顶部的一行 ◇（同一组的连续步骤折成
@@ -97,7 +98,7 @@ export function quickPickHost<D = unknown>(): QuickPickWizard<D> {
             if (selected.length < (view.step.minSelected ?? 0)) {
               // 空选择不是答案：留着面板，把要求写回标题（回车因此是 no-op）。
               // validationMessage 在 1.136 的 QuickPick 上已经不存在，标题是两代都在的出口。
-              picker!.title = view.step.emptyMessage ?? "请至少选择一项";
+              picker!.title = view.step.emptyMessage ?? sentence(vscode.env.language, "wizard.pick-at-least-one");
               return;
             }
             settle({ value: selected.map((item) => item.value) });

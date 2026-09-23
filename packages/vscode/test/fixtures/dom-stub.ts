@@ -198,6 +198,8 @@ export interface Rendered {
   send: (message: unknown) => void;
   /** 分区内容挂载点：断言「点完之后这一页画的是什么」看它。 */
   content: StubNode;
+  /** 派发一个 document 级事件（页面在 document 上收的那些：点页面别处、按 Esc）。 */
+  fireDocument: (type: string, event?: { target?: unknown; key?: string }) => void;
 }
 
 export interface RenderOptions {
@@ -219,6 +221,8 @@ export interface StubDocument {
   getElementById(id: string): StubNode;
   querySelector(selector: string): StubNode | null;
   querySelectorAll(selector: string): StubNode[];
+  /** 页面的菜单在 document 上收（点别处、按 Esc）：那两件事不属于任何一张菜单。 */
+  addEventListener(type: string, listener: (event: { target?: unknown; key?: string }) => void): void;
 }
 
 // 每条 data 消息都在全新的 vm 上下文里跑一遍脚本（避免两次渲染的记录互相污染）。
@@ -227,6 +231,7 @@ export function renderDataMessage(payload: unknown, source: string, options: Ren
   const texts: string[] = [];
   const posted: unknown[] = [];
   const byId = new Map<string, StubNode>();
+  const documentListeners = new Map<string, Array<(event: { target?: unknown; key?: string }) => void>>();
   const make = (tag: string): StubNode => {
     // 真实 DOM 的 HTML 元素 tagName 是大写（document.createElement("button").tagName === "BUTTON"）
     const node = new StubNode(tag.toUpperCase(), texts);
@@ -247,6 +252,11 @@ export function renderDataMessage(payload: unknown, source: string, options: Ren
     },
     querySelector: (selector) => created.find((node) => matchesSelector(node, selector)) ?? null,
     querySelectorAll: (selector) => created.filter((node) => matchesSelector(node, selector)),
+    addEventListener: (type, listener) => {
+      const list = documentListeners.get(type) ?? [];
+      list.push(listener);
+      documentListeners.set(type, list);
+    },
   };
   options.seed?.(document);
   const messageListeners: Array<(event: { data: unknown }) => void> = [];
@@ -274,7 +284,10 @@ export function renderDataMessage(payload: unknown, source: string, options: Ren
   };
   send({ type: "data", payload });
   for (const message of options.messages ?? []) send(message);
-  return { created, texts, posted, byId, send, content: document.getElementById("content") };
+  const fireDocument = (type: string, event: { target?: unknown; key?: string } = {}): void => {
+    for (const listener of documentListeners.get(type) ?? []) listener(event);
+  };
+  return { created, texts, posted, byId, send, content: document.getElementById("content"), fireDocument };
 }
 
 /** 触发节点上已注册的事件（点击等）。 */

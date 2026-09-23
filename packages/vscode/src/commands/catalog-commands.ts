@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as catalog from "../services/catalog.ts";
 import * as skills from "../services/skills.ts";
+import { sentence } from "../i18n/text.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { assertIdle, pickOne } from "../ui/flows.ts";
 import { pickScope, scopeCwd } from "../ui/scope.ts";
@@ -26,22 +27,22 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
       } catch (err) { await showError(err); }
     }));
 
-  const busy = () => !assertIdle(deps.queue, (message) => void vscode.window.showWarningMessage(message));
+  const busy = () => !assertIdle(deps.queue, (key) => void vscode.window.showWarningMessage(sentence(vscode.env.language, key)));
 
   register("avenic.catalog.add", async () => {
     if (busy()) return;
-    const spec = await vscode.window.showInputBox({ prompt: "Hub spec（owner/repo、URL 或本地路径）", value: "Echo-Kang-hub/SkillsHub#main" });
+    const spec = await vscode.window.showInputBox({ prompt: sentence(vscode.env.language, "catalog.spec-prompt"), value: "Echo-Kang-hub/SkillsHub#main" });
     if (spec === undefined || spec.trim() === "") return;
     // runMutation：失败/预览失败后同样 refresh——注册状态已变更，树与 Dashboard 不得停留在旧数据（T8 Minor A）
-    const result = await runMutation(deps.queue, () => withProgress("添加 Hub", async (report) => { report("保存并预览…"); return catalog.add(spec.trim()); }), () => deps.refresh());
-    if (result.previewFailed) await vscode.window.showWarningMessage("已保存，可 sync 重试（Preview 失败不致命）");
-    else await vscode.window.showInformationMessage(`Hub 已添加并预览 ${result.packs.length} 个 Pack`);
+    const result = await runMutation(deps.queue, () => withProgress(sentence(vscode.env.language, "catalog.add"), async (report) => { report(sentence(vscode.env.language, "catalog.saving")); return catalog.add(spec.trim()); }), () => deps.refresh());
+    if (result.previewFailed) await vscode.window.showWarningMessage(sentence(vscode.env.language, "catalog.preview-failed"));
+    else await vscode.window.showInformationMessage(sentence(vscode.env.language, "catalog.added", { count: result.packs.length }));
   });
 
   register("avenic.catalog.select", async () => {
     if (busy()) return;
     const known = await catalog.listKnown();
-    if (known.length === 0) { await vscode.window.showInformationMessage("暂无已注册 Hub，先执行 Avenic: 添加 Hub"); return; }
+    if (known.length === 0) { await vscode.window.showInformationMessage(sentence(vscode.env.language, "catalog.no-hubs")); return; }
     const picked = await pickOne(known.map((k) => ({ label: k.spec, description: k.name })), async (items) => vscode.window.showQuickPick(items));
     if (picked === undefined) return;
     await runMutation(deps.queue, () => catalog.select(picked.label), () => deps.refresh());
@@ -52,7 +53,11 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
   register("avenic.catalog.default", async () => {
     if (busy()) return;
     const current = await catalog.defaultSpec();
-    const info = await vscode.window.showInformationMessage(`当前默认 Hub：${current ?? "未设置"}`, "修改");
+    const change = sentence(vscode.env.language, "catalog.change");
+    const info = await vscode.window.showInformationMessage(
+      sentence(vscode.env.language, "catalog.current-default", { spec: current ?? sentence(vscode.env.language, "catalog.not-set") }),
+      change,
+    );
     if (info === undefined) return;
     await vscode.commands.executeCommand("avenic.catalog.select");
   });
@@ -60,29 +65,42 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
   register("avenic.catalog.sync", async () => {
     if (busy()) return;
     const spec = await catalog.defaultSpec();
-    if (spec === null) { await vscode.window.showWarningMessage("未选择默认 Hub"); return; }
-    const info = await runMutation(deps.queue, () => withProgress("同步 Hub", async (report) => { report("拉取并解析…"); return catalog.sync(spec); }), () => deps.refresh());
+    if (spec === null) { await vscode.window.showWarningMessage(sentence(vscode.env.language, "catalog.no-default")); return; }
+    const info = await runMutation(deps.queue, () => withProgress(sentence(vscode.env.language, "catalog.sync"), async (report) => { report(sentence(vscode.env.language, "catalog.syncing")); return catalog.sync(spec); }), () => deps.refresh());
     await vscode.window.showInformationMessage(catalog.syncSummary(info));
   });
 
-  // Catalog 树 Pack 行 → 一键安装：arg 为行 TreeItem（packId/catalogSpec 由 provider 挂载）。
-  // core 按默认 Catalog spec 解析 Pack → 非默认 Catalog 的 Pack 必须先选中；作用域经交互选择。
+  // Pack 安装只有一条路：一个 Pack 从哪来（arg 里的行）或用户挑了哪一个，两种入口
+  // 都走同一段写盘。Catalog 树删掉之后命令面板成了唯一入口，而它没有 arg——那时
+  // 让人自己挑一个，而不是指着一棵不存在的树说「去那儿右键」。清单读的是已经同步
+  // 下来的那份缓存：点一下不该顺手发一次网络请求（要拉新的就 Sync）。
   register("avenic.catalog.installPack", async (arg?: unknown) => {
     if (busy()) return;
     // packSpec 与 catalogSpec 均可能承载来源 spec（provider 挂 packSpec；兼容早期命名）
     const { packId, catalogSpec, packSpec } = (arg ?? {}) as { packId?: string; catalogSpec?: string; packSpec?: string };
-    if (packId === undefined) { await vscode.window.showWarningMessage("请在 Hub 树中右键 Pack 行安装"); return; }
     const current = await catalog.defaultSpec();
-    if (current === null) { await vscode.window.showWarningMessage("尚未选择默认 Hub，请先执行 Avenic: 添加 Hub"); return; }
+    if (current === null) { await vscode.window.showWarningMessage(sentence(vscode.env.language, "catalog.no-default-hint")); return; }
     const sourceSpec = catalogSpec ?? packSpec;
     if (sourceSpec !== undefined && sourceSpec !== current) {
-      await vscode.window.showWarningMessage("该 Pack 属于非默认 Hub，先执行 Avenic: 选择 Hub 再安装"); return;
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "catalog.foreign-hub")); return;
+    }
+    let target = packId;
+    if (target === undefined) {
+      const packs = (await catalog.packsFor(current, undefined, { cachedOnly: true })) ?? new Map<string, { id: string; name: string; description?: string }>();
+      if (packs.size === 0) {
+        await vscode.window.showWarningMessage(sentence(vscode.env.language, "catalog.no-manifest"));
+        return;
+      }
+      const picked = await pickOne(Array.from(packs.values()).map((pack) => ({ label: pack.name, description: pack.description ?? pack.id, id: pack.id })), async (items) => vscode.window.showQuickPick(items));
+      if (picked === undefined) return;
+      target = picked.id;
     }
     const scope = await pickScope();
     if (scope === null) return;
     const cwd = await scopeCwd(scope, deps.resolveRoot);
     if (cwd === null) return;
-    const result = await runMutation(deps.queue, () => withProgress("安装 Packs", async (report) => { report(`安装 Pack ${packId}…`); return skills.installPacks(scope, [packId], cwd); }), () => deps.refresh());
-    await vscode.window.showInformationMessage(`Pack ${packId} 已安装：${result.resolvedPacks.names.join(", ")}`);
+    const language = vscode.env.language;
+    const result = await runMutation(deps.queue, () => withProgress(sentence(language, "catalog.installing"), async (report) => { report(sentence(language, "catalog.installing-pack", { pack: target })); return skills.installPacks(scope, [target], cwd); }), () => deps.refresh());
+    await vscode.window.showInformationMessage(sentence(language, "catalog.installed", { pack: target, packs: result.resolvedPacks.names.join(", ") }));
   });
 }

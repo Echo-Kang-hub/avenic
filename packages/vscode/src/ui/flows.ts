@@ -1,15 +1,17 @@
 import { rememberProjectRoot, rememberedProjectRoot } from "../project.ts";
+import type { TextKey } from "../i18n/text.ts";
 import type { MutationQueue } from "./mutation-queue.ts";
 
-// busy 守卫提示（spec §6 进行中时相关命令禁用）；消息经 notify 注入使守卫可脱离 vscode 单测
-export const BUSY_WARNING = "Avenic：操作进行中，请稍候。";
-export const NO_CANDIDATES_WARNING = "Avenic：没有可操作的选项。";
+// busy 守卫提示（spec §6 进行中时相关命令禁用）；消息经 notify 注入使守卫可脱离 vscode 单测。
+//
+// 这里给的是**键**而不是句子：说那句话的地方有 vscode，知道编辑器现在是哪种语言；这个文件
+// 不 import vscode，才能在单元测试里跑。哪儿说、说什么，因此各归各的地方管。
 
 // 命令体最前的守卫：mutation 进行中提示并返回 false（调用方直接 return 不入队）；
 // MutationQueue 本身仍是守卫之后的安全网（串行化顺序执行）。
-export function assertIdle(queue: MutationQueue, notify: (message: string) => void = () => {}): boolean {
+export function assertIdle(queue: MutationQueue, notify: (message: TextKey) => void = () => {}): boolean {
   if (!queue.busy) return true;
-  notify(BUSY_WARNING);
+  notify("flow.busy");
   return false;
 }
 
@@ -24,9 +26,9 @@ export async function pickOne<T extends { label: string }>(
 export async function pickManyOrNotify<T extends { label: string }>(
   options: T[],
   multi: (items: T[]) => Promise<T[] | undefined>,
-  notify: () => void,
+  notify: (key: TextKey) => void,
 ): Promise<T[]> {
-  if (options.length === 0) { notify(); return []; } // 零候选：警告并返回，绝不弹空 picker 逼 Esc
+  if (options.length === 0) { notify("flow.no-options"); return []; } // 零候选：警告并返回，绝不弹空 picker 逼 Esc
   return (await multi(options)) ?? [];
 }
 

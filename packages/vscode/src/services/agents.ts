@@ -24,6 +24,7 @@ import {
   type StatusModel,
 } from "@avenic/core";
 import { cliVersionStatus, type CliVersionStatus } from "./agent-versions.ts";
+import { chineseVisible, LocalizedError, sentence } from "../i18n/text.ts";
 
 export interface AgentStatus {
   agent: Agent;
@@ -122,14 +123,18 @@ export function deinitialize(projectRoot: string, agentId: string, purge?: boole
 // 留下的（Account 的家），以及最要紧的那种：原值 Avenic 只存过 hash（用户自己
 // 写过、被覆盖），它给不回来。第三种不出现在句子里，用户就会以为一切都恢复了。
 // 与 CLI 的 releaseLines 说的是同一组事实，各自用自己的语言。
-export function releaseSummary(released: ReleasedMethod[]): string {
+export function releaseSummary(released: ReleasedMethod[], language: string): string {
   const removed = released.filter((entry) => entry.removed > 0 || entry.deleted);
   const kept = released.filter((entry) => entry.removed === 0 && !entry.deleted);
   const unrecoverable = released.reduce((sum, entry) => sum + entry.kept, 0);
+  // 并列用什么标点是语言的事（中文顿号、英文逗号），不是格式：它是句子的一部分。
+  const join = (items: string[]) => items.join(chineseVisible(language) ? "、" : ", ");
   return [
-    removed.length > 0 ? `已删除 ${removed.map((entry) => `${entry.relative} 的 ${entry.removed} 个键`).join("、")}` : "",
-    kept.length > 0 ? `已保留 ${kept.map((entry) => entry.relative ?? entry.home).join("、")}` : "",
-    unrecoverable > 0 ? `有 ${unrecoverable} 个键的原值 Avenic 未曾保存、无法恢复，请重新填写` : "",
+    removed.length > 0 ? sentence(language, "release.removed", {
+      entries: join(removed.map((entry) => sentence(language, "release.removed-entry", { file: entry.relative ?? "", count: entry.removed }))),
+    }) : "",
+    kept.length > 0 ? sentence(language, "release.kept", { files: join(kept.map((entry) => entry.relative ?? entry.home ?? "")) }) : "",
+    unrecoverable > 0 ? sentence(language, "release.unrecoverable", { count: unrecoverable }) : "",
   ].filter(Boolean).join(" · ");
 }
 
@@ -169,12 +174,14 @@ export interface PreparedLaunch {
   finishRun: () => Promise<void>;
 }
 
-export async function prepareAgentLaunch(projectRoot: string, agentId: string, options: { argumentsList?: string[] } = {}): Promise<PreparedLaunch> {
+export async function prepareAgentLaunch(projectRoot: string, agentId: string, options: { argumentsList?: string[]; language?: string } = {}): Promise<PreparedLaunch> {
   const agent = getAgent(agentId);
   const state = await loadRuntime(projectRoot);
   const effective = effectiveAgentConfig(state, agentId);
   if (effective === null) {
-    throw new Error(`${agent.displayName} 尚未初始化，请先执行「Avenic: Configure Project」`);
+    // 键而不是句子：这一层没有 vscode，不知道编辑器现在是哪种语言——showError 在说这句话
+    // 的时候把它翻出来。
+    throw new LocalizedError("agent.not-initialized", { agent: agent.displayName });
   }
   // 与 CLI 启动同一个环境：用户自己的那份，一个字都不改。认证方法只是配置，
   // 不是登录；只有 Account·Project 会把子进程的配置根指向项目自己的 home。
@@ -206,7 +213,9 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string, o
     // ——但原因必须说对：不是"API 配置没生效"，而是没有答案。插件不画这道题，
     // 因为它的答案要写进项目而不是这一次运行。
     if (options.argumentsList === undefined) {
-      launchNote = `${agent.displayName} 还没有为这个项目选择认证（Account 还是 API），本次按它自己的账号启动；请执行「Avenic: Configure Project」，或运行 \`avenic ${agentId} init\` 选择。`;
+      // 宿主给的是什么语言就用什么语言；没给（测试、非编辑器宿主）时是英文——它是产品的
+      // 主语言，也是词表在其它任何语言下的答案。
+      launchNote = sentence(options.language ?? "", "agent.no-auth-picked", { agent: agent.displayName });
     }
   }
   if (options.argumentsList !== undefined) launchArguments = options.argumentsList;

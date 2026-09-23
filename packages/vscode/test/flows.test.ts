@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertIdle, BUSY_WARNING, pickManyOrNotify, pickOne, pickProjectRoot } from "../src/ui/flows.ts";
+import { assertIdle, pickManyOrNotify, pickOne, pickProjectRoot } from "../src/ui/flows.ts";
 import { lastProjectRoot, rememberProjectRoot } from "../src/project.ts";
 import { MutationQueue } from "../src/ui/mutation-queue.ts";
 
@@ -60,19 +60,20 @@ test("assertIdle notifies and returns false while a mutation is busy", async () 
   const queue = new MutationQueue();
   const p = queue.run(async () => { await new Promise((r) => setTimeout(r, 10)); });
   let warned: string | null = null;
-  assert.equal(assertIdle(queue, (message) => { warned = message; }), false);
-  assert.equal(warned, BUSY_WARNING);
+  assert.equal(assertIdle(queue, (key) => { warned = key; }), false);
+  // 守卫给的是表里的键：说成哪种语言由有 vscode、知道编辑器语言的那一方决定
+  assert.equal(warned, "flow.busy");
   await p;
   assert.equal(assertIdle(queue, () => { throw new Error("idle 后再提醒即测试失败"); }), true);
 });
 
 test("pickManyOrNotify warns on zero candidates without opening the picker", async () => {
   let opened = false;
-  let warned = false;
-  const chosen = await pickManyOrNotify<{ label: string }>([], async () => { opened = true; return []; }, () => { warned = true; });
+  let warned: string | null = null;
+  const chosen = await pickManyOrNotify<{ label: string }>([], async () => { opened = true; return []; }, (key) => { warned = key; });
   assert.deepEqual(chosen, []);
   assert.equal(opened, false, "零候选不得弹空 QuickPick 逼用户 Esc");
-  assert.equal(warned, true);
+  assert.equal(warned, "flow.no-options");
 });
 
 test("pickManyOrNotify forwards options when candidates exist", async () => {

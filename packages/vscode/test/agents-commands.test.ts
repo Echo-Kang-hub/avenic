@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { listCanonicalSessions } from "@avenic/core";
+import { LocalizedError } from "../src/i18n/text.ts";
 import { agentStatus, deinitialize, initialize, prepareAgentLaunch, releaseSummary } from "../src/services/agents.ts";
 import { select } from "../src/services/catalog.ts";
 import { installPacks, repairLinks } from "../src/services/skills.ts";
@@ -59,7 +60,13 @@ test("prepareAgentLaunch redirects the config root for a Project account and nev
   try {
     await mkdir(dir, { recursive: true });
     await withAgentHomes(path.join(root, "home"), async () => {
-      await assert.rejects(() => prepareAgentLaunch(dir, "claude"), /尚未初始化/);
+      await assert.rejects(() => prepareAgentLaunch(dir, "claude"), (err: unknown) => {
+        // 服务层抛的是键（它没有 vscode，不知道编辑器什么语言）；message 是词表里的英文。
+        assert.ok(err instanceof LocalizedError);
+        assert.equal(err.key, "agent.not-initialized");
+        assert.match(err.message, /is not initialized/);
+        return true;
+      });
       await initialize(dir, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
       const api = await prepareAgentLaunch(dir, "claude");
       assert.equal(api.definition.cwd, dir);
@@ -206,11 +213,15 @@ test("prepareAgentLaunch resolves even when repairLinks throws", async () => {
 // 写过、被 Avenic 覆盖），它给不回来——用户必须被告知，否则他以为一切都恢复了。
 test("a release summary names the keys that cannot be given back", () => {
   const entry = { agentId: "claude", method: "api" as const, relative: ".claude/settings.json", home: null, conflicts: 0, deleted: false };
-  const summary = releaseSummary([{ ...entry, removed: 2, kept: 1 }]);
+  const summary = releaseSummary([{ ...entry, removed: 2, kept: 1 }], "zh-cn");
   assert.match(summary, /已删除 .*2 个键/);
   assert.match(summary, /1 个键的原值.*无法恢复/);
   // 没有这种键时不多说一句，也不改变既有的两句。
-  const clean = releaseSummary([{ ...entry, removed: 2, kept: 0 }]);
+  const clean = releaseSummary([{ ...entry, removed: 2, kept: 0 }], "zh-cn");
   assert.match(clean, /已删除 .*2 个键/);
   assert.doesNotMatch(clean, /无法恢复/);
+  // 同一次释放的英文：主语言那一半也得在，而且说的是同一件事（同一组事实、同一处词表）。
+  const english = releaseSummary([{ ...entry, removed: 2, kept: 1 }], "en");
+  assert.match(english, /Removed .*2 key\(s\)/);
+  assert.match(english, /1 original values cannot be restored/);
 });
