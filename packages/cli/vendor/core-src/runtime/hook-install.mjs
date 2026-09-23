@@ -7,7 +7,9 @@
 // Avenic's**. A user's settings carry their permissions, their own hooks, their
 // comments and their whole history; a write here adds one identifiable block
 // and returns everything else exactly as it was, and the uninstall returns the
-// file to the bytes it had before.
+// file to the bytes it had before — byte for byte in the two line-edited
+// mechanisms, and by re-serialising in the file's own shape (its indentation,
+// its line endings, its last newline) in the JSON one.
 //
 //   Claude   the project's own settings file (`.claude/settings.local.json`) or
 //            the agent home's `settings.json`. JSON, so it is parsed and
@@ -144,7 +146,16 @@ function claudeEdit(agentId, capability, before, { remove }) {
   const changed = JSON.stringify(merged) !== JSON.stringify(parsed);
   // 没改就一个字节都不动：用户把文件排成什么样是用户的事，一次「什么也没做」的安装
   // 不该顺手把它重排一遍。
-  return { text: changed ? `${JSON.stringify(merged, null, 2)}\n` : before, changed };
+  if (!changed) return { text: before, changed };
+  // 改了就只剩「整个重新序列化」这一条路（JSON 没有块语法可以插进去），但缩进、行尾、
+  // 末尾那个换行都跟着文件走：装一次只多出 Avenic 的那一组，卸载之后回到原来的字节。
+  // 一份 4 空格、CRLF 的 settings 被装一次就整篇重排，用户的 diff 里每一行都在动 ——
+  // 那不是「加了一个块」，那是把用户的文件换了一份。（Codex 那一半是同一件事，见
+  // model-write 的 mergeCodexConfig。）
+  const indent = before.match(/\n([ \t]+)\S/)?.[1] ?? 2;
+  const eol = before.includes("\r\n") ? "\r\n" : "\n";
+  const text = `${JSON.stringify(merged, null, indent).split("\n").join(eol)}${before !== "" && !before.endsWith("\n") ? "" : "\n"}`;
+  return { text, changed };
 }
 
 // ---- Codex: one marked block in a file full of the user's own -----------------

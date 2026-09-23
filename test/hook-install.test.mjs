@@ -107,6 +107,33 @@ test("the user's own settings survive an install and come back on uninstall", as
   }
 });
 
+test("a settings file Avenic edits keeps the shape its editor wrote", async () => {
+  // JSON 只能整个重新序列化 —— 它没有块语法可以插进去。但「重新序列化」不该顺手把用户的
+  // 文件重排：一个 4 空格、CRLF、末尾没有换行的 settings 被装一次就整篇变了，用户的 diff
+  // 里每一行都在动，而卸载回不到原来的字节 —— 而这个文件的头一句话就是它要回去。
+  // （Codex 那一半修的是同一件事，见 model-write 的 mergeCodexConfig。）
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] }, hooks: { Stop: [{ hooks: [{ type: "command", command: "echo mine" }] }] } }, null, 4).replace(/\n/g, "\r\n");
+    await writeFile(file, mine);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    const plan = await hookPlan("claude", options);
+    assert.ok(plan.contents.includes("\r\n"), "行尾跟着文件走");
+    assert.match(plan.contents, /^ {4}"permissions"/m, "缩进也跟着文件走");
+    await installHooks(plan);
+    assert.equal((await run.text(file)).endsWith("\n"), false, "末尾没有换行的文件，装完还是没有");
+
+    const removal = await uninstallHooks(await hookPlan("claude", options));
+    assert.equal(removal.changed, true);
+    assert.equal(await run.text(file), mine, "卸载之后回到原来的字节");
+  } finally {
+    await run.done();
+  }
+});
+
 test("a hook group Avenic cannot classify is kept, not dropped", async () => {
   // 一个组的形状不止一种：有 matcher 没有 hooks 的、甚至根本不是对象的元素。Avenic 认得出
   // 的只有「组里的某个处理器是不是自己的命令」——认不出来的东西就没有资格删。上一版把它们
