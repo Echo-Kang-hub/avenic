@@ -86,7 +86,9 @@ async function askFields(ui: HookWizardUi, language: string, kind: HookActionKin
     if (path === null) return null;
     const token = await askToken(ui, language, existing);
     if (token === null) return null;
-    return { draft: { gateway: checked, path, ...token }, advanced: true };
+    // 网关那一页不问上限（本机地址，没什么可等的），但一条手写过上限的动作在被编辑时
+    // 还是要带着它走：core 分发时读的是这个字段，编辑器不该替用户丢掉一个它没问的字段。
+    return { draft: { gateway: checked, path, ...token, timeoutMs: existing?.timeoutMs ?? null }, advanced: true };
   }
   if (kind === "webhook") {
     const url = await ui.ask(sentence(language, "hooks.ask-url"), existing?.url ?? "", "https://example.com/hook");

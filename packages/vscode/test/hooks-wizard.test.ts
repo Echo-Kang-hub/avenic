@@ -78,6 +78,18 @@ test("a webhook's timeout is a number of milliseconds, clamped rather than trust
   await assert.rejects(() => addHookAction(store(), ui({ ask: ["file:///etc/passwd"], pick: ["none"] }), "webhook", "en"), /http\(s\)/);
 });
 
+test("editing an openclaw action keeps a timeout the wizard never asked about", async () => {
+  // 网关那一页不问上限，但 core 分发时读这个字段：一条手写过上限的动作在这里被编辑一次，
+  // 上限不该消失。没写过的那一条（null）照旧什么都不写 —— 不问就不写。
+  const rows = store([{ id: "openclaw", kind: "openclaw", gateway: "http://box:1/", path: "/x", timeoutMs: 900 }]);
+  await editHookAction(rows, ui({ ask: ["http://box:2/", "/y"], pick: ["none"] }), "openclaw", "en");
+  assert.deepEqual(rows.rows[0], { id: "openclaw", kind: "openclaw", gateway: "http://box:2/", path: "/y", timeoutMs: 900 });
+
+  const plain = store([{ id: "openclaw", kind: "openclaw" }]);
+  await editHookAction(plain, ui({ ask: ["http://box:2/", "/y"], pick: ["none"] }), "openclaw", "en");
+  assert.deepEqual(plain.rows[0], { id: "openclaw", kind: "openclaw", gateway: "http://box:2/", path: "/y" }, "没写过的上限不会被凭空写出来");
+});
+
 test("cancelling any single question leaves the list exactly as it was", async () => {
   const rows = store([{ id: "webhook", kind: "webhook", url: "https://example.test/keep" }]);
   // 地址那一问按 Esc。

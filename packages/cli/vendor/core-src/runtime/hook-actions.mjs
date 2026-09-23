@@ -79,6 +79,12 @@ function globalHookActionsPath(environment) {
   return path.join(stateRoot(environment), "hook-actions.json");
 }
 
+/** One scope's own list, in the place that scope keeps it. Both scopes name their file through this. */
+export function hookActionsPathAt(projectRoot, scope, environment = process.env) {
+  if (scope !== "project" && scope !== "global") throw new Error(`Unknown hook action scope: ${scope}`);
+  return scope === "global" ? globalHookActionsPath(environment) : hookActionsPath(projectRoot);
+}
+
 /** The one file the dedupe window and the turn starts live in. */
 export function hookStatePath(projectRoot) {
   return path.join(runtimePaths(projectRoot).localRoot, "hook-state.json");
@@ -120,7 +126,7 @@ const byId = (left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 
 
 /** The actions of one scope, exactly as that scope's own file holds them. */
 export function readHookActionsAt(projectRoot, scope, environment = process.env) {
-  return readActionsFile(scope === "global" ? globalHookActionsPath(environment) : hookActionsPath(projectRoot)).sort(byId);
+  return readActionsFile(hookActionsPathAt(projectRoot, scope, environment)).sort(byId);
 }
 
 function checkedAction(action) {
@@ -143,8 +149,7 @@ function checkedAction(action) {
  * token.
  */
 export async function writeHookActions(projectRoot, scope, actions, { environment = process.env } = {}) {
-  if (scope !== "project" && scope !== "global") throw new Error(`Unknown hook action scope: ${scope}`);
-  const file = scope === "global" ? globalHookActionsPath(environment) : hookActionsPath(projectRoot);
+  const file = hookActionsPathAt(projectRoot, scope, environment);
   const wanted = actions.map(checkedAction).sort(byId);
   for (let index = 1; index < wanted.length; index += 1) {
     if (wanted[index].id === wanted[index - 1].id) throw new Error(`two hook actions cannot share an id: ${wanted[index].id}`);

@@ -733,6 +733,8 @@ export interface HookEmitResult {
   results: HookActionResult[];
 }
 export function hookActionsPath(projectRoot: string): string;
+/** That scope's own file: the project's own Avenic state, or the machine's. */
+export function hookActionsPathAt(projectRoot: string, scope: "project" | "global", environment?: Record<string, string | undefined>): string;
 /** The actions of one scope, exactly as that scope's own file holds them. */
 export function readHookActionsAt(projectRoot: string, scope: "project" | "global", environment?: Record<string, string | undefined>): HookAction[];
 /** Both scopes, the project winning by id — the list a dispatch actually runs. */

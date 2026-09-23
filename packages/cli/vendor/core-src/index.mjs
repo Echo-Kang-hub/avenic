@@ -98,7 +98,7 @@ export { HOOK_CAPABILITIES, HOOK_EVENTS, HOOK_POLICY, hookCapability, hookFinger
 export { hookPlan, hookStatus, installHooks, uninstallHooks } from "./runtime/hook-install.mjs";
 // The actions file and its one writer: what a notification is, which scope owns
 // it, and the dispatch that reads both scopes when an event arrives.
-export { HOOK_ACTION_KINDS, emitHook, hookActionsPath, readHookActions, readHookActionsAt, writeHookActions } from "./runtime/hook-actions.mjs";
+export { HOOK_ACTION_KINDS, emitHook, hookActionsPath, hookActionsPathAt, readHookActions, readHookActionsAt, writeHookActions } from "./runtime/hook-actions.mjs";
 export { LABELS, agentQuestion, authenticationValue, historyLabel, methodLabel, scopeLabel, scopedHomeValue, signInLabel } from "./labels.mjs";
 export { quoteShellLine, spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {

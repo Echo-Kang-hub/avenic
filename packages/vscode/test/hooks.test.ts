@@ -89,6 +89,27 @@ test("the three rows are read off the machine, and the version is the one detect
   }
 });
 
+test("the file the page names is the file that scope is actually read from", async () => {
+  // 名单有两个家：项目的那份在项目的 Avenic 状态里，全机的那份跟着机器状态走。页面上
+  // 「你的名单在这个文件」那一行如果永远指着项目文件，切到「全机」的人就在读一个空的
+  // 文件，而真正在响的那几条在另一个地方。
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-hooks-file-"));
+  try {
+    const env = await project(root);
+    const dir = path.join(root, "project");
+    const globalFacts = await hooksFacts(dir, "global", options(env));
+    const projectFacts = await hooksFacts(dir, "project", options(env));
+    assert.notEqual(globalFacts.actionsFile, projectFacts.actionsFile, "两个作用域是两个文件");
+    assert.equal(projectFacts.actionsFile, hookActionsPath(dir));
+    // 写一份全机的：写进去的那个文件，就是这一页该点名的文件 —— 同一个答案，两个来源。
+    const saved = await saveHookActions(dir, "global", [{ id: "desktop", kind: "desktop" }], options(env));
+    assert.equal(saved.changed, true);
+    assert.equal(globalFacts.actionsFile, saved.file);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a file nobody can read costs its own row and nothing else", async () => {
   // 这一页三行来自三次读盘。同名目录（读起来是 EISDIR）是「文件在、读不动」那一类中最
   // 常见的一种。一个读不动的文件只说明**这一个** agent 装没装不知道 —— 另外两行照答，
@@ -257,6 +278,12 @@ test("the four kinds' editors fill from the vendor's own defaults, and refuse wh
   // OpenClaw 的默认值就是本机网关与它自己的那一条路径 —— 令牌另有一个字段，不进地址。
   assert.deepEqual(draftAction("openclaw", {}, []), { id: "openclaw", kind: "openclaw", gateway: OPENCLAW_DEFAULTS.gateway, path: OPENCLAW_DEFAULTS.path });
   assert.deepEqual(draftAction("openclaw", { gateway: "http://box:1/", path: "/x", tokenEnv: "T" }, []), { id: "openclaw", kind: "openclaw", gateway: "http://box:1/", path: "/x", tokenEnv: "T" });
+  // 一条动作自己的上限对每一种走网络的种类都算数：core 分发 openclaw 时读的就是这个字段
+  // （post 走同一条路），所以向导编辑一条手写过上限的 openclaw 动作时不许把它抹掉。
+  assert.deepEqual(
+    draftAction("openclaw", { gateway: "http://box:1/", path: "/x", timeoutMs: 900 }, []),
+    { id: "openclaw", kind: "openclaw", gateway: "http://box:1/", path: "/x", timeoutMs: 900 },
+  );
   assert.throws(() => draftAction("openclaw", { path: "x" }, []), /has to start with/);
   assert.throws(() => draftAction("openclaw", { gateway: "box:18789" }, []), /http\(s\) gateway/);
   assert.throws(() => draftAction("openclaw", { token: TOKEN, tokenEnv: "T" }, []), /not both/);

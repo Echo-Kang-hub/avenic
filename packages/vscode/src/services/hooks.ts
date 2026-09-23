@@ -2,7 +2,7 @@ import {
   HOOK_ACTION_KINDS,
   HOOK_POLICY,
   configurationDiff,
-  hookActionsPath,
+  hookActionsPathAt,
   hookCapability,
   hookPlan,
   hookStatus,
@@ -181,7 +181,7 @@ export async function hooksFacts(projectRoot: string, scope: HookScope, options:
     scope,
     agents,
     actions: hookActionList(projectRoot, scope, options).map(actionFacts),
-    actionsFile: hookActionsPath(projectRoot),
+    actionsFile: hookActionsPathAt(projectRoot, scope, options.environment),
     kinds: [...HOOK_ACTION_KINDS],
     completedMinSeconds: HOOK_POLICY.completedMinSeconds,
     dedupeSeconds: HOOK_POLICY.dedupeSeconds,
@@ -268,7 +268,7 @@ export function draftAction(kind: HookActionKind, draft: ActionDraft, existing: 
     const gateway = draft.gateway === undefined || draft.gateway.trim() === "" ? OPENCLAW_DEFAULTS.gateway : httpUrl(draft.gateway, "hooks.bad-gateway");
     const path = draft.path === undefined || draft.path.trim() === "" ? OPENCLAW_DEFAULTS.path : draft.path.trim();
     if (!path.startsWith("/")) throw new LocalizedError("hooks.need-path");
-    return { id, kind, gateway, path, ...bothOrNeitherToken(draft.token ?? null, draft.tokenEnv ?? null) };
+    return { id, kind, gateway, path, ...bothOrNeitherToken(draft.token ?? null, draft.tokenEnv ?? null), ...(timeout === null ? {} : { timeoutMs: timeout }) };
   }
   const command = draft.command === undefined ? "" : draft.command.trim();
   if (command === "") throw new LocalizedError("hooks.need-command");
