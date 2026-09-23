@@ -166,12 +166,12 @@ test("a test that fires nothing still says whether the hooks are installed", asy
   }
 });
 
-test("an agent that cannot carry hooks says that instead, and Codex's caveat rides with the installed answer", async () => {
+test("an agent that cannot carry hooks still gets its chain tested, and Codex's caveat rides with the installed answer", async () => {
   const run = await machine({ versions: { claude: "2.0.0", codex: "0.154.0" } });
   try {
-    // 一个装不上钩子的 agent 没有这一跳可测：真的发一条出来，用户收到的是一次从哪来的
-    // 都不知道的通知，而那句话前面正写着「这个版本不支持」。所以场景里放一个真的动作 ——
-    // 它会留下一个文件 —— 件数不对就说明还是发出去了。
+    // 这条命令测的是动作那一条链，与哪个 agent 无关：装不上钩子的 agent 也要让用户把
+    // 自己的通知验成。第一跳（这个版本不支持）就印在旁边 —— 说了事实，但不用它去拦这一发。
+    // 场景里放一个真的动作，它会留下一个文件。
     const marker = path.join(run.root, "the-action-ran");
     await mkdir(path.dirname(path.join(run.root, "state", "hook-actions.json")), { recursive: true });
     await writeFile(path.join(run.root, "state", "hook-actions.json"), JSON.stringify({
@@ -181,9 +181,8 @@ test("an agent that cannot carry hooks says that instead, and Codex's caveat rid
     const unsupported = capturing();
     assert.equal(await dispatchHookCommand(["test", "--agent", "claude"], run.context(unsupported)), 0, unsupported.errors.join("\n"));
     const unsupportedText = unsupported.lines.join("\n");
-    assert.match(unsupportedText, /^Hooks: Unsupported by Claude Code 2\.0\.0$/m);
-    assert.match(unsupportedText, /Nothing was sent/, "装不上就说没发，不能让用户以为桌面上那一下是测试");
-    assert.equal(await run.exists(marker), false, "不支持这个 agent，一次都不该发");
+    assert.match(unsupportedText, /^Hooks: Unsupported by Claude Code 2\.0\.0$/m, "第一跳是什么，这一行就说什么");
+    assert.equal(await run.exists(marker), true, "测试测的是动作那一条链：装不上钩子也验得成自己的通知");
 
     assert.equal(await dispatchHookCommand(["install", "--agent", "codex", "--scope", "project"], run.context(capturing())), 0);
     const codex = capturing();

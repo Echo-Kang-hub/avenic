@@ -88,9 +88,10 @@ notification chain with VS Code closed, and it prints the first hop next to the
 last one: whether this agent's hooks are installed for this project in the
 first place. A test that proves the actions work and then says nothing about
 the file is how a user ends up staring at a silent hook they never installed.
-When the agent's own version cannot carry the hooks, it says so and fires
-nothing: a test that pops a notification for an agent that can never report an
-event is a notification from nowhere.
+The chain it tests is Avenic's own, so nothing about the agent blocks the
+test — a version too old to carry hooks, no hooks installed, no actions
+configured yet: the first hop is printed as a fact beside the result instead,
+and the user can always verify the notifications they configured.
 
 The emit path is charged to the turn, so it is measured: on Windows 11 the
 whole `avenic hook emit` process costs ~230 ms end to end, of which ~170 ms is

@@ -171,11 +171,11 @@ async function installationLines(agentId, projectRoot, environment) {
   const [{ hookPlan }, { detectAgentInstallationAsync }] = await Promise.all([import("#core/runtime/hook-install.mjs"), import("#core/runtime/versions.mjs")]);
   const installation = await detectAgentInstallationAsync(agentId, { environment });
   const plan = await hookPlan(agentId, { scope: "project", projectRoot, environment, version: installation.version });
-  if (!plan.supported) return { supported: false, lines: [`Hooks: ${plan.note}`] };
-  if (!plan.installed) return { supported: true, lines: [`Hooks: not installed for this project — run: avenic hook install --agent ${agentId} --scope project`] };
+  if (!plan.supported) return [`Hooks: ${plan.note}`];
+  if (!plan.installed) return [`Hooks: not installed for this project — run: avenic hook install --agent ${agentId} --scope project`];
   const lines = [`Hooks: installed — ${plan.file}`];
   if (plan.caveat !== "") lines.push(`${plan.displayName}: ${plan.caveat}`);
-  return { supported: true, lines };
+  return lines;
 }
 
 async function testVerb(argumentsList, context) {
@@ -188,18 +188,13 @@ async function testVerb(argumentsList, context) {
   const capability = hookCapability(agent.agentId);
   const projectRoot = projectOf(cwd);
   const installation = await installationLines(agent.agentId, projectRoot, environment);
-  // 装不上钩子的 agent 没有这一跳可测：真的发一条出去，用户收到的是一次从哪来的都不知道
-  // 的通知，而下一行正写着「这个版本不支持」。
-  if (!installation.supported) {
-    io.log(`Test event: a synthetic turn.completed for ${capability.displayName} — nothing happened in your agent.`);
-    for (const line of installation.lines) io.log(line);
-    io.log("Nothing was sent: this agent cannot report hook events, so there is no chain for a test to reach.");
-    return 0;
-  }
+  // 这条命令测的是**动作那一条链**（Avenic 自己的名单，与哪个 agent 无关），第一跳只是
+  // 印在旁边的一行事实。所以 version too old / 没装 / 什么都还没配，都不拦这一发：拦下来
+  // 用户就没有任何办法验证自己的通知，而他想知道的正是这个。
   const configured = readHookActions(projectRoot, environment);
   const result = await emitHook({ agentId: agent.agentId, payload: testPayload(capability), projectRoot, environment, ...(emitIo === undefined ? {} : { io: emitIo }) });
   io.log(`Test event: a synthetic turn.completed for ${capability.displayName} — nothing happened in your agent.`);
-  for (const line of installation.lines) io.log(line);
+  for (const line of installation) io.log(line);
   for (const item of result.results) io.log(`${item.state}  ${item.id} (${item.kind}) — ${item.detail}`);
   if (configured.length === 0) {
     io.log(`No actions are configured — add one to ${hookActionsPath(projectRoot)} to receive notifications.`);
