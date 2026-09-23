@@ -99,6 +99,12 @@ interface Control {
    * 只有这条线能问到——点一次命令到不了。
    */
   message?: object;
+  /**
+   * 这台"机器"的 PATH 上要额外摆什么（文件名 → 内容）。默认什么都没有：「什么都跑
+   * 不起来」是每一行的处境。摆一个真的会慢的可执行文件，是为了问「这一次点击有没有
+   * 在等它」——等待是看得见的，只要它够慢。
+   */
+  bin?: Record<string, string>;
 }
 
 // One entry per command in the manifest. `says` is the reason, in the control's
@@ -297,6 +303,9 @@ async function invoke(control: Control): Promise<Invocation> {
   // 子进程拿的是隔离后的环境：状态目录在沙箱里，Agent 的配置根在沙箱里（withAgentHomes），
   // PATH 指向一个空目录。于是「起一个进程」这件事在这里永远不成立——这正是每一行的处境，
   // 也是这个文件敢在开发机上跑、并且不碰网的原因。
+  for (const [name, content] of Object.entries(control.bin ?? {})) {
+    await writeFile(path.join(run.empty, name), content, { mode: 0o755 });
+  }
   const env: Record<string, string> = { ...testEnv(run.state), PATH: run.empty, Path: run.empty } as Record<string, string>;
   return withAgentHomes(run.home, async () => {
     const stdout = execFileSync(process.execPath, [activation, planFile], { encoding: "utf8", env, cwd: run.root, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
@@ -354,6 +363,32 @@ for (const control of CONTROLS) {
     }
   });
 }
+
+/**
+ * 一台 registry 很慢的机器：PATH 上的 npm 要好几秒才回答。
+ *
+ * 等待不能靠 sleep/ping 这类系统命令：这台"机器"的 PATH 是空的（这正是每一行的处境），
+ * 连它们都找不到——脚本会一路走到下一行，于是"慢"的假象当场消失，测的就不是等待了。
+ * 只有解释器本身是绝对路径，所以等待由它来做：这条路与 PATH 无关。
+ */
+function slowNpm(): Record<string, string> {
+  const wait = `"${process.execPath}" -e "setTimeout(function(){process.exit(0)},3000)"`;
+  return process.platform === "win32"
+    ? { "npm.cmd": `@echo off\r\n${wait}\r\necho 1.2.3\r\n` }
+    : { npm: `#!/bin/sh\n${wait}\necho 1.2.3\n` };
+}
+
+// 「启动」是一次点击，而点击不许等网络（P26）。这个 agent 在这台机器上是 npm 装的那种，
+// 于是「有没有新版」那一问会去跑 `npm view`：网慢的时候，用户按下启动、终端要过十几秒才
+// 开——而那一问的答案（有没有新版）启动根本不用，它只要本机这两个事实：配没配、CLI 在不在。
+// 所以这条把 PATH 上的 npm 换成一个要好几秒才回答的东西：等它，就看得见。
+test("the launch gate answers from this machine, and does not wait on the registry", async () => {
+  const control: Control = { id: "avenic.agents.launch", open: "project", effect: "message", says: "is not initialized", bin: slowNpm() };
+  const { effects, ms } = await invoke(control);
+  const said = effects.map(describe).join(" | ");
+  assert.ok(said.includes("is not initialized"), `启动那一问本来就该当场回答（这一次用了 ${ms}ms），它说的是：${said}`);
+  assert.ok(ms < 2_000, `点一次启动等了 ${ms}ms：它在等 registry（npm），而那一次点击不该有网络（P26）`);
+});
 
 // 上面每一行问的都是「这个控件做了什么」，答案都是英文编辑器里的。但一句要显示的话是
 // 宿主说的，而只有宿主知道编辑器在用哪种语言——流程与 core 都只递键。这条把同一个控件

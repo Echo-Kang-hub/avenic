@@ -7,28 +7,28 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { listCanonicalSessions } from "@avenic/core";
 import { LocalizedError } from "../src/i18n/text.ts";
-import { agentStatus, deinitialize, initialize, prepareAgentLaunch, releaseSummary } from "../src/services/agents.ts";
+import { deinitialize, initialize, prepareAgentLaunch, releaseSummary } from "../src/services/agents.ts";
 import { select } from "../src/services/catalog.ts";
 import { installPacks, repairLinks } from "../src/services/skills.ts";
-import { makeCatalogFixture, testEnv, withAgentHomes } from "./helpers.ts";
+import { agentRow, makeCatalogFixture, testEnv, withAgentHomes } from "./helpers.ts";
 
 test("init → reconfigure → deinit round-trip on real core", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
   try {
     await initialize(dir, "claude", { authMethod: "account", accountScope: "global", sessionScope: "project" });
-    let status = await agentStatus(dir, "claude");
+    let status = await agentRow(dir, "claude");
     assert.equal(status.auth?.method, "account");
     assert.equal(status.auth?.scope, "global");
     assert.equal(status.sessions, "project");
     // 同一场问答的第二次：方法、作用域、会话各自换一个答案，写的是同一份 schema。
     await initialize(dir, "claude", { authMethod: "api", configScope: "project", sessionScope: "global" });
-    status = await agentStatus(dir, "claude");
+    status = await agentRow(dir, "claude");
     assert.equal(status.auth?.method, "api");
     assert.equal(status.auth?.scope, "project");
     assert.equal(status.auth?.configuration?.relative, ".claude/settings.local.json");
     assert.equal(status.sessions, "global");
     await deinitialize(dir, "claude");
-    const after = await agentStatus(dir, "claude");
+    const after = await agentRow(dir, "claude");
     assert.equal(after.initialized, false);
     assert.equal(after.auth, null);
   } finally {

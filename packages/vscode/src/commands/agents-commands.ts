@@ -109,7 +109,6 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     const closeListener = vscode.window.onDidCloseTerminal((closed) => {
       if (closed !== terminal) return;
       closeListener.dispose();
-      agents.invalidateCliVersionCache(target.id);
       deps.refresh();
     });
     terminal.show();
@@ -124,14 +123,14 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (busy()) return false;
     const target = await agentTarget(treeItem);
     if (target === null) return false;
-    const status = await agents.agentStatus(target.root, target.id);
-    if (!status.initialized) {
+    const readiness = await agents.launchReadiness(target.root, target.id);
+    if (!readiness.initialized) {
       // 与 prepareAgentLaunch 抛的是同一个键：这是同一件事，两处各写一遍就会各说各的。
-      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.not-initialized", { agent: status.agent.displayName }));
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.not-initialized", { agent: readiness.agent.displayName }));
       return false;
     }
-    if (!status.executableAvailable) {
-      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.no-executable", { agent: status.agent.displayName, executable: status.agent.executable }));
+    if (!readiness.executableAvailable) {
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agent.no-executable", { agent: readiness.agent.displayName, executable: readiness.agent.executable }));
       return false;
     }
     const prepared = await runMutation(deps.queue, () => agents.prepareAgentLaunch(target.root, target.id, { language: vscode.env.language }), () => deps.refresh());

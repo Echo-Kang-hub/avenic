@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { avenicCliVersion, cachedAvenicCliVersion, cliVersionStatus, invalidateCliVersionCache, updateCommandForInstallation } from "../src/services/agent-versions.ts";
+import { avenicCliVersion, cachedAvenicCliVersion, updateCommandForInstallation } from "../src/services/agent-versions.ts";
 
 // 未检测到 CLI 时没有「现有安装的升级命令」可用，唯一入口是 registry 上的官方
 // npm 包；包名来自 core，面板不再自带一份包名表。
@@ -52,28 +52,6 @@ test("update commands use the installation strategy for every detected agent", (
     packageManager: "npm",
     updateStrategy: { kind: "npm-local", command: "npm install opencode-ai@latest" },
   }), "npm install opencode-ai@latest");
-});
-
-test("cliVersionStatus computes updateAvailable and caches within TTL", async () => {
-  const agent = { id: "claude", displayName: "Claude Code", executable: "claude" };
-  const probes = {
-    probeInstalled: async () => "2.1.238",
-    probeLatest: async () => "2.2.0",
-  };
-  let calls = 0;
-  const counting = {
-    ...probes,
-    probeLatest: async () => { calls += 1; return "2.2.0"; },
-  };
-  // 起始清缓存（模块级缓存跨测试复用）
-  invalidateCliVersionCache("claude");
-  const first = await cliVersionStatus("claude", agent, counting);
-  assert.deepEqual(first, { installed: "2.1.238", latest: "2.2.0", updateAvailable: true });
-  const second = await cliVersionStatus("claude", agent, counting);
-  assert.deepEqual(second, first);
-  assert.equal(calls, 1, "TTL 内应命中缓存，不再探测 npm");
-  assert.deepEqual(await cliVersionStatus("opencode-up-to-date", agent, { probeInstalled: async () => "0.5.1", probeLatest: async () => "0.5.1" }), { installed: "0.5.1", latest: "0.5.1", updateAvailable: false });
-  assert.deepEqual(await cliVersionStatus("opencode-unparsable", agent, { probeInstalled: async () => null, probeLatest: async () => "0.5.1" }), { installed: null, latest: "0.5.1", updateAvailable: false });
 });
 
 // 底部那一行「Avenic v…」说的是这台机器上真正在用的那份 CLI：探一次就够（服务里

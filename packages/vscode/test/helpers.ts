@@ -1,6 +1,8 @@
+import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { projectStatus } from "../src/services/agents.ts";
 
 // 测试环境隔离：剥离宿主所有 AVENIC_/AGENTHOME_ 变量（读到的用户真机配置不得影响测试），
 // 再注入隔离的 AVENIC_STATE_DIR——若省略 stateDir，则返回无任何 Avenic 变量的环境副本。
@@ -37,6 +39,13 @@ export async function withAgentHomes<T>(home: string, run: () => Promise<T>): Pr
       else process.env[key] = value;
     }
   }
+}
+
+/** 一个项目里某个 agent 那一行：宿主各处读的必须是同一份状态模型（P10 只有一个数据源）。 */
+export async function agentRow(dir: string, id: string) {
+  const row = (await projectStatus(dir)).agents.find((entry) => entry.id === id);
+  assert.ok(row !== undefined, `状态模型里没有 ${id} 这一行`);
+  return row;
 }
 
 export async function makeCatalogFixture(root: string): Promise<void> {

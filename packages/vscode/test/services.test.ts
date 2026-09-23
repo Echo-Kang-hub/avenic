@@ -3,10 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { agentStatus, listAgents } from "../src/services/agents.ts";
+import { listAgents } from "../src/services/agents.ts";
 import { defaultSpec, listKnown } from "../src/services/catalog.ts";
 import { status as skillsStatus } from "../src/services/skills.ts";
-import { testEnv } from "./helpers.ts";
+import { agentRow, testEnv } from "./helpers.ts";
 
 test("agents service lists the three ecosystem agents", () => {
   assert.deepEqual(listAgents().map((a) => a.id).sort(), ["claude", "codex", "opencode"]);
@@ -15,13 +15,13 @@ test("agents service lists the three ecosystem agents", () => {
 test("agents service reports an unconfigured agent on a fresh project", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
   try {
-    const status = await agentStatus(dir, "claude");
+    const status = await agentRow(dir, "claude");
     // 没有 runtime.json：没配过，因此既没有初始化也没有认证答案 —— 「未配置」与
     // 「配了 Account」是两种状态，只有后者能在启动时不提问。
     assert.equal(status.initialized, false);
     assert.equal(status.auth, null);
     assert.equal(status.sessions, null);
-    assert.equal(typeof status.executableAvailable, "boolean");
+    assert.equal(typeof status.available, "boolean");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

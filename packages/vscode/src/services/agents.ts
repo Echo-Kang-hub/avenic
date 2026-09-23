@@ -20,27 +20,18 @@ import {
   type Agent,
   type AgentInstallation,
   type ReleasedMethod,
-  type StatusAgent,
   type StatusModel,
 } from "@avenic/core";
-import { cliVersionStatus, type CliVersionStatus } from "./agent-versions.ts";
 import { chineseVisible, LocalizedError, sentence } from "../i18n/text.ts";
 
-export interface AgentStatus {
+// 「启动」是一次点击，而它只问这台机器上本地的那两个事实：这个项目配没配、CLI 在不在。
+// 这一问曾经要走一份更全的状态，那份状态顺带还去 registry 上问「有没有新版」——那个答案
+// 启动根本不用（它只看前两个字段），可网慢的时候，用户按下启动要等 npm 十几秒才见到终端
+// （P26：点一次就有一次网络）。两个本地事实都在项目状态模型里：分类只看文件系统。
+export interface LaunchReadiness {
   agent: Agent;
-  executableAvailable: boolean;
   initialized: boolean;
-  // 认证的整份解答来自 core 的状态模型：方法（account/api）、作用域、来源
-  // （project/local）、账号 home、以及 API 那一侧读了哪个文件、选了哪个 provider。
-  // 插件不重算其中任何一项——CLI 的 status、树视图、仪表盘问的是同一个函数。
-  auth: StatusAgent["auth"];
-  // "native" 给那些自己回答认证的 agent（OpenCode）：它的认证不是 Avenic 的答案，
-  // 也不该被说成「没选」。树视图和仪表盘都要靠这个字知道自己面对的是哪一种。
-  runtime: StatusAgent["runtime"];
-  sessions: StatusAgent["sessions"];
-  // 本机已装版本与 npm registry 最新版（10 分钟缓存，失败容错为 null）
-  cli: CliVersionStatus;
-  installation: AgentInstallation;
+  executableAvailable: boolean;
 }
 
 // Agents and Dashboard ask for the same picture during one refresh cycle, and
@@ -81,29 +72,12 @@ export async function detectInstallation(agentId: string): Promise<AgentInstalla
   return detectAgentInstallationAsync(agentId);
 }
 
-export async function agentStatus(projectRoot: string, agentId: string, environment: NodeJS.ProcessEnv = process.env): Promise<AgentStatus> {
-  const agent = getAgent(agentId);
-  const [status, installation] = await Promise.all([
-    projectStatus(projectRoot, environment),
-    detectAgentInstallationAsync(agentId),
-  ]);
+export async function launchReadiness(projectRoot: string, agentId: string, environment: NodeJS.ProcessEnv = process.env): Promise<LaunchReadiness> {
+  const status = await projectStatus(projectRoot, environment);
   const row = status.agents.find((entry) => entry.id === agentId);
   if (row === undefined) throw new Error(`Unknown agent: ${agentId}`);
-  // registry 版本是异步网络查询，10 分钟内命中缓存；单次失败容错为 null
-  const cli = await cliVersionStatus(agentId, agent, undefined, installation);
-  return {
-    agent,
-    executableAvailable: row.available,
-    initialized: row.initialized,
-    auth: row.auth,
-    runtime: row.runtime,
-    sessions: row.sessions,
-    cli,
-    installation,
-  };
+  return { agent: getAgent(agentId), initialized: row.initialized, executableAvailable: row.available };
 }
-
-export { invalidateCliVersionCache } from "./agent-versions.ts";
 
 // 写入口只有一个形状：命名的答案（authMethod + 该方法自己的作用域 + 会话作用域）。
 // 位置参数在这里还能编译，但写出来的会是别的东西——core 会拒绝，也就不必等运行时。
