@@ -89,8 +89,15 @@ function eventNativeSession(event, agentId) {
   return separator > 0 ? rest.slice(0, separator) : null;
 }
 
+// What a model thought is not what anyone said, and neither is a native
+// extension Avenic does not understand. A released version wrote reasoning
+// blocks into users' stores, so the rule lives on the reading side too — "has
+// a text field" is not the test for "is a sentence".
+const INTERNAL_BLOCKS = new Set(["reasoning", "reasoning_summary", "unknown/native_extension"]);
+
 export function blockText(block) {
   if (!block || typeof block !== "object") return "";
+  if (INTERNAL_BLOCKS.has(block.type)) return "";
   // A store an older version wrote still holds command envelopes as text; the
   // person's own words are what comes out of them here, not the CLI's markup.
   if (typeof block.text === "string") return spokenLocalCommand(block.text);
@@ -107,7 +114,6 @@ export function blockText(block) {
         : "";
     return `[tool result${text ? `: ${text.trim().slice(0, 400)}` : ""}]`;
   }
-  if (typeof block.reasoning === "string") return block.reasoning;
   return "";
 }
 

@@ -245,6 +245,45 @@ test("an older store's command records keep the person's words when they are rea
   assert.ok(!handoff.markdown.includes("<command"), "交出去的东西里不带 CLI 的信封");
 });
 
+test("an OpenCode message's reasoning stays inside the model that thought it", () => {
+  // 推理是模型内部的东西 —— 这条规则在 Claude 和 Codex 的读入里都写着，OpenCode 的
+  // 读入不能是第二个分类器。推理进了存储，下一个 agent 读到的就是这些话。
+  const canonical = getSessionAdapter("opencode").toCanonical({
+    id: "ses_reasoning",
+    messages: [
+      {
+        info: { id: "msg_1", role: "assistant", time: { created: Date.parse(AT(1)) } },
+        parts: [{ type: "reasoning", text: "SECRET-INTERNAL-REASONING" }, { type: "text", text: "hi" }],
+      },
+      // 整条只有推理：没有可说的话，就没有这一条事件。
+      { info: { id: "msg_2", role: "assistant", time: { created: Date.parse(AT(2)) } }, parts: [{ type: "reasoning", text: "more thinking" }] },
+      // 什么都没有的一条：空的用户回合同样不是一句谁说的话。
+      { info: { id: "msg_3", role: "user", time: { created: Date.parse(AT(3)) } }, parts: [] },
+    ],
+  });
+  const texts = canonical.events.flatMap((event) => event.content).map((block) => String(block.text ?? ""));
+  assert.ok(texts.some((text) => text.includes("hi")), "这个人真的看到的那句话还在");
+  for (const text of texts) assert.ok(!text.includes("SECRET-INTERNAL-REASONING") && !text.includes("more thinking"), `推理进了存储：${text.slice(0, 40)}`);
+  assert.deepEqual(canonical.events.map((event) => event.role), ["assistant"], "只有推理和空消息都不该变成事件");
+});
+
+test("a store an older version wrote with reasoning blocks does not hand them to the next agent", () => {
+  // 已经发布过的版本把这些块写进过用户的存储：读的人也要挡住它们，否则改的只是新数据。
+  const events = [
+    {
+      id: "opencode:ses_old:msg_1", agent: "opencode", role: "assistant", createdAt: AT(1),
+      content: [{ type: "reasoning_summary", text: "SECRET-INTERNAL-REASONING" }, { type: "text", text: "the answer" }],
+      model: null, provider: "opencode", extensions: {},
+    },
+  ];
+  const turns = transcriptTurns(events);
+  for (const turn of turns) assert.ok(!turn.text.includes("SECRET-INTERNAL-REASONING"), "推理不该被读成人话");
+  const projection = buildProjection({ session: { id: "opencode-ses_old" }, events, targetAgent: "codex", nativeSessionId: "codex-native-2", budget: 400_000 });
+  for (const turn of projection.turns) assert.ok(!turn.text.includes("SECRET-INTERNAL-REASONING"), "交给下一个 agent 的东西里没有别人的推理");
+  const handoff = buildHandoff({ session: { id: "opencode-ses_old", project: { cwd: "/fixture" } }, events, targetAgent: "codex" });
+  assert.ok(!handoff.markdown.includes("SECRET-INTERNAL-REASONING"));
+});
+
 test("the projection and the handoff read an older store by the same rule", () => {
   const events = storedEvents();
   const projection = buildProjection({

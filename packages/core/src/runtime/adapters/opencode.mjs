@@ -20,8 +20,12 @@ function canonicalBlocks(parts) {
   if (!Array.isArray(parts)) return [];
   return parts.flatMap((part) => {
     if (!part || typeof part !== "object") return [];
-    if (part.type === "text" && typeof part.text === "string") return [{ type: "text", text: part.text }];
-    if (part.type === "reasoning" && typeof part.text === "string") return [{ type: "reasoning_summary", text: part.text }];
+    // Reasoning is the model's own thinking and stays internal, the same way
+    // the Claude and Codex readers drop it: a transcript holds what was said,
+    // not what was thought.
+    if (part.type === "reasoning") return [];
+    if (part.type === "text" && typeof part.text === "string" && part.text.trim()) return [{ type: "text", text: part.text }];
+    if (part.type === "text") return [];
     return [{ type: "unknown/native_extension", nativeType: part.type ?? "unknown", data: part }];
   });
 }
@@ -48,11 +52,15 @@ export function toCanonical(content, options = {}) {
       && typeof provenance.canonicalEventId === "string"
       ? provenance.canonicalEventId
       : null;
+    const content = canonicalBlocks(message.parts ?? info.parts ?? info.content);
+    // A record that carries nothing to say is transport, not a turn: the same
+    // rule the Claude reader applies to a message with no speakable blocks.
+    if (content.length === 0) return [];
     return [{
       id: canonicalEventId ?? nativeEventId(agentId, nativeSessionId, info.id, index, message),
       role,
       createdAt: eventTimestamp(info.time?.created ?? info.createdAt),
-      content: canonicalBlocks(message.parts ?? info.parts ?? info.content),
+      content,
       model: info.modelID ?? info.model,
       provider: info.providerID ?? info.provider,
       extensions: { opencode: { message } },
