@@ -131,6 +131,31 @@ test("an agent that cannot carry the hooks is refused, in its own words", async 
   }
 });
 
+test("a path that already holds somebody else's plugin is refused, and nothing is written", async () => {
+  // OpenCode 的那一份是整个文件归 Avenic 的，所以那个路径上先有一份别人的插件时，装就是
+  // 把用户的插件删掉。装不上要说得出为什么，而「None to install」那种沉默不是答案。
+  const run = await machine({ versions: { claude: "2.1.274", codex: "0.154.0", opencode: "1.18.30" } });
+  try {
+    const file = path.join(run.project, ".opencode", "plugins", "avenic-hooks.js");
+    await mkdir(path.dirname(file), { recursive: true });
+    const theirs = "// their own plugin\nexport const Theirs = async () => ({});\n";
+    await writeFile(file, theirs);
+
+    const install = capturing();
+    assert.equal(await dispatchHookCommand(["install", "--agent", "opencode", "--scope", "project"], run.context(install)), 1);
+    assert.match(install.errors.join("\n"), /is not Avenic's/, "装不上要说为什么");
+    assert.equal(await readFile(file, "utf8"), theirs, "别人的插件一个字节都没动");
+
+    const status = capturing();
+    assert.equal(await dispatchHookCommand(["status", "--agent", "opencode", "--scope", "project"], run.context(status)), 0);
+    const text = status.lines.join("\n");
+    assert.match(text, /^OpenCode  unsupported  /m);
+    assert.match(text, /is not Avenic's/, "行上的那句话也要在");
+  } finally {
+    await run.done();
+  }
+});
+
 test("a machine with no agent on PATH says so instead of installing anyway", async () => {
   const run = await machine();
   try {

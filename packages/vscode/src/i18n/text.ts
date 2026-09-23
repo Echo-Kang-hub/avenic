@@ -269,6 +269,10 @@ export const TEXT = {
   "hooks.unsupported-version": { en: "Unsupported by {agent} {version}", zh: "不支持：{agent} {version}" },
   "hooks.unsupported-unknown": { en: "Unsupported by {agent}: the installed version could not be read", zh: "不支持：读不到 {agent} 安装的版本" },
   "hooks.unsupported-agent": { en: "Avenic has no hook mechanism recorded for {agent}.", zh: "Avenic 没有记录 {agent} 的钩子机制。" },
+  // 版本没问题、路被占了：OpenCode 那一份是整个文件归 Avenic 的，那个路径上先有一份别
+  // 人的插件时只能装到别处去 —— 这一句要说出下一步（挪开那个文件），因为页面上正是它
+  // 决定装、卸两颗按钮给不给。
+  "hooks.path-occupied": { en: "A file Avenic did not write is already at this path. Move it aside, then install again.", zh: "这个路径上已经有一份不是 Avenic 写的文件。把它挪开，再装一次。" },
   "hooks.unknown-kind": { en: "Avenic does not know the notification kind {kind}.", zh: "Avenic 不认识这种通知：{kind}。" },
   "hooks.need-url": { en: "A webhook needs a URL.", zh: "Webhook 需要填一个地址。" },
   "hooks.need-gateway": { en: "OpenClaw needs a gateway address.", zh: "OpenClaw 需要填网关地址。" },

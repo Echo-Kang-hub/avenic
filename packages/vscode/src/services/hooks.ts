@@ -160,13 +160,18 @@ export async function agentHooks(projectRoot: string, agentId: AgentId, scope: H
   const installation = await detectorOf(options)(agentId);
   const status = await hookStatus(agentId, { scope, projectRoot, environment: options.environment, version: installation.version });
   const support = hookSupport(agentId, installation.version);
+  const language = languageOf(options);
   return {
     agent: agentId,
     displayName: capability.displayName,
     mechanism: capability.mechanism,
     version: installation.version,
     supported: status.supported,
-    supportNote: supportSentence(capability.displayName, installation.version, support ?? { supported: status.supported, note: status.note }, languageOf(options)),
+    // core 说「装不了」有两种原因，而它们要人做的下一步不一样：版本不行（这一句按词表
+    // 说），以及那个路径上已经有一份不是 Avenic 的文件 —— 版本没问题，是路被占了。第二种
+    // 只有 OpenCode 有（那一种的文件整个归 Avenic），所以落到这里就是它。
+    supportNote: supportSentence(capability.displayName, installation.version, support ?? { supported: status.supported, note: status.note }, language)
+      ?? (status.supported ? null : sentence(language, "hooks.path-occupied")),
     file: status.file,
     installed: status.installed,
     error: status.error ?? null,

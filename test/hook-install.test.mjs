@@ -316,6 +316,53 @@ test("OpenCode's plugin file is Avenic's own, and only Avenic's own is ever remo
   }
 });
 
+test("an install cannot replace a plugin at that path that Avenic did not write", async () => {
+  // 这一种的文件整个归 Avenic —— 没有可以并进去的地方，所以「那个位置上是别人的插件」
+  // 是这一种机制特有的状态，而它对装和卸说的是同一件事：动不了。装的那一下尤其要问，
+  // 因为写下去不是合并，是把用户的插件删掉。装不上还必须说得出口：一颗按下去什么都不
+  // 发生的按钮，比装不上更难懂。
+  const run = await scratch();
+  try {
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "1.18.30" };
+    const file = path.join(run.project, ".opencode", "plugins", "avenic-hooks.js");
+    const mine = "// my own plugin\nexport const Mine = async () => ({});\n";
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, mine);
+
+    const plan = await hookPlan("opencode", options);
+    assert.equal(plan.supported, false, "别人的插件占着那个路径：这里装不了");
+    assert.match(plan.note, /is not Avenic's/, "为什么装不了是一句话，不是一次沉默");
+    assert.equal(plan.contents, mine, "预览里画的必须是盘上现在这一份");
+    const installed = await installHooks(plan);
+    assert.equal(installed.changed, false);
+    assert.equal(await run.text(file), mine, "别人的插件一个字节都没动");
+
+    const status = await hookStatus("opencode", options);
+    assert.equal(status.supported, false, "行上也要说得出装不了");
+    assert.equal(status.installed, false);
+
+    // 带归属标记的文件还是 Avenic 的：别人占了那个路径，不等于自己写的那一份也不能重写。
+    await writeFile(file, "// avenic:hooks\n// an older plugin body\n");
+    const own = await hookPlan("opencode", options);
+    assert.equal(own.supported, true);
+    assert.equal((await installHooks(own)).changed, true);
+    assert.match(await run.text(file), /avenic hook emit --agent opencode/, "自己那份照旧被写成当前的样子");
+
+    // 计划是一张快照，而它最常是在那个路径还空着的时候问的（装之前先看一眼）。问过之后、
+    // 动手之前，用户可以把他的插件放进那个路径（编辑器、另一个 Avenic、他自己），所以
+    // 真正写下去的那一下要再读一次：读到的不是空的了，就不动手。
+    await rm(file);
+    const whileEmpty = await hookPlan("opencode", options);
+    assert.equal(whileEmpty.supported, true, "空着的路径上是装得了的");
+    await writeFile(file, mine);
+    const raced = await installHooks(whileEmpty);
+    assert.equal(raced.changed, false);
+    assert.equal(await run.text(file), mine, "计划之后落下来的那一份也不动");
+  } finally {
+    await run.done();
+  }
+});
+
 test("a mention of the marker is not the marker", async () => {
   // 归属标记是那一行注释，不是这七个字母：别人的插件在别处提到 `avenic:hooks`（一句
   // 注释、一个字面量），整文件出现即归属就等于「只要提到过就是我们的，可以删」。

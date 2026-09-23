@@ -265,6 +265,7 @@ export function opencodePlugin(agentId) {
 export async function hookPlan(agentId, { scope, projectRoot, environment = process.env, version = null } = {}) {
   const request = planRequest(agentId, { scope, projectRoot, environment, version });
   const before = await readText(request.file);
+  const support = fileSupport(agentId, request.capability, request.support, before);
   const edit = editFor(agentId, before, { remove: false });
   return {
     agent: agentId,
@@ -273,8 +274,8 @@ export async function hookPlan(agentId, { scope, projectRoot, environment = proc
     mechanism: request.capability.mechanism,
     file: request.file,
     version: request.version,
-    supported: request.support.supported,
-    note: request.support.note,
+    supported: support.supported,
+    note: support.note,
     caveat: caveatFor(agentId, request.capability, request.scope),
     installed: installedIn(agentId, before),
     before,
@@ -360,18 +361,57 @@ export async function hookStatus(agentId, options = {}) {
     caveat: caveatFor(agentId, request.capability, request.scope),
   };
   try {
-    return { ...answer, installed: installedIn(agentId, await readText(request.file)) };
+    const before = await readText(request.file);
+    return { ...answer, ...fileSupport(agentId, request.capability, request.support, before), installed: installedIn(agentId, before) };
   } catch (error) {
     return { ...answer, installed: null, error: error?.message ?? String(error) };
   }
 }
 
-/** The one edit for one agent: which mechanism this file is, and what it becomes. */
+/**
+ * 那个位置上要是已经有一份文件，答案会不会变。
+ *
+ * OpenCode 是唯一「这个路径整个归 Avenic」的机制 —— 它不像另外两种是并进用户的文件里
+ * （那些文件里属于 Avenic 的只有一块，用户在别处写什么都不妨碍）。所以「这里已经有一份
+ * 别人的插件」是它特有的状态，而这种状态下写下去不是合并，是把用户的插件删掉：答案就是
+ * 装不了，并且一定要说得出口 —— 一颗按下去什么都不发生的按钮，比装不上更难懂。
+ */
+function fileSupport(agentId, capability, support, before) {
+  if (!foreignPlugin(agentId, before)) return { supported: support.supported, note: support.note };
+  return {
+    supported: false,
+    note: `Unsupported by ${capability.displayName}: a file that is not Avenic's is already at this path — move it aside, then try again`,
+  };
+}
+
+/**
+ * 那个路径上现在这一份是不是别人的。
+ *
+ * 归属只有一种证明：文件里那条标记。没有标记的一份可能是用户自己的插件，而装、卸、预览
+ * 三条路都要问同一个问题 —— 这里问一次，`editFor` 与 `uninstallHooks` 用的是同一个答案。
+ */
+function foreignPlugin(agentId, before) {
+  return agentId === "opencode" && before !== "" && !opencodeOurs(before);
+}
+
+/**
+ * The one edit for one agent: which mechanism this file is, and what it becomes.
+ *
+ * OpenCode 是唯一文件级的机制，所以它的两种改也是文件级的：装是写下这个插件，卸是把
+ * 文件删掉 —— 这件事由这一次改自己说出来（`remove`），而不是让调用方按 agent 再分一次
+ * 叉。而无论哪一种，别人的文件都不动：没有归属标记的一份不是 Avenic 写的，装的时候
+ * 写着别人的插件、卸的时候把别人的插件删掉，都是删掉用户的东西。计划里已经问过一遍
+ * （`fileSupport`），这里是真正动手的那一下 —— 而计划是一张快照，文件在这两次读之间
+ * 可以被换掉，所以这一问不能只留在上面。
+ */
 function editFor(agentId, before, { remove }) {
   const capability = hookCapability(agentId);
   if (agentId === "claude") return claudeEdit(agentId, capability, before, { remove });
   if (agentId === "codex") return codexEdit(agentId, capability, before, { remove });
-  return { text: opencodePlugin(agentId), changed: before !== opencodePlugin(agentId) };
+  if (foreignPlugin(agentId, before)) return { text: before, changed: false };
+  if (remove) return { text: "", changed: true, remove: true };
+  const text = opencodePlugin(agentId);
+  return { text, changed: before !== text };
 }
 
 async function write(file, text) {
@@ -402,19 +442,13 @@ export async function installHooks(plan) {
  * out. Neither ever truncates or rewrites a file it did not put something into.
  */
 export async function uninstallHooks(plan) {
-  const before = await readText(plan.file);
-  if (plan.agent === "opencode") {
-    // 只有带归属标记的那一份是 Avenic 写的；也只删这一种。
-    if (!opencodeOurs(before)) return { changed: false, file: plan.file };
-    await rm(plan.file, { force: true });
-    return { changed: true, file: plan.file };
-  }
-  const edit = editFor(plan.agent, before, { remove: true });
+  const edit = editFor(plan.agent, await readText(plan.file), { remove: true });
   if (!edit.changed) return { changed: false, file: plan.file };
   // 摘掉 Avenic 的条目之后文件空了，但「剩下的一件不是用户的」推不出「文件是 Avenic
   // 建的」：用户可能本来就放了一个 `{}` 在这里。读不出创建者就保留 —— 一个空配置无害，
-  // 而删掉用户的数据是更重的那一类错。OpenCode 的那份不在此列：它的归属标记就是 Avenic
-  // 建过它的证明。
-  await write(plan.file, edit.text);
+  // 而删掉用户的数据是更重的那一类错。OpenCode 的那一份不在此列：它的归属标记就是 Avenic
+  // 建过它的证明，所以它的摘除是整个文件走（这一次改自己说了 `remove`）。
+  if (edit.remove === true) await rm(plan.file, { force: true });
+  else await write(plan.file, edit.text);
   return { changed: true, file: plan.file };
 }

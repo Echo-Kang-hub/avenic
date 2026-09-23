@@ -89,6 +89,40 @@ test("the three rows are read off the machine, and the version is the one detect
   }
 });
 
+test("a path that already holds somebody else's plugin is said in the editor's language", async () => {
+  // 这一行上「装不了」有两种原因，而它们要人做的事完全不同：版本不行是去升级，路径被占
+  // 是去挪那个文件。这一句按编辑器的语言说，因为页面上正是它决定装、卸那两颗按钮给不给
+  // —— 一句谁都不说的话，人看到的是一行「not installed」加一颗按下去没反应的按钮。
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-hooks-occupied-"));
+  try {
+    const env = await project(root);
+    const dir = path.join(root, "project");
+    const file = path.join(dir, ".opencode", "plugins", "avenic-hooks.js");
+    await mkdir(path.dirname(file), { recursive: true });
+    const theirs = "// their own plugin\nexport const Theirs = async () => ({});\n";
+    await writeFile(file, theirs);
+
+    const row = await agentHooks(dir, "opencode", "project", options(env));
+    assert.equal(row.supported, false, "那个位置上是别人的插件，装不了");
+    assert.equal(row.installed, false);
+    assert.match(row.supportNote ?? "", /Avenic did not write/, "为什么装不了要说出来");
+    const zh = await agentHooks(dir, "opencode", "project", options(env, { language: "zh-cn" }));
+    assert.match(zh.supportNote ?? "", /[一-鿿]/, "中文编辑器里这一句要是中文");
+    assert.equal(await readFile(file, "utf8"), theirs, "读一遍不动它");
+
+    // 并进用户文件的那两种机制没有这个状态：用户的权限、他自己的钩子就在同一个文件里，
+    // Avenic 加的是属于自己的那一块，别处写什么原样留着。
+    const settings = path.join(dir, ".claude", "settings.local.json");
+    await mkdir(path.dirname(settings), { recursive: true });
+    await writeFile(settings, JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] }, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "their-own-linter" }] }] } }));
+    const claude = await agentHooks(dir, "claude", "project", options(env));
+    assert.equal(claude.supported, true, "用户自己的钩子在同一个文件里，不妨碍装 Avenic 的那一块");
+    assert.equal(claude.supportNote, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the file the page names is the file that scope is actually read from", async () => {
   // 名单有两个家：项目的那份在项目的 Avenic 状态里，全机的那份跟着机器状态走。页面上
   // 「你的名单在这个文件」那一行如果永远指着项目文件，切到「全机」的人就在读一个空的
