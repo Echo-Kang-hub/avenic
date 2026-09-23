@@ -17,19 +17,26 @@
 //      what the first speaker told it to remember. Only a correct answer proves
 //      the projection carried the words rather than a summary of them.
 //   C  the same conversation, projected back into Claude, must now know A and B.
+//   D  the same conversation, projected into a *native OpenCode session*
+//      (`opencode import` + `--session <id>`), which then has to answer with the
+//      words of both agents before it — the third agent's half of the same proof.
+//   E  back into Claude, which must now know A, B and OpenCode's own answer: the
+//      loop closes on the agent that opened it, with nothing lost in between.
 //
-// The one substitution: the interactive `codex resume <thread>` TUI is replaced
-// by `codex exec resume <thread>`, because a TUI cannot be driven from a script.
-// Everything around it — the projection, the native session, the capture back
-// into canonical history — is the product's real code path.
+// The two substitutions: the interactive `codex resume <thread>` TUI and the
+// interactive `opencode --session <id>` TUI are replaced by their official
+// non-interactive surfaces (`codex exec resume`, `opencode run --session`),
+// because a TUI cannot be driven from a script. Everything around them — the
+// projection, the native session, the capture back into canonical history — is
+// the product's real code path.
 //
-// Then the store itself is read: the three markers in order, each exactly once,
-// no control records, no tool output masquerading as the person's words, and a
+// Then the store itself is read: the markers in order, each exactly once, no
+// control records, no tool output masquerading as the person's words, and a
 // second capture that adds nothing.
 //
 // Run: node scripts/forensics/shared-cross-agent.mjs [--keep]
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -40,11 +47,16 @@ import {
   listCanonicalSessions,
   prepareCanonicalContinuation,
   projectionItems,
+  quoteShellLine,
   readCanonicalSession,
   reconcileCanonicalSession,
   setHistoryMode,
 } from "../../packages/core/src/index.mjs";
 import { eventAgent, turnKind } from "../../packages/core/src/runtime/projection.mjs";
+import { resolveOnPath } from "../../packages/core/src/runtime/process.mjs";
+// Read back what OpenCode was handed, in OpenCode's own format, through the same
+// adapter the product uses to read it.
+import { readCanonical as readOpencodeNative } from "../../packages/core/src/runtime/adapters/opencode.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CLI = path.join(REPO, "packages", "cli", "scripts", "skills.mjs");
@@ -54,12 +66,29 @@ const MARKERS = {
   a: "SHARE_A_ALPHA",
   b: "SHARE_B_BRAVO",
   c: "SHARE_C_CHARLIE",
+  d: "SHARE_D_DELTA",
+  e: "SHARE_E_ECHO",
 };
 
-// A phrase only leg A's own prompt contains. A projection is a delta, so this
-// must never appear in what a later agent is handed: if it does, the whole
-// conversation was replayed rather than the part the target is missing.
-const A_PROMPT_ONLY = "Remember this exact word";
+/** What every agent after the first is asked: the SHARE_ words it can see, in
+ * order, plus one of its own. Asking for the whole list, rather than for "the
+ * word you were told to remember", is what makes a correct answer prove the
+ * context arrived whole — and the words it names are only ever ones an earlier
+ * leg really spoke, so naming them is not something a guess can do. */
+function markersPrompt(own) {
+  return `Reply with exactly two lines and nothing else. Line 1: every exact word starting with SHARE_ that appears anywhere in the conversation context you have been given, in the order it first appears, separated by commas. Line 2: exactly ${own}.`;
+}
+
+// What a projection must never do is hand back the turns its target already
+// has: it is the part the target is missing, not the conversation again. That is
+// written as the briefing format's own headings (`Codex (assistant): …`) rather
+// than read from a phrase of an earlier prompt, because a later agent is free to
+// quote one inside its own answer — OpenCode did, listing the SHARE_ words it
+// had been given, and quoted leg A's prompt nearly whole. A phrase test read
+// that correct quotation as a replay; this one reads who is speaking.
+function speakersInBriefing(text) {
+  return [...new Set([...text.matchAll(/^([A-Za-z][A-Za-z ]*) \((?:assistant|tool)\): /gm)].map((match) => match[1]))];
+}
 const ids = { a: "11110000-0000-4000-8000-0000000000a1" };
 
 // Control records Claude's own transcript carries. None of them is something a
@@ -93,10 +122,14 @@ function buildWorld(prefix) {
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(path.join(scratch, prefix));
   const home = path.join(root, "home");
+  const project = path.join(root, "project");
+  mkdirSync(project, { recursive: true });
   const claudeConfig = path.join(home, ".claude");
   const codexHome = path.join(home, ".codex");
+  const opencodeConfig = path.join(home, ".config", "opencode");
   mkdirSync(claudeConfig, { recursive: true });
   mkdirSync(codexHome, { recursive: true });
+  mkdirSync(opencodeConfig, { recursive: true });
   const realClaude = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
   const realCodex = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
   const links = [
@@ -105,6 +138,10 @@ function buildWorld(prefix) {
     [path.join(realClaude, "settings.json"), path.join(claudeConfig, "settings.json")],
     [path.join(realCodex, "auth.json"), path.join(codexHome, "auth.json")],
     [path.join(realCodex, "config.toml"), path.join(codexHome, "config.toml")],
+    // OpenCode's own config, and only its config: its sessions live in a SQLite
+    // store under the home, and that one is not linked — the world gets a store
+    // of its own, so nothing this experiment does can reach the machine's.
+    [path.join(os.homedir(), ".config", "opencode", "opencode.jsonc"), path.join(opencodeConfig, "opencode.jsonc")],
   ];
   for (const [from, to] of links) {
     if (!existsSync(from)) continue;
@@ -132,6 +169,16 @@ function buildWorld(prefix) {
     USERPROFILE: home,
     CLAUDE_CONFIG_DIR: claudeConfig,
     CODEX_HOME: codexHome,
+    // PWD is what a shell says about the directory it stands in, and the
+    // commands here are a shell's children: this world's shell stands in the
+    // world's project. It has to be set — until 1.8.5 the harness inherited the
+    // invoking session's PWD (this repository), a state no `cd` produces — and
+    // OpenCode reads PWD as its project: with the two disagreeing, a continued
+    // projected session answered and then never exited (the 2x2 in
+    // dist/logs/opencode-pwd-matrix.txt). Core's spawmers now keep the two in
+    // step for everything the product launches; this covers what the harness
+    // starts itself.
+    PWD: project,
   });
   // The script's own core calls resolve agent homes from `process.env` when a
   // caller supplies none — `reconcileCanonicalSession` does exactly that — so
@@ -143,7 +190,21 @@ function buildWorld(prefix) {
     if (name in environment) process.env[name] = environment[name];
     else delete process.env[name];
   }
-  return { root, home, claudeConfig, codexHome, environment };
+  return { root, home, project, claudeConfig, codexHome, environment };
+}
+
+// How a command actually starts, asked of the product's own resolver rather
+// than assumed: OpenCode's global install is a `.cmd` shim, and CreateProcess
+// does not run those — `spawn("opencode")` answers ENOENT for a CLI that is
+// installed and on PATH. The product's launcher resolves the same shim with
+// these two functions; a leg that invented its own way to spell `opencode`
+// would be measuring the harness.
+function launchable(command, argumentsList, environment) {
+  const resolved = resolveOnPath(command, environment) ?? command;
+  if (process.platform === "win32" && /\.(?:cmd|bat)$/i.test(resolved)) {
+    return { command: quoteShellLine(resolved, argumentsList), argumentsList: [], shell: true };
+  }
+  return { command: resolved, argumentsList, shell: false };
 }
 
 // A real model call is the one part of this experiment whose duration is not
@@ -154,16 +215,33 @@ function buildWorld(prefix) {
 function run(command, argumentsList, { cwd, environment, label, timeoutMs = 600_000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const child = spawn(command, argumentsList, { cwd, env: environment, stdio: ["ignore", "pipe", "pipe"] });
+    const launch = launchable(command, argumentsList, environment);
+    // windowsHide: a console window belonging to this experiment must never
+    // appear over the owner's desk — least of all while a host check is
+    // photographing its own window there.
+    const child = spawn(launch.command, launch.argumentsList, { cwd, env: environment, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: launch.shell });
     const out = [];
     const err = [];
     let killed = false;
     const timer = setTimeout(() => {
       killed = true;
-      child.kill();
+      // A `.cmd` shim makes the real process a grandchild of this one: killing
+      // the shell leaves it running. That is how an earlier run of this
+      // experiment reported a timeout while `opencode.exe` was still working —
+      // and still writing into the world the next leg was about to read.
+      if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      else child.kill();
     }, timeoutMs);
     child.stdout.on("data", (chunk) => out.push(chunk));
     child.stderr.on("data", (chunk) => err.push(chunk));
+    // A binary that cannot be launched at all reports instead of hanging: a
+    // spawn failure never emits "exit", and a leg that waits forever tells the
+    // reader nothing about what happened.
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      console.log(`  · could not run ${label}: ${error.message}`);
+      resolve({ status: null, output: error.message, stdout: "", stderr: error.message, killed: false });
+    });
     child.on("exit", (status) => {
       clearTimeout(timer);
       const stdout = Buffer.concat(out).toString("utf8");
@@ -222,15 +300,15 @@ function textOf(event) {
 async function main() {
   console.log("== world ==");
   const world = buildWorld("avenic-shared-cross-agent-");
-  const project = path.join(world.root, "project");
-  mkdirSync(project, { recursive: true });
+  const project = world.project;
   for (const agentId of ["claude", "codex"]) {
     await initializeAgent(project, agentId, { authMethod: "account", accountScope: "global", sessionScope: "project" });
   }
   await setHistoryMode(project, "shared");
   console.log(`  · isolated world at ${world.root}`);
   console.log(`  · project at ${project}`);
-  console.log(`  · home and both config roots are temp; credentials are hard links, never read`);
+  console.log(`  · home and all three config roots are temp; credentials are hard links, never read`);
+  console.log(`  · no agent's own session store is shared with the machine's`);
 
   // ---- leg A: Claude opens the conversation ---------------------------------
   console.log("\n== leg A: a real Claude run opens the shared conversation ==");
@@ -327,8 +405,8 @@ async function main() {
   const briefing = briefingFile && existsSync(briefingFile) ? readFileSync(briefingFile, "utf8") : "";
   check(
     "Claude is handed Codex's turn as a briefing, and only what it lacks",
-    findMarker(briefing, MARKERS.b) && !briefing.includes(A_PROMPT_ONLY),
-    briefingFile ? `${briefing.length} chars from ${path.basename(briefingFile)}` : "no briefing argument",
+    findMarker(briefing, MARKERS.b) && !speakersInBriefing(briefing).includes("Claude"),
+    briefingFile ? `${briefing.length} chars from ${path.basename(briefingFile)} (speakers: ${speakersInBriefing(briefing).join(", ") || "none"})` : "no briefing argument",
   );
 
   // The launch goes through Avenic, exactly as `avenic sessions continue` would:
@@ -341,13 +419,96 @@ async function main() {
     // Asked for every marker in its context, not for "the word you were asked
     // to remember": the second reading lets a correct answer omit the briefing
     // entirely, and then the check would measure nothing.
-    "Reply with exactly two lines and nothing else. Line 1: every exact word starting with SHARE_ that appears anywhere in the conversation context you have been given, in the order it first appears, separated by commas. Line 2: exactly SHARE_C_CHARLIE.",
+    markersPrompt(MARKERS.c),
   ], { environment: world.environment, label: "avenic claude -p (C, through the projection)" });
   if (!findMarker(runC.stdout, MARKERS.b) || !findMarker(runC.stdout, MARKERS.a)) dump(runC, "claude -p (C)");
   check(
     "Claude knows both halves — its own word and the one Codex answered with",
     runC.status === 0 && findMarker(runC.stdout, MARKERS.a) && findMarker(runC.stdout, MARKERS.b) && !findMarker(runC.output, "No conversation found"),
     runC.status === 0 ? preview(runC.stdout) : preview(runC.output),
+  );
+  await reconcileCanonicalSession(project, canonicalId);
+
+  // ---- leg D: OpenCode, a third agent, in the same conversation -------------
+  console.log("\n== leg D: the shared conversation becomes a native OpenCode session ==");
+  const forOpencode = await prepareCanonicalContinuation(project, canonicalId, "opencode", { environment: world.environment });
+  console.log(`  · projection kind=${forOpencode.kind} mode=${forOpencode.mode} native=${forOpencode.nativeSessionId ?? "(none)"}`);
+  console.log(`  · opencode would be launched as: ${JSON.stringify(forOpencode.launch?.argumentsList ?? null)}`);
+  check("the projection produced a native OpenCode session", typeof forOpencode.nativeSessionId === "string" && forOpencode.nativeSessionId.length > 0, forOpencode.failure ?? "");
+  let opencodeAnswered = "";
+  if (forOpencode.nativeSessionId) {
+    // The product launches `opencode --session <id>` — a TUI, which a script
+    // cannot drive. The same session is continued through OpenCode's official
+    // non-interactive surface instead; the projection, the native session and
+    // the capture back are the product's own code path.
+    const runD = await run("opencode", ["run", "--session", forOpencode.nativeSessionId, markersPrompt(MARKERS.d)], { cwd: project, environment: world.environment, label: "opencode run --session (D)" });
+    opencodeAnswered = runD.stdout;
+    if (runD.status !== 0 || !findMarker(opencodeAnswered, MARKERS.b)) dump(runD, "opencode run");
+    check(
+      "OpenCode — which never ran before — answers with both agents' words",
+      runD.status === 0 && findMarker(opencodeAnswered, MARKERS.a) && findMarker(opencodeAnswered, MARKERS.b),
+      runD.status === 0 ? preview(opencodeAnswered) : preview(runD.output),
+    );
+    // The answer says the projection arrived; reading OpenCode's own session
+    // says *what* arrived, in OpenCode's own format, through the product's own
+    // export path. A model that answered from its own guess could not show this.
+    const opencodeNative = readOpencodeNative(project, forOpencode.nativeSessionId, { environment: world.environment });
+    const nativeText = opencodeNative.events.map((event) => textOf(event)).join("\n");
+    const nativeGarbage = CONTROL_SIGNS.filter((sign) => nativeText.includes(sign));
+    check("nothing from the control records reaches OpenCode's own session", nativeGarbage.length === 0, nativeGarbage.join(", "));
+    check(
+      "both earlier agents' words are in that session as messages",
+      findMarker(nativeText, MARKERS.a) && findMarker(nativeText, MARKERS.b),
+      `${opencodeNative.events.length} native message(s)`,
+    );
+  } else {
+    check("OpenCode — which never ran before — answers with both agents' words", false, "no native session to continue");
+  }
+
+  // Capture D back into the shared conversation, the same way leg B's answer was.
+  await completeCanonicalContinuation(project, canonicalId, "opencode", {
+    nativeSessionId: forOpencode.nativeSessionId,
+    projectionHash: forOpencode.projection?.hash ?? null,
+  });
+  await reconcileCanonicalSession(project, canonicalId);
+  const afterD = await readCanonicalSession(project, canonicalId);
+  const opencodeTurns = agentTurns(afterD, "opencode");
+  check(
+    "OpenCode's own answer lands in the shared conversation",
+    opencodeTurns.some((event) => findMarker(textOf(event), MARKERS.d)),
+    `${opencodeTurns.length} OpenCode turn(s)`,
+  );
+  const opencodeAnsweredAsPerson = userTurns(afterD)
+    .flatMap((event) => textOf(event).split("\n").map((line) => line.trim()))
+    .filter((line) => line === MARKERS.d);
+  check(
+    "and is attributed to OpenCode, not to the person",
+    opencodeTurns.length > 0 && opencodeAnsweredAsPerson.length === 0,
+    `${opencodeTurns.length} OpenCode turn(s), ${opencodeAnsweredAsPerson.length} answer line(s) filed as the person's`,
+  );
+
+  // ---- leg E: back to Claude, which must now know all three -----------------
+  console.log("\n== leg E: Claude reads the conversation OpenCode added to ==");
+  const forClaudeAgain = await prepareCanonicalContinuation(project, canonicalId, "claude", { environment: world.environment });
+  console.log(`  · projection kind=${forClaudeAgain.kind} mode=${forClaudeAgain.mode} native=${forClaudeAgain.nativeSessionId ?? "(none)"}`);
+  const againArguments = forClaudeAgain.launch?.argumentsList ?? [];
+  const againFlag = againArguments.indexOf("--append-system-prompt-file");
+  const againBriefing = againFlag >= 0 && existsSync(againArguments[againFlag + 1]) ? readFileSync(againArguments[againFlag + 1], "utf8") : "";
+  check(
+    "Claude is handed OpenCode's turn as a briefing, and only what it lacks",
+    findMarker(againBriefing, MARKERS.d) && !speakersInBriefing(againBriefing).includes("Claude"),
+    againFlag >= 0 ? `${againBriefing.length} chars from ${path.basename(againArguments[againFlag + 1])} (speakers: ${speakersInBriefing(againBriefing).join(", ") || "none"})` : "no briefing argument",
+  );
+  const runE = await launchCli(project, [
+    "claude", "-p",
+    ...againArguments,
+    markersPrompt(MARKERS.e),
+  ], { environment: world.environment, label: "avenic claude -p (E, through the projection)" });
+  if (!findMarker(runE.stdout, MARKERS.d)) dump(runE, "claude -p (E)");
+  check(
+    "Claude knows the OpenCode half too — the loop closes where it started",
+    runE.status === 0 && findMarker(runE.stdout, MARKERS.b) && findMarker(runE.stdout, MARKERS.d) && !findMarker(runE.output, "No conversation found"),
+    runE.status === 0 ? preview(runE.stdout) : preview(runE.output),
   );
   await reconcileCanonicalSession(project, canonicalId);
 
@@ -359,16 +520,24 @@ async function main() {
   const spokeA = positionOf((event) => turnKind(event) === "user" && findMarker(textOf(event), MARKERS.a));
   const saidB = positionOf((event) => turnKind(event) === "agent" && findMarker(textOf(event), MARKERS.b));
   const saidC = positionOf((event) => turnKind(event) === "agent" && eventAgent(event) === "claude" && findMarker(textOf(event), MARKERS.c));
+  const saidD = positionOf((event) => turnKind(event) === "agent" && eventAgent(event) === "opencode" && findMarker(textOf(event), MARKERS.d));
+  const saidE = positionOf((event) => turnKind(event) === "agent" && eventAgent(event) === "claude" && findMarker(textOf(event), MARKERS.e));
   check(
-    "A then B then C — one strictly continuous conversation",
-    spokeA !== -1 && saidB > spokeA && saidC > saidB,
-    `positions: A@${spokeA}, B@${saidB}, C@${saidC}`,
+    "A then B then C then D then E — one strictly continuous conversation",
+    spokeA !== -1 && saidB > spokeA && saidC > saidB && saidD > saidC && saidE > saidD,
+    `positions: A@${spokeA}, B@${saidB}, C@${saidC}, D@${saidD}, E@${saidE}`,
   );
   const codexSaidB = events.filter((event) => turnKind(event) === "agent" && eventAgent(event) === "codex" && findMarker(textOf(event), MARKERS.b));
   check(
     "Codex's own line was captured once, not once per capture pass",
     codexSaidB.length === 1,
     `${codexSaidB.length} Codex turn(s) carrying ${MARKERS.b}`,
+  );
+  const opencodeSaidD = events.filter((event) => turnKind(event) === "agent" && eventAgent(event) === "opencode" && findMarker(textOf(event), MARKERS.d));
+  check(
+    "OpenCode's own line was captured once, not once per capture pass",
+    opencodeSaidD.length === 1,
+    `${opencodeSaidD.length} OpenCode turn(s) carrying ${MARKERS.d}`,
   );
   // And the other half of the same rule: the injection Avenic wrote into the
   // Codex thread must not come back as a turn the person spoke, which would
