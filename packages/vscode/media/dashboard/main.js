@@ -1497,7 +1497,11 @@
       return [section];
     }
 
-    const hasKey = payload.credentialSet === true || state.centerCredential !== "";
+    // 文件里那个算数，前提是这一页还在说这一家：换了供应商，它就成了上一家的钥匙，
+    // 留空留下的会是一个配错地址的凭据（宿主也会照同一条规则把这一笔拒掉）。自定义
+    // 供应商不在此列：地址是用户自己写的，那扇门收哪把钥匙由他说了算。
+    const hasKey = state.centerCredential !== ""
+      || (payload.credentialSet === true && (draft.provider === payload.provider || draft.provider === "custom"));
     // 缺什么就说什么：宿主的守卫会把缺字段的问题整条丢掉，而一个点了没反应的按钮和坏掉的
     // 没有区别。所以按钮灰着，旁边写着为什么——不是 tooltip：灰按钮不发光标事件，那上面的
     // tooltip 永远不会出现。

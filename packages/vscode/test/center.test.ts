@@ -204,6 +204,38 @@ test("an empty credential is a refusal, not a deletion", async () => {
   }
 });
 
+// 留空是「别动文件里那份凭据」——而那份凭据属于谁，只有文件说得出来。表单一换供应商，
+// 这句话就不成立了：写下去的是新地址配上旧钥匙，每一次请求都会把它送到新供应商那里。
+// 与 `avenic change` 是同一条规则：能不能留空，取决于文件里那份凭据是不是这一家的。
+test("a blank credential is refused once the form names another provider", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-center-switch-"));
+  try {
+    const project = await deepseekProject(root);
+    const file = claudeFile(project);
+    const before = await readFile(file, "utf8");
+    const env = testEnv(path.join(root, "state"));
+    const moonshot = { provider: "moonshot", baseUrl: "https://api.moonshot.ai/anthropic", model: "fixture-moonshot-model" };
+
+    await assert.rejects(
+      () => previewCenter(project, "claude", draftOf(moonshot), { environment: env }),
+      /belongs to another provider/,
+      "文件里那把钥匙不是这一家的，空白就不再是一个答案",
+    );
+    await assert.rejects(() => applyCenter(project, "claude", draftOf(moonshot), { environment: env }));
+    assert.equal(await readFile(file, "utf8"), before, "一个字节都没动：地址没换，旧钥匙也没有配上一个新地址");
+    assert.ok(before.includes(KEY), "文件里原来那份凭据还在原处");
+
+    // 换了家、也给了新钥匙：那就没有说不通的地方了。
+    const applied = await applyCenter(project, "claude", draftOf({ ...moonshot, credential: TYPED }), { environment: env });
+    assert.equal(applied.kind === "diff" && applied.written, true);
+    const after = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(after.env.ANTHROPIC_BASE_URL, moonshot.baseUrl);
+    assert.equal(after.env.ANTHROPIC_AUTH_TOKEN, TYPED, "新钥匙写下去，旧的那把不再留在文件里");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a typed key goes into the file and nowhere else — the diff masks it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-center-mask-"));
   try {

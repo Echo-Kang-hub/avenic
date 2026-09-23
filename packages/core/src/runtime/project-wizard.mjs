@@ -52,6 +52,24 @@ const BY_HAND = "hand";
 
 const titleCase = (word) => word.charAt(0).toUpperCase() + word.slice(1);
 
+/**
+ * Which provider the file Avenic would write already belongs to, by the id the
+ * presets use — `null` when the file names no endpoint whose provider we know.
+ */
+const fileProviderOf = (draft, agentId) => providerForBaseUrl(agentId, draft.files?.[agentId]?.baseUrl)?.id ?? null;
+
+/**
+ * Whether a blank credential is an answer: the file holds one and, as far as
+ * Avenic can prove, it is this answer's to keep. A provider the user runs
+ * themselves is their own address — what it accepts is theirs to say, so
+ * `custom` keeps the file's key either way; a vendor's endpoint does not.
+ *
+ * Both the question that offers the blank and the write that would honor it ask
+ * this one thing, so the question and the write can never disagree.
+ */
+const keepsCredential = (draft, agentId, provider) => draft.files?.[agentId]?.credentialSet === true
+  && (provider === "custom" || fileProviderOf(draft, agentId) === provider);
+
 /** Every agent the registry knows, as a choice: the id travels with the name. */
 export function agentChoices() {
   return Object.entries(AGENTS).map(([id, agent]) => ({ value: id, label: agent.displayName }));
@@ -178,8 +196,9 @@ function centerSteps(draft, agentId, name, entryOf, setField) {
     title: agentQuestion(name, LABELS.credential),
     placeholder: "the key is written to the configuration file and never shown again",
     mask: true,
-    // 文件里已经有凭据：留空是「别动它」，不是「清掉它」。
-    optional: Boolean(draft.files?.[agentId]?.credentialSet),
+    // 文件里有这一家的凭据：留空是「别动它」，不是「清掉它」。换了一家就没有这句
+    // 话了——那时候留空留下的是别人的钥匙，所以这一问必须问出个钥匙来。
+    optional: keepsCredential(draft, agentId, entry.provider),
     emptyMessage: "Enter the API key, or answer Set up by hand to keep your credential out of the file",
     value: () => "",
     write: (draft_, value) => setField(draft_, agentId, "apiKey", value),
@@ -440,15 +459,29 @@ async function centerPlans(projectRoot, draft, options) {
     const scope = entry.configScope ?? "global";
     // 文件里已经写着这家供应商：那么这是一次编辑，不是一次新建 —— 供应商推荐的
     // 模型角色属于「新建一份配置」这件事，不属于「回来改一下 History」。
-    const presetFills = providerForBaseUrl(agentId, draft.files?.[agentId]?.baseUrl)?.id !== entry.provider;
+    const inPlace = fileProviderOf(draft, agentId) === entry.provider;
     // 凭据那一问留空是「别动它」，不是「清掉它」，而模板把空凭据当作错误 —— 所以
     // 空的答案在这里就变成「不给这个字段」（那是模板对「别动它」的说法）。两者是
     // 同一件事的两半：只有这个知道文件里已经有凭据的地方能把空答案读成「保持原样」，
     // 别的地方给的空白仍然是一份会失败的配置，而不是一份悄悄没有凭据的配置。
-    const apiKey = typeof entry.apiKey === "string" && entry.apiKey.trim() === "" ? undefined : entry.apiKey;
-    const template = agentId === "codex"
-      ? codexTemplate(entry.provider, { model: entry.model, baseUrl: entry.baseUrl })
-      : claudeTemplate(entry.provider, { apiKey, model: entry.model, baseUrl: entry.baseUrl, roles: entry.roles, presetRoles: presetFills }, entry.blocks ?? []);
+    let template;
+    if (agentId === "codex") {
+      template = codexTemplate(entry.provider, { model: entry.model, baseUrl: entry.baseUrl });
+    } else {
+      const blank = typeof entry.apiKey === "string" && entry.apiKey.trim() === "";
+      // 留空说的是「文件里那份凭据别动」—— 而那份凭据属于哪一家，只有文件说得出来。
+      // 换了一家还收下空白，写下去的就是新地址配上旧钥匙：每一次请求都会把它送到新
+      // 供应商那里。只有文件里那份凭据配得上这个地址（或者是用户自己的网关）才留得
+      // 住它，否则只能再问一次——而这一问必须问得出来，所以空白到这里就是拒绝。
+      // 文件里根本没有凭据时不在这里拦：那没有「别人的钥匙」可言，写不写得出一份没有
+      // 凭据的配置是模板自己的事，不是这一条规则的事。
+      if (blank && draft.files?.[agentId]?.credentialSet === true && !keepsCredential(draft, agentId, entry.provider)) {
+        const name = getAgent(agentId).displayName;
+        const provider = providerPreset(entry.provider)?.displayName ?? entry.provider;
+        throw new Error(`${name}: enter the API key — a blank answer keeps the credential the file already holds, and that credential is not ${provider}'s`);
+      }
+      template = claudeTemplate(entry.provider, { apiKey: blank ? undefined : entry.apiKey, model: entry.model, baseUrl: entry.baseUrl, roles: entry.roles, presetRoles: !inPlace }, entry.blocks ?? []);
+    }
     const preview = await previewModelConfiguration(projectRoot, agentId, scope, template, options);
     plans.push({ agentId, scope, template, preview });
   }

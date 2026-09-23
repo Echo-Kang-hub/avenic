@@ -35,17 +35,27 @@ async function withProject(run) {
   }
 }
 
+// 草稿要按两个宿主建草稿的方式建（dispatcher、agents-commands）：除了项目设置，
+// 还带着「文件里现在是什么」——凭据能不能留空这一问题就取决于它，少传 files 就是在
+// 测一个宿主从不发出来的草稿。
+async function draftFor(root) {
+  const config = projectConfig(await loadRuntime(root));
+  return projectDraft(config, { files: await modelConfigPresence(root, config.agents) });
+}
+
 // 答案按顺序写进草稿，每答一题就重算步骤——下一题是什么由前面的答案决定，
 // 与向导里发生的事完全一样。
-async function configure(root, answers) {
-  const state = await loadRuntime(root);
-  const draft = projectDraft(projectConfig(state));
+function fill(draft, answers) {
   for (const [id, value] of answers) {
     const step = projectWizardSteps(draft).find((entry) => entry.id === id);
     assert.ok(step, `the wizard asks ${id}`);
     step.write(draft, value);
   }
-  return applyProjectDraft(root, draft);
+  return draft;
+}
+
+async function configure(root, answers) {
+  return applyProjectDraft(root, fill(await draftFor(root), answers));
 }
 
 const claudeApi = (scope = "project") => [
@@ -303,6 +313,74 @@ test("a second apply still leaves the file Avenic's to give back", async () => {
     const outcome = await removeModelConfiguration(root, "claude", "project");
     assert.equal(outcome.outcome, "deleted", "没人动过它，收回来就不该说它被改过");
     assert.equal(existsSync(file), false);
+  });
+});
+
+// 凭据那一问留空是「别动文件里那份凭据」。这句话只有在文件里那份属于同一家供应商时
+// 才成立：换了一家还留空，写下去的是新供应商的地址配上上一家的钥匙——文件里的 key 会
+// 跟着新地址一起发出去，轻则连不上，重则把上一家的凭据交给了新供应商。
+const switched = [
+  ["provider:claude", "deepseek"],
+  ["model:claude", "fixture-deepseek-model"],
+  ["key:claude", "fixture-key-one"],
+];
+
+test("a blank credential is refused when the file's credential is not that provider's", async () => {
+  await withProject(async (root) => {
+    await configure(root, [...claudeApi(), ...switched]);
+    const file = path.join(root, ".claude", "settings.local.json");
+    const before = await readFile(file, "utf8");
+    assert.equal(JSON.parse(before).env.ANTHROPIC_AUTH_TOKEN, "fixture-key-one");
+
+    const draft = fill(await draftFor(root), [
+      ["provider:claude", "moonshot"],
+      ["model:claude", "fixture-moonshot-model"],
+      ["key:claude", ""],
+    ]);
+    await assert.rejects(() => applyProjectDraft(root, draft), /not Moonshot/);
+    assert.equal(await readFile(file, "utf8"), before, "一句话都没写下去：这份文件仍然指向配得上这把钥匙的那一家");
+  });
+});
+
+// 同一条规则的另外半边在提问处：留空能不能算个答案，取决于文件里那份凭据是不是这一
+// 家的。不是，钥匙就得问出来——否则 CLI 会把空白当成一个回答收下。
+test("the credential question stops being optional when the answer switches provider", async () => {
+  await withProject(async (root) => {
+    await configure(root, [...claudeApi(), ...switched]);
+    const stepOf = (draft, id) => projectWizardSteps(draft).find((entry) => entry.id === id);
+
+    const draft = await draftFor(root);
+    // 再开一次向导：第一问照旧先问 provider，而它预选的就是文件里那一家。
+    fill(draft, [["provider:claude", "deepseek"]]);
+    assert.equal(stepOf(draft, "key:claude").optional, true, "文件里已经有这一家的凭据：留空是「别动它」");
+    fill(draft, [["provider:claude", "moonshot"]]);
+    assert.equal(stepOf(draft, "key:claude").optional, false, "换了一家，留空不再是个答案");
+    fill(draft, [["provider:claude", "deepseek"]]);
+    assert.equal(stepOf(draft, "key:claude").optional, true, "换回来，文件里那份凭据又是这一家的了");
+  });
+});
+
+// 这条规则的边界：用户自己的网关（custom）不是「另一家供应商」——地址是他写的，那扇门
+// 收哪把钥匙由他说了算。留空在这里仍然是「别动它」，而不是一个要挡下来的错误：把网关
+// 用户挡在门外，等于用一条保护规则拆掉一条合法配置。
+test("a provider the user runs themselves keeps the file's credential on a blank answer", async () => {
+  await withProject(async (root) => {
+    await configure(root, [...claudeApi(), ...switched]);
+    const file = path.join(root, ".claude", "settings.local.json");
+
+    const draft = fill(await draftFor(root), [
+      ["provider:claude", "custom"],
+      ["baseurl:claude", "https://gateway.fixture.invalid/anthropic"],
+      ["model:claude", "fixture-gateway-model"],
+      ["key:claude", ""],
+    ]);
+    assert.equal(projectWizardSteps(draft).find((entry) => entry.id === "key:claude").optional, true, "自己的网关：留空还是别动它");
+    await applyProjectDraft(root, draft);
+
+    const written = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(written.env.ANTHROPIC_BASE_URL, "https://gateway.fixture.invalid/anthropic");
+    assert.equal(written.env.ANTHROPIC_MODEL, "fixture-gateway-model");
+    assert.equal(written.env.ANTHROPIC_AUTH_TOKEN, "fixture-key-one", "文件里那把钥匙留在原处");
   });
 });
 

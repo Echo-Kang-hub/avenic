@@ -257,9 +257,16 @@ async function templateFor(projectRoot: string, agentId: AgentId, draft: CenterD
   // 新建一份配置，不属于「回来改一下模型」。与 `avenic change` 同一句话。
   const inPlace = providerForBaseUrl(agentId, facts?.baseUrl)?.id === preset.id;
   if (agentId === "claude") {
+    // null 是「别动文件里那个」——可这句话只在文件里那个是这一家的时才成立。换了家还
+    // 收下 null，写下去的就是新地址配旧钥匙：每一次请求都会把它送到新供应商那里。
+    // 用户自己的网关是例外：地址是他写的，收哪把钥匙由他说了算。空串是拒绝，模板会
+    // 照直抛出来，两者绝不在这里被读成同一件事。与 `avenic change` 同一条规则——那边
+    // 是 `keepsCredential`，这边是同一个判断落在这一页的形态上。
+    const keeps = preset.id === "custom" || (inPlace && facts?.credentialSet === true);
+    if (draft.credential === null && facts?.credentialSet === true && !keeps) {
+      throw new LocalizedError("center.credential-other-provider", { provider: preset.displayName });
+    }
     return claudeTemplate(preset.id, {
-      // null 是「别动文件里那个」——模板对「不给这个字段」的理解；空串是拒绝，模板
-      // 会照直抛出来，两者绝不在这里被读成同一件事。
       apiKey: draft.credential ?? undefined,
       baseUrl: draft.baseUrl,
       model: draft.model,

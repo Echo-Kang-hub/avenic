@@ -1026,3 +1026,25 @@ test("the authentication row is found by its key, not by the words core happens 
   assert.ok(facts.textContent.includes("API (Project)"), "胶囊认的也是那一行自己的值");
   assert.ok(!facts.textContent.includes(".claude/settings.local.json"), "同名的邻行没有顶替它");
 });
+
+// 留空是「别动文件里那份凭据」，而这一页把文件里的 credentialSet 整片算成「有钥匙」。
+// 换供应商时那把钥匙就不是这一家的了：按钮亮着、宿主拒了这一笔，比按钮灰着、旁边说
+// 清为什么更糟——这一页的规矩本来就是缺什么就说出什么。
+test("switching provider stops the file's credential from counting as this form's key", async () => {
+  const { source, sections } = await page();
+  const base = await payload();
+  const kept = renderDataMessage({ ...base, center: CENTER }, source, { seed: sidebar(sections) });
+  openSection(kept, "center");
+  assert.equal(liveButton(kept, "Apply").disabled, false, "文件里那份凭据是这一家的：留空就是别动它");
+
+  const switched = renderDataMessage({ ...base, center: CENTER }, source, { seed: sidebar(sections) });
+  openSection(switched, "center");
+  // 点一个供应商磁贴：宿主回来的是一张新表（预设填好的地址与模型，凭据仍是 null）。
+  switched.send({ type: "draft", draft: { provider: "moonshot", baseUrl: "https://api.moonshot.ai/anthropic", model: "fixture-moonshot-model", credential: null, roles: {}, blocks: [] } });
+  assert.equal(liveButton(switched, "Apply").disabled, true, "换了一家，文件里那把钥匙不再是这张表的答案");
+  assert.ok(allText(switched).includes("Enter the API key first."), "灰着的那一颗旁边写着为什么");
+
+  // 自定义供应商不是「另一家」：地址是用户自己写的，那扇门收哪把钥匙由他说了算。
+  switched.send({ type: "draft", draft: { provider: "custom", baseUrl: "https://gateway.fixture.invalid/anthropic", model: "fixture-gateway-model", credential: null, roles: {}, blocks: [] } });
+  assert.equal(liveButton(switched, "Apply").disabled, false, "自己的网关上留空还是别动它");
+});

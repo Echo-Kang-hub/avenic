@@ -209,6 +209,8 @@ export const TEXT = {
   "center.need-endpoint": { en: "Enter the request URL first.", zh: "先填请求地址。" },
   "center.need-model": { en: "Enter a model first.", zh: "先填模型。" },
   "center.need-credential": { en: "Enter the API key first.", zh: "先填 API Key。" },
+  // 换供应商时留空留下的会是上一家的钥匙：这一句要说出为什么，不能只说「少了东西」。
+  "center.credential-other-provider": { en: "The key already in this file belongs to another provider — enter the key for {provider}.", zh: "文件里已有的 key 属于另一家供应商 —— 请填 {provider} 的 key。" },
   // 这一页在 account 下不写盘（apiScope 会拒绝），所以这句话不能说「应用就会切过去」：
   // 切换这个项目是 Configure Project 的问题，因为它还要问旧的配置怎么办。
   "center.account-note": { en: "This agent signs in with your Account today. Switching this project to API is a question for Avenic: Configure Project — until then Avenic writes nothing here.", zh: "这个 Agent 现在用账号登录。把这个项目切到 API 是「Avenic: Configure Project」里的事 —— 在那之前，Avenic 在这里什么都不写。" },
