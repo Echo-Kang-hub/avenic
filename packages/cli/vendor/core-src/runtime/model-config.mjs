@@ -413,14 +413,23 @@ export async function previewModelConfiguration(projectRoot, agentId, scope, tem
  * empty, so "give it back" keeps working: the record names the path and the hash
  * of what was written, never a value out of the file, and a file Avenic did not
  * create is not recorded at all.
+ *
+ * The hash follows every write Avenic makes, not only the one that made the
+ * file exist. It is what "nobody has touched this since" is measured against,
+ * so a record left at the first write would make Avenic's own second write look
+ * like the user's edit — the file would still be Avenic's, and it could never be
+ * given back. A path Avenic did not create stays unrecorded either way.
  */
 export async function applyModelConfiguration(projectRoot, agentId, scope, template, options = {}) {
   const plan = await previewModelConfiguration(projectRoot, agentId, scope, template, options);
   if (!plan.changed) return { ...plan, written: false };
   await writeAtomic(plan.file, plan.after);
-  if (!plan.exists) {
-    const ledger = await readLedger(projectRoot);
-    ledger.files[keyOf(agentId, scope)] = { file: plan.relative, createdByAvenic: true, hash: hashOf(plan.after) };
+  const ledger = await readLedger(projectRoot);
+  const key = keyOf(agentId, scope);
+  const record = ledger.files[key] ?? null;
+  const mine = record !== null && record.createdByAvenic === true && record.file === plan.relative;
+  if (!plan.exists || mine) {
+    ledger.files[key] = { file: plan.relative, createdByAvenic: true, hash: hashOf(plan.after) };
     await writeLedger(projectRoot, ledger);
   }
   return { ...plan, written: true };

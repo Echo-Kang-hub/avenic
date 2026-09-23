@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  applyModelConfiguration,
   applyProjectDraft,
+  claudeTemplate,
   ensureModelConfiguration,
   loadRuntime,
   modelConfigCandidate,
@@ -281,6 +283,26 @@ test("a file Avenic created and nobody touched is given back", async () => {
     // 账本里那一行也跟着走：删掉之后不该留下一条指向不存在文件的记录。
     const ledger = JSON.parse(await readFile(path.join(root, ".agents", "local", "ownership.json"), "utf8").catch(() => '{"files":{}}'));
     assert.equal(ledger.files["claude:project"], undefined);
+  });
+});
+
+// 账本里那个哈希记的是「Avenic 上一次写下去的字节」。它不跟着第二次写入更新，Avenic
+// 就认不出自己刚写的文件：用户一个字没动，界面却说他改过 —— 于是这个文件永远收不回来。
+test("a second apply still leaves the file Avenic's to give back", async () => {
+  await withProject(async (root) => {
+    await configure(root, claudeApi());
+    const file = path.join(root, ".claude", "settings.local.json");
+    const first = await readFile(file, "utf8");
+
+    await applyModelConfiguration(root, "claude", "project", claudeTemplate("moonshot", {
+      apiKey: "fixture-not-a-real-secret",
+      model: "fixture-model-2",
+    }));
+    assert.notEqual(await readFile(file, "utf8"), first, "第二次 Apply 确实改写了这个文件");
+
+    const outcome = await removeModelConfiguration(root, "claude", "project");
+    assert.equal(outcome.outcome, "deleted", "没人动过它，收回来就不该说它被改过");
+    assert.equal(existsSync(file), false);
   });
 });
 
