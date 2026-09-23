@@ -6,9 +6,9 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { importProjectSessions, listCanonicalSessions } from "@avenic/core";
+import { getAgent, importProjectSessions, listCanonicalSessions, modelConfigTarget } from "@avenic/core";
 import { extensionBuildOptions } from "../build-options.mjs";
-import { both, en, rowLabel, zh, type TextKey } from "../src/i18n/text.ts";
+import { both, en, rowLabel, sentence, zh, type TextKey } from "../src/i18n/text.ts";
 import { initialize } from "../src/services/agents.ts";
 import { DASHBOARD_OPEN_FAILED } from "../src/views/dashboard-failure.ts";
 import { testEnv, withAgentHomes } from "./helpers.ts";
@@ -71,6 +71,8 @@ interface Effect {
   viewType?: string;
   target?: string;
   id?: string;
+  /** 面板收到的那条消息本身（`kind: "webview"`、`action: "postMessage"` 时）。 */
+  payload?: unknown;
   /** 树上的一行（`kind: "row"`）：编辑器渲染活动栏时会看到的字。 */
   viewId?: string;
   label?: string;
@@ -116,10 +118,15 @@ interface Control {
    */
   awaitTerminal?: true;
   /**
+   * 消息之后先等到页面真的被告知某件事为止（最多几秒）：那一次推送是异步的，它什么时候到
+   * 只有到了才算数。等的是「到了没有」，不是「过了多少毫秒」。
+   */
+  awaitPage?: string;
+  /**
    * 这一行在哪个项目里点。默认是那个什么都没配的空项目——每一行的处境。有的控件只有在
    * 「项目配好了、里面还有东西」时才走得动，那一行就得自带一个那样的项目。
    */
-  fixture?: "configured";
+  fixture?: "configured" | "api";
   /**
    * 这台"机器"的 PATH 上要额外摆什么（文件名 → 内容）。默认什么都没有：「什么都跑
    * 不起来」是每一行的处境。摆一个真的会慢的可执行文件，是为了问「这一次点击有没有
@@ -199,6 +206,7 @@ interface Plan {
   message?: object;
   after?: string;
   awaitTerminal?: true;
+  awaitPage?: string;
   rows?: true;
   projectRoot: string;
   stateRoot: string;
@@ -285,6 +293,53 @@ function configuredProject(): Promise<{ project: string; canonicalId: string }> 
   return configured;
 }
 
+/** 文件里那一把钥匙：虚构的，而且任何一条断言里都不许出现在文件之外的地方。 */
+const FILE_KEY = "sk-test-not-a-real-key";
+const FILE_BASE_URL = "https://api.deepseek.com/anthropic";
+
+/**
+ * 一个「已经选了 API」的项目，文件是用户自己写的：端点、模型、凭据，外加几个不属于
+ * Avenic 的键。模型配置中心只有在这个处境里才写得动（Account 的项目上 core 会拒绝
+ * 那一次写，那是另一条路）。它有自己的目录，不动沙箱里那个空项目，也不动配好了会话的
+ * 那一个。
+ */
+let api: Promise<{ project: string }> | null = null;
+
+function apiProject(): Promise<{ project: string }> {
+  api ??= (async () => {
+    const run = await sandbox();
+    const project = path.join(run.root, "api");
+    await mkdir(project, { recursive: true });
+    const savedState = process.env.AVENIC_STATE_DIR;
+    process.env.AVENIC_STATE_DIR = run.state;
+    try {
+      await withAgentHomes(path.join(run.root, "api-home"), async () => {
+        await initialize(project, "claude", { authMethod: "api", configScope: "project", sessionScope: "project" });
+      });
+    } finally {
+      if (savedState === undefined) delete process.env.AVENIC_STATE_DIR;
+      else process.env.AVENIC_STATE_DIR = savedState;
+    }
+    // 用户自己写的文件：Avenic 会在这份文件上合并，而合并的规矩就是别的东西一个字都不动。
+    const target = modelConfigTarget(project, "claude", "project");
+    assert.ok(target !== null, "Claude 的项目作用域配置有它自己的路径");
+    await mkdir(path.dirname(target.file), { recursive: true });
+    await writeFile(target.file, `${JSON.stringify(API_DOCUMENT, null, 2)}\n`, "utf8");
+    return { project };
+  })();
+  return api;
+}
+
+const API_DOCUMENT = {
+  env: {
+    ANTHROPIC_BASE_URL: FILE_BASE_URL,
+    ANTHROPIC_AUTH_TOKEN: FILE_KEY,
+    ANTHROPIC_MODEL: "deepseek-v4-pro",
+    MY_OWN_VARIABLE: "keep me",
+  },
+  permissions: { allow: ["Bash(ls:*)"] },
+};
+
 // The artifact, not the sources — the same two-pass mechanism build.test.ts
 // uses, so both files ask their questions of the same shipped bundle. The second
 // pass bundles a loader that aliases the bundle's `vscode` import to the stub,
@@ -361,6 +416,14 @@ async function buildArtifact() {
     `    }`,
     `  }`,
     `  await settle();`,
+    // 页面被告知的那一次是异步推送：等它到。「到了没有」可以问，「还有多久」问不出来。
+    `  if (plan.awaitPage !== undefined) {`,
+    `    for (let i = 0; i < 250; i += 1) {`,
+    `      const told = effects.some((effect) => effect.kind === "webview" && effect.action === "postMessage" && JSON.stringify(effect.payload).includes(plan.awaitPage));`,
+    `      if (told) break;`,
+    `      await new Promise((r) => setTimeout(r, 20));`,
+    `    }`,
+    `  }`,
     `  if (plan.after !== undefined) {`,
     `    const next = registered.get(plan.after);`,
     `    if (next === undefined) throw new Error("the artifact does not register " + plan.after);`,
@@ -391,8 +454,11 @@ async function buildArtifact() {
 async function invoke(control: Control): Promise<Invocation> {
   const run = await sandbox();
   const { activation } = await builtArtifact();
-  const projectRoot = control.fixture === "configured" ? (await configuredProject()).project : run.project;
-  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, after: control.after, awaitTerminal: control.awaitTerminal, rows: control.rows, projectRoot, stateRoot: run.state };
+  const projectRoot =
+    control.fixture === "configured" ? (await configuredProject()).project
+    : control.fixture === "api" ? (await apiProject()).project
+    : run.project;
+  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, after: control.after, awaitTerminal: control.awaitTerminal, awaitPage: control.awaitPage, rows: control.rows, projectRoot, stateRoot: run.state };
   const planFile = path.join(run.root, "plan.json");
   await writeFile(planFile, JSON.stringify(plan));
   for (const [name, content] of Object.entries(control.bin ?? {})) {
@@ -518,6 +584,45 @@ test("continuing a session lets the next click through while that session runs",
     later.some((effect) => effect.kind === "prompt" || effect.kind === "message" || effect.kind === "terminal"),
     `终端起来之后的这一次点击什么都没发生：${said}`,
   );
+});
+
+// 模型配置中心这一页唯一写盘的那一下：「应用」。它写的是 agent 自己的文件，不是 Avenic 的
+// 存储——整页的意义都在这一下上。服务层有它自己的测试，而这里问的是别的事：面板把一条
+// 消息递回来时，产物真的改了盘上的字节（判据由另一个进程读过文件给出，不是看返回值），
+// 以及盘上的那把钥匙有没有从别的出口漏出去。
+test("applying from the Model Config page rewrites the agent's own file, and nothing else", async () => {
+  const { project } = await apiProject();
+  const target = modelConfigTarget(project, "claude", "project");
+  assert.ok(target !== null, "Claude 的项目作用域配置有它自己的路径");
+  const before = JSON.parse(await readFile(target.file, "utf8"));
+  const { effects, outputLines, thrown, ms } = await invoke({
+    id: "avenic.dashboard.open",
+    open: "project",
+    effect: "webview",
+    fixture: "api",
+    // 写完之后面板会重读一次项目再推给页面；「写了」那句结论就在那一次推送里。
+    awaitPage: "\"written\":true",
+    message: {
+      type: "action",
+      action: "centerApply",
+      agent: "claude",
+      // 表单里没有凭据：这一次换的是模型，不是钥匙——文件里那一把原样留着。
+      draft: { provider: "deepseek", baseUrl: FILE_BASE_URL, model: "deepseek-v4-flash", credential: null, roles: {}, blocks: [] },
+    },
+  });
+  assert.equal(thrown, null, `应用这一次点击把异常抛到了命令体外（${ms}ms）`);
+  const after = JSON.parse(await readFile(target.file, "utf8"));
+  assert.equal(after.env?.ANTHROPIC_MODEL, "deepseek-v4-flash", `表单里的模型没落进文件：${JSON.stringify(after)}`);
+  assert.equal(after.env?.ANTHROPIC_AUTH_TOKEN, FILE_KEY, "换模型把文件里那把钥匙动了——表单里没有它，它就该一个字都不动");
+  assert.deepEqual(after.permissions, before.permissions, "文件里住着的别的键被动了");
+  assert.equal(after.env?.MY_OWN_VARIABLE, "keep me", "用户自己的变量没保住");
+  // 两条出口各问一次：页面被告知「写了」（否则用户看着的是一张没发生过的事的表单），
+  // 而这一页从头到尾都不许把文件里的钥匙说出去——它只递「有没有」，不递值。
+  const posted = effects.filter((effect) => effect.kind === "webview" && effect.action === "postMessage").map((effect) => JSON.stringify(effect.payload)).join("\n");
+  assert.ok(posted.includes("\"written\":true"), `页面没被告知这一次真的写了：${posted.slice(0, 600)}`);
+  const spoken = `${effects.map(describe).join(" | ")}\n${(outputLines ?? []).join("\n")}`;
+  assert.ok(spoken.includes(sentence("en", "center.activity-written", { agent: getAgent("claude").displayName })), `这一次写盘没有留下它该留下的那一行：${spoken.slice(0, 600)}`);
+  assert.equal(spoken.includes(FILE_KEY), false, "文件里的钥匙出现在了输出通道或发给页面的字里——它只该待在文件里");
 });
 
 // 上面每一行问的都是「这个控件做了什么」，答案都是英文编辑器里的。但一句要显示的话是
