@@ -9,14 +9,13 @@ import { ITEM_ID_PREFIX, REFUSED_ITEM_ID_PREFIX } from "./projection.mjs";
 // request the Codex team defined, and the schema ships with the CLI
 // (`codex app-server generate-json-schema`).
 
-export const CODEX_ITEM_PREFIX = ITEM_ID_PREFIX;
 const CLIENT_INFO = { name: "avenic", title: "Avenic", version: "1" };
 const DEFAULT_TIMEOUT = 20_000;
 const INJECT_CHUNK = 200;
 
 function isInjectedItem(item) {
   return typeof item === "string"
-    && (item.startsWith(CODEX_ITEM_PREFIX) || item.startsWith(REFUSED_ITEM_ID_PREFIX));
+    && (item.startsWith(ITEM_ID_PREFIX) || item.startsWith(REFUSED_ITEM_ID_PREFIX));
 }
 
 /**
