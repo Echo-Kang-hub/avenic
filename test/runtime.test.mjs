@@ -21,6 +21,7 @@ import {
   ensureRuntimeGitignore,
   sessionsGitIgnored,
 } from "../packages/core/src/runtime/gitignore.mjs";
+import { hookActionsPath } from "../packages/core/src/runtime/hook-actions.mjs";
 import { agentExecutableAvailable, applyProjectConfiguration, listCanonicalSessions, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
 import { locateProjectRoot } from "../packages/core/src/runtime/project-root.mjs";
 import * as claudeSessions from "../packages/core/src/runtime/adapters/claude.mjs";
@@ -224,6 +225,43 @@ test("deinitialization is reversible, and purge keeps the agent's own sign-in un
 
     const repeated = await deinitializeAgent(projectRoot, "codex", { purge: true });
     assert.equal(repeated.changed, false);
+  });
+});
+
+// 通知名单与登录文件同规则：里面躺着用户自己贴进去的令牌（OpenClaw 的 hook token、
+// webhook 的 bearer），删掉就是一份他拿不回来、要去别处重新发的凭据。--purge 清的是
+// Avenic 的数据，这一个文件不在其中——一边删它一边报「Data Preserved」两条都错。
+test("purge keeps the notification list and its token unless asked twice", async () => {
+  await withTempProject(async (projectRoot) => {
+    await initializeAgent(projectRoot, "claude", { authMethod: "account", accountScope: "project" });
+    const actionsFile = hookActionsPath(projectRoot);
+    await writeFile(actionsFile, JSON.stringify({
+      actions: [{ id: "openclaw", kind: "openclaw", target: "http://127.0.0.1:18789/hooks/avenic", token: "SECRET-TOKEN" }],
+    }, null, 2));
+
+    const purged = await deinitializeAgent(projectRoot, "claude", { purge: true });
+    assert.equal(purged.purged, true);
+    assert.equal(existsSync(actionsFile), true, "名单是一份用户的凭据，--purge 不动它");
+    assert.equal(JSON.parse(await readFile(actionsFile, "utf8")).actions[0].token, "SECRET-TOKEN");
+    assert.equal(purged.keptActions, ".agents/local/hook-actions.json", "报告里说得出留下的还有这一份，还说得清它在哪");
+
+    const cleared = await deinitializeAgent(projectRoot, "claude", { purge: true, purgeCredentials: true });
+    assert.equal(existsSync(actionsFile), false, "第二次明说才连它一起删");
+  });
+});
+
+// 没配过的 agent 那里同一条规则：这就是「Data: Preserved」与「名单还在」必须同时为真
+// 的那条路——早退分支没有会话目录可删，purged 是 false，而名单照旧得留下。
+test("a purge on an agent this project never configured still keeps the notification list", async () => {
+  await withTempProject(async (projectRoot) => {
+    const actionsFile = hookActionsPath(projectRoot);
+    await mkdir(path.dirname(actionsFile), { recursive: true });
+    await writeFile(actionsFile, JSON.stringify({ actions: [{ id: "x", kind: "webhook", target: "https://example.test/hook" }] }, null, 2));
+
+    const result = await deinitializeAgent(projectRoot, "claude", { purge: true });
+    assert.equal(result.purged, false, "没有可清的会话数据");
+    assert.equal(result.keptActions, ".agents/local/hook-actions.json");
+    assert.equal(existsSync(actionsFile), true, "报「Preserved」的时候它就得真的还在");
   });
 });
 

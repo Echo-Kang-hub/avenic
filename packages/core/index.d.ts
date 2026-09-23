@@ -294,6 +294,12 @@ export function deinitializeAgent(
   remaining: number;
   /** The sign-in a purge kept, project-relative; null when nothing was kept. */
   keptCredential: string | null;
+  /**
+   * The notification list a purge kept, project-relative; null when it is gone
+   * or no purge was asked for. It holds tokens the user pasted, so it follows
+   * the credential rule — deleted only by `purgeCredentials`.
+   */
+  keptActions: string | null;
 }>;
 export function setLocalAuth(projectRoot: string, agentId: string, choice: { authMethod: AuthMethod; accountScope?: Scope; configScope?: Scope }): Promise<EffectiveAgentConfig>;
 export function clearLocalAuth(projectRoot: string, agentId: string): Promise<EffectiveAgentConfig>;

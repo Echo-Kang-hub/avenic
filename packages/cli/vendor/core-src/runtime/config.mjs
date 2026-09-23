@@ -384,8 +384,15 @@ async function purgeAgentHome(homeDirectory, agentId, options) {
   return false;
 }
 
+// 直接躺在 `.agents/local/` 下的这个文件不属于任何 agent 的 home：它是用户的通知
+// 名单，里面是他自己贴进去的令牌（OpenClaw 的那一个删了就再也收不到通知，而且他没
+// 有地方找回）。所以它与登录文件同一条规则——默认留下，第二次明说才删。其余的直接
+// 文件（state stamp、去重窗口）都是导出来的，下一次运行自己写回来。
+const KEPT_LOCAL_FILE = "hook-actions.json";
+
 // 整个 `.agents/local` 的清理守同一条规则：每个 agent 的 home 只留下它自己的登录
-// 文件（或整目录删掉），一个文件都没留下才把目录本身删掉。
+// 文件（或整目录删掉），直接放在这里的文件只留下名单，一个文件都没留下才把目录本身
+// 删掉。目录项只按目录处理：一个指向别处的链接不该被读穿。
 async function purgeAgentHomes(localRoot, options) {
   if (!existsSync(localRoot)) return;
   if (options.purgeCredentials) {
@@ -393,10 +400,24 @@ async function purgeAgentHomes(localRoot, options) {
     return;
   }
   let kept = false;
-  for (const agentId of await readdir(localRoot)) {
-    kept = await purgeHomeKeepingCredential(path.join(localRoot, agentId), CREDENTIAL_FILE[agentId]) || kept;
+  for (const entry of await readdir(localRoot, { withFileTypes: true })) {
+    const target = path.join(localRoot, entry.name);
+    if (entry.isDirectory()) {
+      kept = await purgeHomeKeepingCredential(target, CREDENTIAL_FILE[entry.name]) || kept;
+    } else if (entry.name === KEPT_LOCAL_FILE) {
+      kept = true;
+    } else {
+      await rm(target, { recursive: true, force: true });
+    }
   }
   if (!kept) await rm(localRoot, { recursive: true, force: true });
+}
+
+// 清完之后名单还在不在，用同一条读数回答两条返回路径：`--purge` 说过要清数据，
+// 那它就得说得出自己没清掉哪一份——一句「Preserved」而文件其实没了，比不说更坏。
+function keptActions(state, projectRoot, purged) {
+  const file = path.join(state.paths.localRoot, KEPT_LOCAL_FILE);
+  return purged && existsSync(file) ? path.relative(projectRoot, file).split(path.sep).join("/") : null;
 }
 
 export async function deinitializeAgent(projectRoot, agentId, options = {}) {
@@ -421,6 +442,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       keptCredential: options.purge && existsSync(path.join(homeDirectory, CREDENTIAL_FILE[agentId]))
         ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/")
         : null,
+      keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
       remaining: Object.keys(state.runtime.agents ?? {}).length,
     };
   }
@@ -468,6 +490,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     purged: Boolean(options.purge),
     remaining,
     keptCredential: kept ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/") : null,
+    keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
   };
 }
 

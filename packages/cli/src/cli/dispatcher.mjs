@@ -643,6 +643,10 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
       } else {
         console.log(`Purged: .agents/local/${agentId}/ — any sign-in the agent kept there is gone; the next launch asks you to sign in again.`);
       }
+      // 名单里有用户自己贴进去的通知令牌：说得出它留下了，才有人知道要删它得再说一次。
+      if (result.keptActions !== null) {
+        console.log(`Kept ${result.keptActions} — your notification list and the tokens in it; Avenic deletes it only when asked twice (avenic ${agentId} deinit --purge --purge-credentials).`);
+      }
     } else {
       console.log(`\nReinitialize later without losing portable sessions:\n  avenic ${agentId} init`);
     }
