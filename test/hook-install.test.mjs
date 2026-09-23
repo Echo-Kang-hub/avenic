@@ -234,6 +234,54 @@ test("OpenCode's plugin file is Avenic's own, and only Avenic's own is ever remo
   }
 });
 
+test("the Codex block is the two-table shape the binary's schema reads", async () => {
+  const run = await scratch();
+  try {
+    // 形状不是 Avenic 定的：Codex 的 serde 反射里，事件下挂的是 MatcherGroup
+    // （恰好 matcher 和 hooks 两个字段），处理器是内部打标签的枚举，command 处理器
+    // 要 `type = "command"`。把 `command` 直接写在事件表下面，读到的就是一个不认识的
+    // 字段 —— 装上了而永远不会响，和没装一模一样。
+    const plan = await hookPlan("codex", { scope: "global", projectRoot: run.project, environment: run.environment, version: "0.154.0" });
+    const lines = plan.contents.split("\n");
+    const events = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const outer = /^\[\[hooks\.([A-Za-z]+)\]\]$/.exec(lines[index]);
+      if (outer === null) continue;
+      events.push(outer[1]);
+      const handler = `[[hooks.${outer[1]}.hooks]]`;
+      assert.equal(lines[index + 1]?.trim(), handler, `${outer[1]} 的处理器表没有嵌在事件表下面`);
+      assert.equal(lines[index + 2]?.trim(), 'type = "command"');
+      assert.equal(lines[index + 3]?.trim(), 'command = "avenic hook emit --agent codex"');
+    }
+    assert.deepEqual(
+      [...events].sort(),
+      ["PermissionRequest", "SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"],
+      "Codex 的事件名要用它自己那十二个名字里的 PascalCase",
+    );
+    const loose = lines.filter((line) => /^\s*command\s*=/.test(line));
+    assert.equal(loose.length, events.length, "每条命令都该在自己的处理器表下面，不该有散在组里的");
+  } finally {
+    await run.done();
+  }
+});
+
+test("the OpenCode plugin flattens the event to the fields the matrix reads", async () => {
+  const run = await scratch();
+  try {
+    // 矩阵读的是载荷顶层的 `type` / `sessionID` / `directory`（`hooks.test.mjs` 就是
+    // 按这个形状调 `normalizeHook` 的）。而原生事件把 sessionID 放在 `properties`
+    // 里面、目录根本不在事件里（它是插件自己的入参）—— 不摊平，一个 OpenCode 事件
+    // 归一化出来就是没有会话、没有目录的一条记录。摊平是插件文件的职责，因为它是
+    // Avenic 自己的文件。
+    const plan = await hookPlan("opencode", { scope: "project", projectRoot: run.project, environment: run.environment, version: "1.18.30" });
+    const text = plan.contents;
+    assert.match(text, /export const AvenicHooks = async \(\{ directory \}\) => \(\{$/m, "插件要拿得到自己的 directory 入参");
+    assert.match(text, /report\(\{ directory, \.\.\.event\.properties, type: event\.type \}\)/, "载荷要摊平成矩阵读的那个形状");
+  } finally {
+    await run.done();
+  }
+});
+
 test("the preview a user approves never carries a secret", async () => {
   const run = await scratch();
   try {

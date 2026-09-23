@@ -15,7 +15,7 @@ says "Unsupported by <agent> <version>" rather than pretending.
 
 | Agent | Mechanism | Where it goes | Ownership |
 |---|---|---|---|
-| Claude Code | settings `hooks` | `.claude/settings.json` (project) or `~/.claude/settings.json` | merge one entry into the user's file; Avenic-marked |
+| Claude Code | settings `hooks` | `.claude/settings.local.json` (project) or `~/.claude/settings.json` | merge one entry into the user's file; Avenic-marked |
 | Codex | config hooks | `~/.codex/config.toml` `[[hooks.<Event>]]` (or a sibling `hooks.json` with a `description`/`hooks` envelope) | merge; project hooks are gated on the project being trusted |
 | OpenCode | plugin | `.opencode/plugins/<name>.ts` (project) or `~/.config/opencode/plugins/` (global) | a file Avenic owns outright — installable, removable, versioned |
 

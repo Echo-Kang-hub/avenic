@@ -124,9 +124,18 @@ function claudeEdit(agentId, capability, before, { remove }) {
 // ---- Codex: one marked block in a file full of the user's own -----------------
 
 function codexBlock(agentId, capability) {
+  // Codex 的 serde 里，事件表下挂的是 MatcherGroup（恰好 matcher / hooks 两个字段），
+  // 处理器是内部打标签的枚举：`command` 必须待在自己那张嵌套表里，还带着 `type` 标签。
+  // 直接写在事件表下面，读到的就是一个不认识的字段 —— 装上了永远不会响。
   const lines = [CODEX_BEGIN];
   for (const entry of reportable(capability)) {
-    lines.push(`[[hooks.${entry.native}]]`, `command = "${commandFor(agentId)}"`);
+    lines.push(
+      `[[hooks.${entry.native}]]`,
+      `  [[hooks.${entry.native}.hooks]]`,
+      `  type = "command"`,
+      `  command = "${commandFor(agentId)}"`,
+      "",
+    );
   }
   lines.push(CODEX_END, "");
   return lines.join("\n");
@@ -167,8 +176,11 @@ function codexEdit(agentId, capability, before, { remove }) {
 
 /**
  * The plugin, whole. It does one thing: every event the session reports goes to
- * `avenic hook emit` as it arrived, unchanged, and nothing waits for it — a
- * notification is never a reason for the agent's own turn to feel slower.
+ * `avenic hook emit` flattened to the shape the capability matrix reads — the
+ * native envelope keeps the session id inside `properties`, and the working
+ * directory is the plugin's own input rather than a field of the event. Nothing
+ * waits for the child: a notification is never a reason for the agent's own
+ * turn to feel slower.
  *
  * The command runs through the shell because `avenic` is a shim on Windows
  * (`avenic.cmd`), and Node cannot execute a shim directly — a plugin that threw
@@ -189,8 +201,8 @@ export function opencodePlugin(agentId) {
     "  child.unref();",
     "}",
     "",
-    "export const AvenicHooks = async () => ({",
-    "  event: async ({ event }) => { report(event); },",
+    "export const AvenicHooks = async ({ directory }) => ({",
+    "  event: async ({ event }) => { report({ directory, ...event.properties, type: event.type }); },",
     "});",
     "",
   ].join("\n");
