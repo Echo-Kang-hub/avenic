@@ -6,8 +6,10 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { importProjectSessions, listCanonicalSessions } from "@avenic/core";
 import { extensionBuildOptions } from "../build-options.mjs";
 import { en, zh } from "../src/i18n/text.ts";
+import { initialize } from "../src/services/agents.ts";
 import { DASHBOARD_OPEN_FAILED } from "../src/views/dashboard-failure.ts";
 import { testEnv, withAgentHomes } from "./helpers.ts";
 
@@ -100,6 +102,21 @@ interface Control {
    */
   message?: object;
   /**
+   * 那条消息之后再点一次的控件。页面上的一条消息常常不只是收尾：它会把宿主推进某个
+   * 状态里（比如一次正在进行的 mutation），而「这之后还能不能再点」只有再点一次才问得出来。
+   */
+  after?: string;
+  /**
+   * 消息之后先等到屏幕上有终端为止（最多几秒）再点 `after`。那一条消息自己做多久是它
+   * 自己的事；这个等待问的是「它那件看得见的事做完了没有」，不是「过了多少毫秒」。
+   */
+  awaitTerminal?: true;
+  /**
+   * 这一行在哪个项目里点。默认是那个什么都没配的空项目——每一行的处境。有的控件只有在
+   * 「项目配好了、里面还有东西」时才走得动，那一行就得自带一个那样的项目。
+   */
+  fixture?: "configured";
+  /**
    * 这台"机器"的 PATH 上要额外摆什么（文件名 → 内容）。默认什么都没有：「什么都跑
    * 不起来」是每一行的处境。摆一个真的会慢的可执行文件，是为了问「这一次点击有没有
    * 在等它」——等待是看得见的，只要它够慢。
@@ -171,6 +188,8 @@ interface Plan {
   answers: Answers;
   language?: string;
   message?: object;
+  after?: string;
+  awaitTerminal?: true;
   projectRoot: string;
   stateRoot: string;
 }
@@ -210,6 +229,50 @@ function sandbox() {
     return { root, project, state, empty, home };
   })();
   return sandboxed;
+}
+
+/**
+ * 一个配好了的项目，里面有一条真的共享会话。有的控件只在「有东西可操作」时才走得动，
+ * 而那条路的两样前提只能由 core 自己造：项目配置（initialize）与一段从原生对话导入
+ * 进来的共享记录（importProjectSessions）。空项目那一行（「未初始化」）靠的正是什么都
+ * 没配，所以这个项目有它自己的目录，不动沙箱里那个空的。
+ */
+let configured: Promise<{ project: string; canonicalId: string }> | null = null;
+
+function configuredProject(): Promise<{ project: string; canonicalId: string }> {
+  configured ??= (async () => {
+    const run = await sandbox();
+    const project = path.join(run.root, "configured");
+    const sessionId = "5f7c3b1e-0000-4000-8000-000000000000";
+    await mkdir(project, { recursive: true });
+    // 配置与导入读的是「这台机器」的那几个变量：这一小段里它们必须都是沙箱里的那一份，
+    // 否则原生的那段对话会被写到（或读到）开发者自己的 home 里去。
+    const savedState = process.env.AVENIC_STATE_DIR;
+    process.env.AVENIC_STATE_DIR = run.state;
+    try {
+      await withAgentHomes(path.join(run.root, "configured-home"), async () => {
+        await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+        // 原生那一段对话住在这次配置真正使用的配置根里（Account·Project → 项目自己的
+        // home）。导入走 core 的那条路：手写一份「共享记录」只会测到自己的想象。
+        const native = path.join(
+          project, ".agents", "local", "claude", "projects",
+          path.resolve(project).replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`,
+        );
+        await mkdir(path.dirname(native), { recursive: true });
+        await writeFile(native, `${JSON.stringify({ type: "user", uuid: "u1", sessionId, cwd: project, timestamp: "2026-09-18T00:00:00.000Z", message: { role: "user", content: "A first thing the user typed" } })}\n`);
+        // 不跳过捕获：原生那一段先进项目的便携存储，再成为共享记录——这是
+        // `avenic claude sessions import` 走的整条路，一步都不省。
+        await importProjectSessions(project, "claude", { environment: testEnv(run.state) });
+      });
+    } finally {
+      if (savedState === undefined) delete process.env.AVENIC_STATE_DIR;
+      else process.env.AVENIC_STATE_DIR = savedState;
+    }
+    const sessions = await listCanonicalSessions(project);
+    assert.equal(sessions.length, 1, `这个项目该正好有一条共享会话，实际 ${sessions.length} 条`);
+    return { project, canonicalId: sessions[0].id };
+  })();
+  return configured;
 }
 
 // The artifact, not the sources — the same two-pass mechanism build.test.ts
@@ -272,6 +335,19 @@ async function buildArtifact() {
     `  await handler();`,
     // 面板开出来之后，页面那半边照原样再走一步：命令层里回答页面的那些句子只有这条线能问到。
     `  if (plan.message !== undefined) await sendToPanels(plan.message);`,
+    // 页面那一条消息自己也要跑一会儿（它可能开着终端、握着队列）。等它那件看得见的事
+    // 做完，再点下一次：「上一条消息之后还能不能点」问的就是这一刻。
+    `  if (plan.awaitTerminal === true) {`,
+    `    for (let i = 0; i < 250 && !effects.some((effect) => effect.kind === "terminal" && effect.action === "sendText"); i += 1) {`,
+    `      await new Promise((r) => setTimeout(r, 20));`,
+    `    }`,
+    `  }`,
+    `  await settle();`,
+    `  if (plan.after !== undefined) {`,
+    `    const next = registered.get(plan.after);`,
+    `    if (next === undefined) throw new Error("the artifact does not register " + plan.after);`,
+    `    await next();`,
+    `  }`,
     `} catch (error) { thrown = error instanceof Error ? error.message : String(error); }`,
     `await settle();`,
     // 报告完就结束。扩展自己的后台活会留下句柄（核心探测 npm 版本用的 15 秒 spawn
@@ -297,17 +373,19 @@ async function buildArtifact() {
 async function invoke(control: Control): Promise<Invocation> {
   const run = await sandbox();
   const { activation } = await builtArtifact();
-  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, projectRoot: run.project, stateRoot: run.state };
+  const projectRoot = control.fixture === "configured" ? (await configuredProject()).project : run.project;
+  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, after: control.after, awaitTerminal: control.awaitTerminal, projectRoot, stateRoot: run.state };
   const planFile = path.join(run.root, "plan.json");
   await writeFile(planFile, JSON.stringify(plan));
-  // 子进程拿的是隔离后的环境：状态目录在沙箱里，Agent 的配置根在沙箱里（withAgentHomes），
-  // PATH 指向一个空目录。于是「起一个进程」这件事在这里永远不成立——这正是每一行的处境，
-  // 也是这个文件敢在开发机上跑、并且不碰网的原因。
   for (const [name, content] of Object.entries(control.bin ?? {})) {
     await writeFile(path.join(run.empty, name), content, { mode: 0o755 });
   }
-  const env: Record<string, string> = { ...testEnv(run.state), PATH: run.empty, Path: run.empty } as Record<string, string>;
+  // 子进程拿的是隔离后的环境：状态目录在沙箱里，Agent 的配置根在沙箱里，PATH 指向一个
+  // 空目录。于是「起一个进程」这件事在这里永远不成立——这正是每一行的处境，也是这个文件
+  // 敢在开发机上跑、并且不碰网的原因。环境在 withAgentHomes 里才成形，是为了让那几个
+  // 配置根真的进到子进程里：宿主给的每个环境变量都该是沙箱里的那一个，一个都不例外。
   return withAgentHomes(run.home, async () => {
+    const env: Record<string, string> = { ...testEnv(run.state), PATH: run.empty, Path: run.empty } as Record<string, string>;
     const stdout = execFileSync(process.execPath, [activation, planFile], { encoding: "utf8", env, cwd: run.root, timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
     return JSON.parse(stdout) as Invocation;
   });
@@ -388,6 +466,40 @@ test("the launch gate answers from this machine, and does not wait on the regist
   const said = effects.map(describe).join(" | ");
   assert.ok(said.includes("is not initialized"), `启动那一问本来就该当场回答（这一次用了 ${ms}ms），它说的是：${said}`);
   assert.ok(ms < 2_000, `点一次启动等了 ${ms}ms：它在等 registry（npm），而那一次点击不该有网络（P26）`);
+});
+
+// 「继续」是一次点击，不是接下来几个小时的锁：会话在终端里跑着的时候，用户还要能配置、
+// 能启动别的 agent、能刷新。队列（连同挡在它后面的每一个入口）与进度条都只该陪到终端
+// 起来为止——收官（捕获这一段对话、写映射）跟在终端关闭之后，那是那条会话自己的时间线。
+// 这一行问的就是「这之后还能不能再点」：所以消息之后再点一次。队列还被握着时，那一次
+// 点击得到的只有「有一个操作正在运行」；放开了，才轮得到它自己要说的话。
+test("continuing a session lets the next click through while that session runs", async () => {
+  const { canonicalId } = await configuredProject();
+  const { effects, thrown, ms } = await invoke({
+    id: "avenic.dashboard.open", open: "project", effect: "webview",
+    message: { type: "action", action: "continueShared", id: canonicalId },
+    after: "avenic.agents.launch",
+    awaitTerminal: true,
+    fixture: "configured",
+  });
+  assert.equal(thrown, null, `这一次点击把异常抛到了命令体外（${ms}ms）`);
+  // 先证明继续真的起来了：终端里那一行就是这次的启动命令。没起来的话，后面那一问
+  // 说什么都说明不了队列的事。
+  const at = effects.findIndex((effect) => effect.kind === "terminal" && effect.action === "sendText");
+  assert.ok(at >= 0, `这一次继续没有把 CLI 跑起来：${effects.map(describe).join(" | ")}`);
+  assert.match(String(effects[at].line), /claude/, `终端里跑的是这个 agent 的 CLI：${String(effects[at].line)}`);
+  // 终端起来之后的那一次点击，它的效果全在这里。
+  const later = effects.slice(at + 1);
+  const said = later.map(describe).join(" | ");
+  assert.equal(
+    later.some((effect) => describe(effect).includes(en("flow.busy"))),
+    false,
+    `那一条会话还在终端里跑着，队列却还握着——这之后的每一次点击都只会得到这句话：${said}`,
+  );
+  assert.ok(
+    later.some((effect) => effect.kind === "prompt" || effect.kind === "message" || effect.kind === "terminal"),
+    `终端起来之后的这一次点击什么都没发生：${said}`,
+  );
 });
 
 // 上面每一行问的都是「这个控件做了什么」，答案都是英文编辑器里的。但一句要显示的话是

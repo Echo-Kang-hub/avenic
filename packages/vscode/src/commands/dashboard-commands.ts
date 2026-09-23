@@ -67,15 +67,27 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   };
 
   // 继续一条会话：接手的 agent 由映射回答（谁在这条对话里出现过），多于一个才问。
+  // 这一次点击到「终端已经在跑」为止——一条会话可能跑几个小时，队列（连同挡在它后面的
+  // 每一个入口：配置、启动、导入）与进度条不该陪着它。收官照 core 的次序在后台走完
+  // （终端关闭 → finishRun → 捕获 → 写映射），那是这条会话自己的时间线：成功了记一行，
+  // 失败了说出来——一次说了没做的继续，比一次慢的继续更糟。
   const continueWith = async (canonicalId: string, agentId: string): Promise<void> => {
     const root = await projectRoot();
     if (root === null) return;
     const name = getAgent(agentId).displayName;
-    await runMutation(queue, () => withProgress(sentence(language, "sessions.continue-progress", { name }), () => continueSession(root, canonicalId, agentId, {
-      run: (definition) => runInTerminal(definition.name, definition.cwd, definition.environment, definition.command),
-      log: (line) => activity.record(line, "muted"),
-    })), () => refresh());
-    activity.record(sentence(language, "activity.session-continued", { name }));
+    let up: () => void = () => {};
+    const started = new Promise<void>((resolve) => { up = resolve; });
+    await runMutation(queue, () => withProgress(sentence(language, "sessions.continue-progress", { name }), () => {
+      const finish = continueSession(root, canonicalId, agentId, {
+        run: (definition) => runInTerminal(definition.name, definition.cwd, definition.environment, definition.command, up),
+        log: (line) => activity.record(line, "muted"),
+      });
+      void started.then(() => activity.record(sentence(language, "activity.session-continued", { name })));
+      finish.catch((error) => void showError(error));
+      // 终端起来就是这一次点击的终点；准备阶段就失败时也到此为止——那时 finish 已经
+      // 拒了，上面那一行会把原因说出来。
+      return Promise.race([started, finish.catch(() => undefined)]);
+    }), () => refresh());
   };
 
   const successors = async (root: string, canonicalId: string): Promise<AgentId[]> => {
@@ -337,8 +349,9 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   }
 
   // 一次启动：终端里跑官方 CLI，关闭时把退出码交回给调用方。面板里的「继续」靠它
-  // 才知道这一次到底跑起来了没有（跑不成就不写映射）。
-  function runInTerminal(name: string, cwd: string, environment: Record<string, string>, command: string): Promise<number | null> {
+  // 才知道这一次到底跑起来了没有（跑不成就不写映射）。终端起来的那一刻另外报一声：
+  // 那是这一次点击的终点，而会话本身从这里才开始跑。
+  function runInTerminal(name: string, cwd: string, environment: Record<string, string>, command: string, onStarted?: () => void): Promise<number | null> {
     return new Promise((resolve) => {
       const terminal = vscode.window.createTerminal({ name, cwd, env: environment });
       const closeListener = vscode.window.onDidCloseTerminal((closed) => {
@@ -348,6 +361,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
       });
       terminal.show();
       terminal.sendText(command);
+      onStarted?.();
     });
   }
 }
