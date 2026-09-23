@@ -18,6 +18,9 @@ const REQUIRED_RULES = [
   ".agents/tmp/",
   ".agents/direct/",
   ".agents/licenses/",
+  // What a provider's model list was when this machine asked for it. A cache is
+  // a fact about the machine, not about the repository.
+  ".agents/cache/",
   // Two paths Avenic no longer writes and must still keep out of a commit: a
   // project that answered API before 1.8.4 holds `.agents/api/<agent>.json` (a
   // file with a real credential in it, written by that version) and a
@@ -80,6 +83,7 @@ export async function removeRuntimeGitignore(projectRoot, options = {}) {
   const guarded = [
     [".agents/local/", path.join(projectRoot, ".agents", "local")],
     [".agents/api/", path.join(projectRoot, ".agents", "api")],
+    [".agents/cache/", path.join(projectRoot, ".agents", "cache")],
     [".agents/projection.json", path.join(projectRoot, ".agents", "projection.json")],
     [".claude/settings.local.json", path.join(projectRoot, ".claude", "settings.local.json")],
   ];

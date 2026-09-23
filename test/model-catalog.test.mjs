@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { ensureRuntimeGitignore } from "../packages/core/src/runtime/gitignore.mjs";
 import {
   fetchModelCatalog,
   modelCatalogCachePath,
@@ -428,6 +430,20 @@ test("a refused connection and a silent server are told apart here too", async (
 });
 
 // ── the cache the Center reads without a network call ───────────────────────
+
+test("a fetched list is machine state, and the project keeps it out of a commit", async () => {
+  // 清单是「这台机器上问过这个地址」的缓存，不是仓库的内容：它跟着项目走，就不该
+  // 跟着项目被提交。项目自己说了算这件事的方式，是 Avenic 的忽略清单里写着它。
+  await withTemp(async (root) => {
+    spawnSync("git", ["init", "--quiet"], { cwd: root });
+    await ensureRuntimeGitignore(root);
+    await writeModelCatalogCache(root, "deepseek", { baseUrl: "https://api.deepseek.com/anthropic", models: ["deepseek-v4-pro"] });
+
+    const file = modelCatalogCachePath(root, "deepseek");
+    const ignored = spawnSync("git", ["check-ignore", "-q", path.relative(root, file)], { cwd: root });
+    assert.equal(ignored.status, 0, "一次抓取留下的清单出现在提交里，是把这台机器的缓存当成了项目的一部分");
+  });
+});
 
 test("the cache lives under the project, one file per provider", async () => {
   await withTemp(async (root) => {
