@@ -35,7 +35,7 @@
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Account Scope",
           "kind": "value",
           "value": ".agents/local/claude",
           "tone": "muted",
@@ -83,7 +83,7 @@
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Account Scope",
           "kind": "value",
           "value": ".agents/local/codex",
           "tone": "muted",

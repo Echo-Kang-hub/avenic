@@ -60,7 +60,7 @@ import { collectLines, confirm, field, intro, isInteractive, line, multiSelect, 
 import { fullLogo } from "./brand.mjs";
 import { launchAgent, reportSessionDiagnostics } from "./launch.mjs";
 import { loadTranscript, printTranscript, transcriptPreview } from "./transcript-cli.mjs";
-import { dispatchStatusCommand } from "./status-cli.mjs";
+import { accountStatusNote, configurationStateNote, detectedNote, dispatchStatusCommand, legacyNote } from "./status-cli.mjs";
 import { mark, reportLaunchTiming, timed } from "#core/runtime/timing.mjs";
 
 // Everything above this line is the price of being able to answer the command
@@ -383,34 +383,25 @@ async function printAgentStatus(agent, projectRoot, state) {
   } else if (!config) {
     console.log(`Not configured here yet — run: avenic ${agent.id} init`);
   }
-  for (const [text, options] of await agentAuthNotes(agent, card, config)) {
+  for (const [text, options] of agentAuthNotes(agent, card)) {
     console.log(options.mark === "!" ? `! ${text}` : text);
   }
   printMethodNote(agent, config);
 }
 
-// 与 `avenic status` 同一批事实、同一套词：一行一句，从一个事实说起（路径在行首，
-// 行尾会被终端宽度截掉）。
-async function agentAuthNotes(agent, card, config) {
+// 与 `avenic status` 同一批事实、同一句话 —— 那几个句子就在 status-cli 里写着，
+// 两个命令读同一个函数。这里补的是上面那张卡片没说到的：文件还没铺开时它怎么了、
+// 账号的补救、还在旁边的旧配置、以及这一页独有的「凭据在不在文件里」。
+function agentAuthNotes(agent, card) {
   const auth = card.auth;
   if (!auth) return [];
-  if (auth.method === "account") {
-    const notes = [];
-    if (auth.status === "not-signed-in") notes.push([`Account Status Not signed in — run: avenic ${agent.id} to sign in`, { mark: "!" }]);
-    else if (auth.status === "unknown") notes.push([`Account Status Unknown — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, {}]);
-    if (auth.detected) notes.push([`${LABELS.detectedButInactive} — ${auth.detected.relative} is present, and this project runs on an Account`, { mark: "!" }]);
-    return notes;
+  const broken = configurationStateNote(auth);
+  const notes = [broken, accountStatusNote(agent, auth), legacyNote(auth), detectedNote(auth)].filter(Boolean);
+  if (!broken && auth.method === "api") {
+    const configuration = auth.configuration ?? {};
+    notes.push({ text: `${LABELS.credential} ${configuration.credentialSet ? "set in the file" : "not in the file — the launch reads it from your own environment"}`, mark: "·" });
   }
-  const configuration = auth.configuration ?? {};
-  const file = configuration.relative ?? "—";
-  // 三种处境，同一句补救；行要短到补救活得过 80 列终端的截断（文件在卡片行里
-  // 已经写过了，这里只把「下一步做什么」说完）。换过住处的那一份（1.8.4 之前
-  // Codex 的项目配置）在新文件还没配好时一并说出来：旧值只在它里面。
-  const older = auth.legacy ? [[`${auth.legacy.relative} still holds the earlier configuration`, { mark: "!" }]] : [];
-  if (!configuration.exists) return [[`${file} is missing — run: avenic change`, { mark: "!" }], ...older];
-  if (!configuration.valid) return [[`${file} cannot be read — run: avenic change`, { mark: "!" }], ...older];
-  if (!configuration.configured) return [[`fill in ${file} — nothing in it yet`, { mark: "!" }], ...older];
-  return [[`${LABELS.credential} ${configuration.credentialSet ? "set in the file" : "not in the file — the launch reads it from your own environment"}`, {}]];
+  return notes.map((note) => [note.text, { mark: note.mark }]);
 }
 
 // The one line that says what an answer means on disk, so `init` and `auth`
@@ -630,9 +621,8 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     }
     const prompts = options.prompts ?? {};
     if (action === "reset") {
-      const cleared = await clearLocalAuth(projectRoot, agentId);
+      await clearLocalAuth(projectRoot, agentId);
       await printAgentStatus(agent, projectRoot, await loadRuntime(projectRoot));
-      printMethodNote(agent, cleared);
       return 0;
     }
     if (agent.managesOwnAuth) {
@@ -659,7 +649,7 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     };
     const decision = methodSwitches(switchDraft).length > 0 ? await askMethodSwitch(leftoverTargets(switchDraft), prompts) : "keep";
     if (decision === "cancel") return 0;
-    const config = await setLocalAuth(projectRoot, agentId, { authMethod, ...scopeAnswer });
+    await setLocalAuth(projectRoot, agentId, { authMethod, ...scopeAnswer });
     // After, never before: the write above can fail, and a failed write must not
     // leave the user with neither answer. `previous` is a captured fact, so the
     // release does not need the live configuration to still describe it.
@@ -671,7 +661,6 @@ async function dispatchAgent(agentId, argumentsList, options = {}) {
     // on disk. Reporting it as prose alone left the user to run `status` to see
     // what they had just changed.
     await printAgentStatus(agent, projectRoot, await loadRuntime(projectRoot));
-    printMethodNote(agent, config);
     return 0;
   }
 

@@ -94,7 +94,7 @@
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Account Scope",
           "kind": "value",
           "value": ".agents/local/codex",
           "tone": "muted",

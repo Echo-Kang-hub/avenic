@@ -35,7 +35,7 @@
           "icon": "account"
         },
         {
-          "label": "Account Home",
+          "label": "Account Scope",
           "kind": "value",
           "value": "~/AppData/Local/Temp/avenic-visual-home/c-native/.claude",
           "tone": "muted",

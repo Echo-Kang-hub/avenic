@@ -31,7 +31,6 @@ export const LABELS = {
   accountScopeQuestion: "Account scope",
   configurationScope: "Configuration Scope",
   configurationScopeQuestion: "Configuration scope",
-  accountHome: "Account Home",
   accountStatus: "Account Status",
   configFile: "Config file",
   configSource: "Config Source",
@@ -52,7 +51,6 @@ export const LABELS = {
   historyMode: { shared: "Shared", isolated: "Isolated" },
   signIn: { "signed-in": "Signed in", "not-signed-in": "Not signed in", unknown: "Unknown" },
   detectedButInactive: "Detected but inactive",
-  notConfigured: "Not configured",
   notChosen: "Not chosen",
   // The two answers to the authentication question, with the one line of
   // explanation a reader may need. The names themselves are never anything else.

@@ -202,11 +202,13 @@ test("runtime overview and doctor cover all three agents", async () => {
     for (const block of ["Project", "History", "Agents", "Skills"]) {
       assert.match(status.stdout, new RegExp(`◇  ${block}\\n│  `), `status is missing the ${block} block`);
     }
-    assert.match(status.stdout, /│  Mode      (shared|isolated)/);
+    // 同一页上同一个事实只有一种写法：Agents 表的 History 一列也是这两个词。
+    assert.match(status.stdout, /│  Mode      (Shared|Isolated)/);
     assert.match(status.stdout, /Claude Code/);
     assert.match(status.stdout, /Codex/);
     assert.match(status.stdout, /OpenCode/);
-    assert.match(status.stdout, /Not configured/);
+    // 没答过认证的 agent 说的是卡片那句话（`agentCardRows`）：没答，不是「没配」。
+    assert.match(status.stdout, /Not chosen/);
     assert.doesNotMatch(status.stdout, /\x1b\[/, "管道里不该出现终端控制序列");
     // The same model, unrendered, for hosts that draw it themselves.
     const json = runAgent(projectRoot, ["status", "--json"]);
@@ -439,7 +441,9 @@ test("agent auth reports the method, switches it, resets, and rejects unknown on
     assert.match(api.stdout, /Config Source\s+\.claude\/settings\.local\.json/);
     // 提醒行先把文件放在行首：整行必须活在 80 列以内，排在后半句的补救会被截掉。
     assert.match(api.stdout, /fill in \.claude\/settings\.local\.json — nothing in it yet/);
-    assert.match(api.stdout, /API: Claude Code reads its provider, endpoint and model from \.claude\/settings\.local\.json/);
+    // 一句话说一遍：切换那一步曾经把这句话又印了一次（printAgentStatus 里已经说过）。
+    const apiParagraph = "API: Claude Code reads its provider, endpoint and model from .claude/settings.local.json";
+    assert.equal(api.stdout.split(apiParagraph).length - 1, 1, "同一条事实只说一次");
 
     // The override is this checkout's answer, and it says so.
     const overridden = runAgent(projectRoot, ["claude", "auth"]);
@@ -1166,13 +1170,16 @@ test("the file's own contents decide the Provider and Model rows", async () => {
     assert.equal(emptied.status, 0, emptied.stderr);
     assert.doesNotMatch(emptied.stdout, /Provider\s/, "provider 不在文件里了，就不能再显示一个");
     assert.doesNotMatch(emptied.stdout, /Model\s/);
-    assert.match(emptied.stdout, /fill in \.claude\/settings\.local\.json — nothing in it yet/);
+    // 同一个事实在两个命令上是同一句话：`avenic claude auth` 和 `avenic status`
+    // 读同一个 core 事实、同一句补救，差别的只是行首有没有那个名字。
+    const emptyFile = "fill in .claude/settings.local.json — nothing in it yet";
+    assert.ok(emptied.stdout.includes(emptyFile), emptied.stdout);
 
-    // 项目状态页说同一件事（两处各自用自己的语言，同一条事实），补救命令完整可见；
+    // 项目状态页说的是同一件事，补救命令完整可见；
     // 机器可读的那份给出结构化的那个布尔值。
     const projectStatus = runAgent(projectRoot, ["status"]);
     assert.equal(projectStatus.status, 0, projectStatus.stderr);
-    assert.match(projectStatus.stdout, /Claude Code: fill in \.claude\/settings\.local\.json — nothing in it yet/);
+    assert.ok(projectStatus.stdout.includes(`Claude Code: ${emptyFile}`), projectStatus.stdout);
     const reported = JSON.parse(runAgent(projectRoot, ["status", "--json"]).stdout).agents.find((agent) => agent.id === "claude").auth.configuration;
     assert.equal(reported.owned, true, "账本还是证明得了这个文件是 Avenic 建的");
     assert.equal(reported.configured, false, "但文件里没有配置");

@@ -2,19 +2,14 @@
 // project itself: the extension reads the same object and draws it as a tree,
 // and `--json` prints it unchanged, so all three hosts answer the same
 // question with the same answer.
-import { LABELS, authenticationValue, collectStatus, methodLabel, scopedHomeValue, shortTimestamp, signInLabel } from "#core";
+import { LABELS, agentCardRows, collectStatus, historyLabel, shortTimestamp, signInLabel } from "#core";
 import { locateProjectRoot } from "#core/runtime/project-root.mjs";
 import { collectLines, field, note, palette, section, table } from "./prompts.mjs";
 import { compactBrand } from "./brand.mjs";
 
-const SYNC_LABELS = {
-  current: "current",
-  running: "running",
-  stale: "stale",
-  missing: "missing",
-  dirty: "dirty",
-  none: "—",
-};
+// 同步状态自己就是它的词（current / running / stale / dirty / missing）；只有
+// 「这个 agent 还没有可同步的东西」那一态要换个符号，而它不是一句话。
+const syncLabel = (sync) => (sync === "none" ? "—" : sync);
 
 const SYNC_REMEDIES = {
   stale: "run: avenic sessions continue <id> --agent <agent> to extend it",
@@ -54,74 +49,99 @@ function hubSummary(hub) {
   return `${hub.name} · ${hub.cache} · ${detail}`;
 }
 
-// Authentication and Sessions are two answers, so they are two columns: the
-// answer with the scope it owns, and where this agent's sessions live. The
-// facts a scope alone cannot give — the configuration file, the account scope,
-// whether the sign-in has happened — belong to the lines below, not here.
-function agentRow(agent) {
-  const auth = agent.auth;
+// The table's five answers are the card's own rows, cell for cell: the
+// authentication method with the scope it owns, where this agent's sessions
+// live, and the project's history mode. A host may lay the rows out
+// differently — a column here, a line there — but it may not answer
+// differently, so none of these words is spelled out a second time here.
+function agentRow(agent, historyMode) {
+  const rows = agentCardRows(agent, historyMode);
+  const valueOf = (key) => rows.find((row) => row.key === key)?.value ?? "—";
   return [
     agent.displayName,
     agent.available ? "found" : "not found",
-    // 没有方法不等于没有初始化：一个项目可以只回答了「会话存哪儿」，把认证留到
-    // 启动时再问（合法状态）。那一格该说的是「Not chosen」，不是「未初始化」。
-    // 自管认证的 agent 那一格说的是面板上那句话：`native` 是内部的值，这一页
-    // 是给人看的，同一个概念在四个宿主上必须是同一个词。
-    auth ? authenticationValue({ authMethod: auth.method, authScope: auth.scope })
-      : (agent.runtime ? methodLabel(agent.runtime) : (agent.initialized ? LABELS.notChosen : LABELS.notConfigured)),
-    agent.initialized ? agent.sessions : "—",
-    String(agent.history.sessions),
-    SYNC_LABELS[agent.history.sync] ?? agent.history.sync,
+    valueOf("authentication"),
+    valueOf("sessions"),
+    valueOf("history"),
+    syncLabel(agent.history.sync),
   ];
 }
 
-// What the answer means on disk, said once per agent. An Account points at the
-// scope and home the agent signs into itself; an API configuration names the
-// file the launch reads and what that file selects — and says so as missing,
-// with its remedy, rather than as an error, because a project whose
-// configuration is not written yet still launches.
-function authNotes(agent, at) {
+// The rows the page has room for under the table. The table itself already
+// answers Authentication, Sessions and History, and the rest of the card's
+// model-role rows (Opus / Sonnet / Haiku Model, Reasoning Effort) belong to the
+// card and to `avenic <agent> status` — this page names what a reader needs to
+// recognize their configuration, not everything the file holds.
+const FACT_KEYS = new Set(["configSource", "provider", "model", "subAgentModel", "effort", "accountStatus", "accountScope"]);
+
+// The sentences `avenic status` and `avenic <agent> status` both print, one per
+// fact, each with its remedy on the same line — a remedy beyond column 80 is not
+// advice. The pages differ in what surrounds them (a column here, the whole card
+// there) and in whether the agent's name is prefixed; they do not differ in what
+// the file's state is called, because a user reading one command and then the
+// other must not be told two things about one file.
+
+/**
+ * 「文件不在」「读不出来」「在但还没写」：三种处境各一句话。前两种给出下一步，
+ * 第三种只说「把它填上」—— 因为在 80 列的终端里，补救和它救的那件事必须同时
+ * 活得下来，而这一句没有别的补救要说。路径在两句话里都在前半段。
+ */
+export function configurationStateNote(auth) {
+  const configuration = auth?.configuration ?? {};
+  if (auth?.method !== "api" || configuration.configured) return null;
+  const file = configuration.relative ?? "—";
+  const text = !configuration.exists ? `${file} is missing — run: avenic change`
+    : !configuration.valid ? `${file} cannot be read — run: avenic change`
+      : `fill in ${file} — nothing in it yet`;
+  return { text, mark: "!" };
+}
+
+/**
+ * 签没签进来：只在它还能多说一句的时候存在（补救，或者这个平台上根本读不到）。
+ * 签好了就什么都没多说 ——— 卡片行自己写着 Signed in。
+ */
+export function accountStatusNote(agent, auth) {
+  if (auth?.method !== "account") return null;
+  const value = `${LABELS.accountStatus} ${signInLabel(auth.status)}`;
+  if (auth.status === "not-signed-in") return { text: `${value} — run: avenic ${agent.id} to sign in`, mark: "!" };
+  // Naming the uncertainty is the honest answer: this platform can hold the
+  // credential somewhere no file read can see, and a probe is not a status.
+  if (auth.status === "unknown") return { text: `${value} — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, mark: "·" };
+  return null;
+}
+
+/** 1.8.4 之前那份配置换了住处：升级之后旧值只在那一份里，所以它得被说出来。 */
+export function legacyNote(auth) {
+  return auth?.legacy ? { text: `${auth.legacy.relative} still holds the earlier configuration`, mark: "!" } : null;
+}
+
+/** 文件在、却没生效：项目跑在账号上，而 API 那一份配置就摆在旁边。 */
+export function detectedNote(auth) {
+  return auth?.detected ? { text: `${LABELS.detectedButInactive} — ${auth.detected.relative} is present, and this project runs on an Account`, mark: "!" } : null;
+}
+
+// What the answer means on disk, said once per agent: the card's rows, one fact
+// per line, because a fact the terminal cuts in half is a fact nobody read.
+function authNotes(agent, historyMode, at) {
   const auth = agent.auth;
   if (!auth) return [];
   const name = agent.displayName;
-  if (auth.method === "api") {
-    const configuration = auth.configuration ?? {};
-    const file = configuration.relative ?? "—";
-    // 「文件不在」「文件在但读不出来」「文件在、还没写」是三种处境：补救相同
-    // （avenic change），事实不同，就说哪一种。整行必须活在 80 列以内，而补救
-    // 排在事实后面 —— 所以事实要短到能把补救留在可见的那一段里：被截掉的补救
-    // 命令等于没有。
-    // 1.8.4 之前那份配置换了住处：新文件还没配好的时候要说它在哪儿，因为旧值只
-    // 在那一份里，而升级不该看起来像 provider 自己失效了。
-    const older = auth.legacy ? [[`${name}: ${auth.legacy.relative} still holds the earlier configuration`, { ...at, mark: "!" }]] : [];
-    if (!configuration.exists) return [[`${name}: ${file} is missing — run: avenic change`, { ...at, mark: "!" }], ...older];
-    if (!configuration.valid) return [[`${name}: ${file} cannot be read — run: avenic change`, { ...at, mark: "!" }], ...older];
-    if (!configuration.configured) return [[`${name}: fill in ${file} — nothing in it yet`, { ...at, mark: "!" }], ...older];
-    // 配置好了就只说文件里在的那两件事：这一页给的是面板同一批字段，而面板没有
-    // Credential 这一行 —— 凭据从用户自己的环境来，不是这个文件的事。
-    const provider = configuration.provider ? `, ${LABELS.provider} ${configuration.provider}` : "";
-    const model = configuration.model ? `, ${LABELS.model} ${configuration.model}` : "";
-    return [[`${name}: ${file}${provider}${model}`, at]];
-  }
-  const notes = [];
-  // 作用域和承载它的家目录一起写：只写目录，读的人还得回头找它属于谁。
-  if (auth.home !== null && auth.home !== undefined) notes.push([`${name}: ${LABELS.accountScope} ${scopedHomeValue(auth.scope, auth.home)}`, at]);
-  if (auth.status === "signed-in") {
-    // The positive answer is the one a reader most often wants, and it is the
-    // only one the page can give without a remedy attached.
-    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)}`, at]);
-  } else if (auth.status === "not-signed-in") {
-    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)} — run: avenic ${agent.id} to sign in`, { ...at, mark: "!" }]);
-  } else if (auth.status === "unknown") {
-    // Naming the uncertainty is the honest answer: this platform can hold the
-    // credential somewhere no file read can see, and a probe is not a status.
-    notes.push([`${name}: ${LABELS.accountStatus} ${signInLabel(auth.status)} — this platform may keep it outside ${auth.home ?? "the agent's own home"}`, at]);
-  }
-  // 文件在、却没生效：项目跑在账号上，而 API 那一份配置就摆在旁边。
-  if (auth.detected) {
-    notes.push([`${name}: ${LABELS.detectedButInactive} — ${auth.detected.relative} is present, and this project runs on an Account`, { ...at, mark: "!" }]);
-  }
-  return notes;
+  const line = (note) => [`${name}: ${note.text}`, { ...at, mark: note.mark }];
+  const legacy = legacyNote(auth);
+  const broken = configurationStateNote(auth);
+  // 还没铺开的文件：这一页说得出的事实只有「哪一份、它怎么了」——provider、
+  // model、effort 那些行此刻一行都没有，也不该有。
+  if (broken) return [line(broken), ...(legacy ? [line(legacy)] : [])];
+  const facts = agentCardRows(agent, historyMode)
+    .filter((row) => FACT_KEYS.has(row.key))
+    .map((row) => {
+      // 账号那一行唯一会变的是签没签进来，而补救跟着它：另起一行说会把补救和它
+      // 救的那件事分开。
+      const status = row.key === "accountStatus" ? accountStatusNote(agent, auth) : null;
+      return status ? line(status) : [`${name}: ${row.label} ${row.value}`, at];
+    });
+  const inactive = detectedNote(auth);
+  return [...facts, ...(legacy ? [line(legacy)] : []), ...(inactive ? [line(inactive)] : [])];
 }
 
 /**
@@ -144,7 +164,7 @@ export function renderStatus(status, io = console, options = {}) {
   field(sink, "Agents", project.agents.length > 0 ? project.agents.join(", ") : "none configured", at);
   blank();
   section(sink, "History", at);
-  field(sink, "Mode", history.mode, at);
+  field(sink, "Mode", historyLabel(history.mode), at);
   field(sink, "Sessions", String(history.sessions), at);
   if (history.active) {
     field(sink, "Active", `${history.active}${history.activeTitle ? `  ${history.activeTitle}` : ""}`, at);
@@ -155,16 +175,16 @@ export function renderStatus(status, io = console, options = {}) {
   field(sink, "Updated", shortTimestamp(history.updatedAt) ?? "—", at);
   blank();
   section(sink, "Agents", at);
-  table(sink, ["Agent", "CLI", "Auth", "Sessions", "History", "Sync"], agents.map(agentRow), { colors });
+  table(sink, ["Agent", "CLI", LABELS.authentication, LABELS.sessions, LABELS.history, "Sync"], agents.map((agent) => agentRow(agent, history.mode)), { colors });
   for (const agent of agents) {
     const remedy = agent.history.sync === "missing"
       ? missingRemedy(history.mode)
       : SYNC_REMEDIES[agent.history.sync];
-    if (remedy) note(sink, `${agent.displayName}: ${SYNC_LABELS[agent.history.sync]} — ${remedy}`, { ...at, mark: "!" });
+    if (remedy) note(sink, `${agent.displayName}: ${syncLabel(agent.history.sync)} — ${remedy}`, { ...at, mark: "!" });
     else if (!agent.available) note(sink, `${agent.displayName}: the ${agent.command} CLI is not on PATH — Avenic still manages its history`, at);
     else if (!agent.initialized) note(sink, `${agent.displayName}: run: avenic ${agent.id} init`, at);
     // 路径放在行首：行尾会被终端宽度截掉，而「配置/账号在哪」正是这行必须活下来的部分。
-    for (const [line, style] of authNotes(agent, at)) note(sink, line, style);
+    for (const [line, style] of authNotes(agent, history.mode, at)) note(sink, line, style);
   }
   blank();
   section(sink, "Skills", at);

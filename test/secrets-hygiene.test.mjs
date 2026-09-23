@@ -323,10 +323,13 @@ test("an API configuration's credential reaches only the files the project keeps
       // never what it is.
       const status = run("status", ["status"]);
       assert.equal(status.status, 0, status.stderr);
-      assert.match(status.stdout, /Agent\s+CLI\s+Auth\s+Sessions\s+History\s+Sync/);
-      // The page names the file the launch reads; the machine-readable form
-      // says whether a credential is in it — as a boolean, never a value.
-      assert.match(status.stdout, /Claude Code: \.claude\/settings\.local\.json, Provider fixture\.invalid, Model/);
+      assert.match(status.stdout, /Agent\s+CLI\s+Authentication\s+Sessions\s+History\s+Sync/);
+      // The page names the file the launch reads and what that file selects —
+      // one fact per line; the machine-readable form says whether a credential
+      // is in it — as a boolean, never a value.
+      assert.match(status.stdout, /Claude Code: Config Source \.claude\/settings\.local\.json/);
+      assert.match(status.stdout, /Claude Code: Provider fixture\.invalid/);
+      assert.equal(status.stdout.includes(key), false, "一页报告也不带那个值");
       const json = run("status --json", ["status", "--json"]);
       assert.equal(json.status, 0, json.stderr);
       const reported = JSON.parse(json.stdout).agents.find((agent) => agent.id === "claude").auth.configuration;

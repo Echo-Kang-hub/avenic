@@ -6,21 +6,23 @@
 {muted}│{/}  {muted}Agents    {/}claude, codex
 
 {brandSoft}◇{/}  {strong}History{/}
-{muted}│{/}  {muted}Mode      {/}shared
+{muted}│{/}  {muted}Mode      {/}Shared
 {muted}│{/}  {muted}Sessions  {/}24
 {muted}│{/}  {muted}Active    {/}claude-bee6f9b7-0000-0000-0000-000000000000  claude bee6f9b7
 {muted}│{/}  {muted}Events    {/}5939
 {muted}│{/}  {muted}Updated   {/}{time}
 
 {brandSoft}◇{/}  {strong}Agents{/}
-{muted}│{/}  {muted}Agent        CLI    Auth                  Sessions  History  Sync{/}
-{muted}│{/}  Claude Code  found  API (Project)         project   10       current
-{muted}│{/}  Codex        found  Account (Project)     project   10       stale
-{muted}│{/}  OpenCode     found  Native (OpenCode UI)  —         0        —
-{muted}│{/}  {muted}·{/}  Claude Code: .claude/settings.local.json, Provider DeepSeek, Model deepseek-chat
+{muted}│{/}  {muted}Agent        CLI    Authentication        Sessions  History  Sync{/}
+{muted}│{/}  Claude Code  found  API (Project)         Project   Shared   current
+{muted}│{/}  Codex        found  Account (Project)     Project   Shared   stale
+{muted}│{/}  OpenCode     found  Native (OpenCode UI)  —         Shared   —
+{muted}│{/}  {muted}·{/}  Claude Code: Config Source .claude/settings.local.json
+{muted}│{/}  {muted}·{/}  Claude Code: Provider DeepSeek
+{muted}│{/}  {muted}·{/}  Claude Code: Model deepseek-chat
 {muted}│{/}  {warning}!{/}  Codex: stale — run: avenic sessions continue <id> --agent <agent> to extend it
-{muted}│{/}  {muted}·{/}  Codex: Account Scope Project (.agents/local/codex)
 {muted}│{/}  {warning}!{/}  Codex: Account Status Not signed in — run: avenic codex to sign in
+{muted}│{/}  {muted}·{/}  Codex: Account Scope Project (.agents/local/codex)
 {muted}│{/}  {muted}·{/}  OpenCode: run: avenic opencode init
 
 {brandSoft}◇{/}  {strong}Skills{/}

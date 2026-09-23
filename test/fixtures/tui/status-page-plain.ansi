@@ -6,21 +6,23 @@ AVENIC · Status
 │  Agents    claude, codex
 
 ◇  History
-│  Mode      shared
+│  Mode      Shared
 │  Sessions  24
 │  Active    claude-bee6f9b7-0000-0000-0000-000000000000  claude bee6f9b7
 │  Events    5939
 │  Updated   {time}
 
 ◇  Agents
-│  Agent        CLI    Auth                  Sessions  History  Sync
-│  Claude Code  found  API (Project)         project   10       current
-│  Codex        found  Account (Project)     project   10       stale
-│  OpenCode     found  Native (OpenCode UI)  —         0        —
-│  ·  Claude Code: .claude/settings.local.json, Provider DeepSeek, Model deepseek-chat
+│  Agent        CLI    Authentication        Sessions  History  Sync
+│  Claude Code  found  API (Project)         Project   Shared   current
+│  Codex        found  Account (Project)     Project   Shared   stale
+│  OpenCode     found  Native (OpenCode UI)  —         Shared   —
+│  ·  Claude Code: Config Source .claude/settings.local.json
+│  ·  Claude Code: Provider DeepSeek
+│  ·  Claude Code: Model deepseek-chat
 │  !  Codex: stale — run: avenic sessions continue <id> --agent <agent> to extend it
-│  ·  Codex: Account Scope Project (.agents/local/codex)
 │  !  Codex: Account Status Not signed in — run: avenic codex to sign in
+│  ·  Codex: Account Scope Project (.agents/local/codex)
 │  ·  OpenCode: run: avenic opencode init
 
 ◇  Skills

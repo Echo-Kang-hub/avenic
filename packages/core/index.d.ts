@@ -1268,7 +1268,6 @@ export const LABELS: {
   accountScopeQuestion: string;
   configurationScope: string;
   configurationScopeQuestion: string;
-  accountHome: string;
   accountStatus: string;
   configFile: string;
   configSource: string;
@@ -1291,7 +1290,6 @@ export const LABELS: {
   signIn: { "signed-in": string; "not-signed-in": string; unknown: string };
   /** "Detected but inactive" — a configuration that is present and not in effect. */
   detectedButInactive: string;
-  notConfigured: string;
   notChosen: string;
   method: {
     account: { label: string; description: string };
