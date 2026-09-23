@@ -30,6 +30,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.mjs";
+import { ensureRuntimeGitignore } from "./gitignore.mjs";
 import { HOOK_POLICY, hookCapability, hookFingerprint, normalizeHook } from "./hooks.mjs";
 import { maskSecrets, parseJsonObject } from "./model-write.mjs";
 import { runtimePaths } from "./project-paths.mjs";
@@ -167,6 +168,12 @@ export async function writeHookActions(projectRoot, scope, actions, { environmen
   const parsed = parseJsonObject(before);
   const value = `${JSON.stringify({ ...parsed, actions: wanted }, null, 2)}\n`;
   if (value === before) return { changed: false, file };
+  // 项目里的那一份住在一个仓库里，而且可能带着 hook token。`.agents/local/` 那条规则
+  // 只有被 Avenic 配置过的项目才有（`REQUIRED_RULES`），而这一页不需要先配过 agent 就能
+  // 写下第一份动作 —— 少了它，这个项目里一句 `git add .` 提交的就是一个令牌。规则先落，
+  // 文件后写：反过来的那一瞬间足够一句并行的提交把令牌收进去。全机的那一份不在仓库里
+  // （它跟着机器状态走），所以它不动任何项目的忽略规则。
+  if (scope === "project") await ensureRuntimeGitignore(projectRoot);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFileAtomic(file, value, { mode: 0o600 });
   return { changed: true, file };

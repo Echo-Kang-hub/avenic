@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -122,6 +124,29 @@ test("a file that is there but cannot be read is not written over either", async
     await mkdir(file, { recursive: true }); // 那个位置上有一份读不出来的东西
     await assert.rejects(() => writeHookActions(project, "project", [desktop], { environment }), /cannot be read/);
     assert.equal((await stat(file)).isDirectory(), true, "它一个字节都没动");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a project list that can hold a token goes into a repository that ignores it", async () => {
+  // 这一页不需要先把 agent 配成 API 就能写下第一份动作，而那份文件可能带着 hook token：
+  // 它住在 `.agents/local/` 下，而那条规则只有被 Avenic 配置过的项目才有。没有它，
+  // 这个项目里一句 `git add .` 提交进去的就是一个令牌 —— 这不是「多写一条规则」，
+  // 是那份文件本来就该在的地方。
+  const root = await sandbox();
+  try {
+    const first = await machine(root);
+    spawnSync("git", ["init", "-q"], { cwd: first.project });
+    await writeHookActions(first.project, "project", [{ id: "claw", kind: "openclaw", token: "hook-token-not-a-real-one" }], { environment: first.environment });
+
+    const ignored = spawnSync("git", ["check-ignore", "-q", path.join(".agents", "local", "hook-actions.json")], { cwd: first.project });
+    assert.equal(ignored.status, 0, "要 git 认这条规则，不是 .gitignore 里有几行字");
+
+    // 全机的那一份不在任何仓库里（它跟着机器状态走）：写下它不该动任何项目的忽略规则。
+    const second = await machine(path.join(root, "other"));
+    await writeHookActions(second.project, "global", [desktop], { environment: second.environment });
+    assert.equal(existsSync(path.join(second.project, ".gitignore")), false, "写下全机那份动作不动项目的忽略规则");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
