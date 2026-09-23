@@ -316,6 +316,33 @@ test("two turns that end inside one window are two notifications, for the agent 
   }
 });
 
+test("two different asks in one turn are two notifications, not one", async () => {
+  // 一次询问和另一次询问之间唯一不同的是它自己那句话（`Notification` 的 message）：同一个
+  // 回合里连着问两次「要不要用这个工具」，理由那一栏是一样的（permission_prompt），指纹里
+  // 没有这一格，第二次就是「重复」—— 而它要人做的决定完全不同。
+  const box = harness({ actions: [{ id: "toast", kind: "desktop" }] });
+  const ask = (message) => ({ ...CLAUDE_STOP, hook_event_name: "Notification", notification_type: "permission_prompt", message });
+  try {
+    const first = await box.emit(ask("Claude needs your permission to use Bash"));
+    assert.equal(first.skipped, null);
+    assert.equal(box.calls.spawn.length, 1);
+
+    const second = await box.emit(ask("Claude needs your permission to use Edit"));
+    assert.equal(second.skipped, null, "第二次询问是另一件事");
+    assert.equal(box.calls.spawn.length, 2);
+
+    const again = await box.emit(ask("Claude needs your permission to use Bash"));
+    assert.equal(again.skipped, "deduped", "同一句话被两个钩子报两次仍然是同一件事");
+    assert.equal(box.calls.spawn.length, 2);
+
+    // 而指纹落在盘上的那一段不是那句话本身：那个文件是身份表，不是转录 —— 一句话里
+    // 可能就带着用户在跑的命令。它要的只是「这两句不是同一句」。
+    assert.doesNotMatch(box.stateText(), /permission to use (Bash|Edit)/);
+  } finally {
+    box.dispose();
+  }
+});
+
 test("a second hook reporting the same turn while the first is still being sent does not ring again", async () => {
   const box = harness({ actions: [{ id: "hook", kind: "webhook", url: "https://hooks.example.invalid/avenic" }] });
   let release;

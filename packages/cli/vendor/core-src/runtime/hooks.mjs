@@ -20,6 +20,8 @@
 // agents say; what Avenic does about it — desktop, webhook, a command — is a
 // dispatcher's business, above this file.
 
+import { createHash } from "node:crypto";
+
 /** The six things an agent can report, in the order a session lives them. */
 export const HOOK_EVENTS = [
   "session.started",
@@ -223,7 +225,13 @@ export function normalizeHook(agentId, payload) {
  * 是 Avenic 自己记下的：这一轮的起点（一轮的时长读的就是同一个数字），所以这不是新
  * 依赖。两次真正的同一件事仍然共用同一个起点；45 秒里又起了一轮、而第一个重复的汇报
  * 在它之后才到，那一次会漏过去 —— 这是这套指纹里最窄的一道缝，写在这里。
+ *
+ * 需要人回来的那一条还带着自己那句话（`detail`）：同一个回合里连着问两次「要不要用这个
+ * 工具」，理由那一栏是一样的，少了这一格，第二次就是「重复」—— 而它要人做的决定完全不
+ * 同。但那句话进指纹的只有摘要：它可能引着用户正在跑的命令，而这张表是身份表，不是转录
+ * （它是明文落在项目里的），指纹要的也只是「这两句不是同一句」。
  */
 export function hookFingerprint(event, turnFallback = "") {
-  return [event.agent, event.event, event.sessionId ?? "", event.turnId ?? turnFallback, event.reason ?? ""].join("|");
+  const detail = event.detail === null || event.detail === undefined ? "" : createHash("sha256").update(event.detail).digest("hex").slice(0, 16);
+  return [event.agent, event.event, event.sessionId ?? "", event.turnId ?? turnFallback, event.reason ?? "", detail].join("|");
 }
