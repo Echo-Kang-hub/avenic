@@ -162,3 +162,18 @@ test("a launch record whose owner is still running is left alone", async () => {
     await finishLaunch(projectRoot, "claude", { environment, member: group.member });
   });
 });
+
+test("a fixture's launch group is taken off the machine with the tree it made", async () => {
+  // 启动组的 state 落在系统临时目录里，按项目身份取名 —— 它在夹具的 root 之外，所以
+  // removeTree(root) 够不着它。夹具每跑一次都新建一个项目，于是每跑一次就往机器上留一
+  // 个目录：一个测试一次的泄漏，机器上的临时目录早晚会被它塞满。项目是夹具造的，跟着
+  // 夹具走才对。
+  let lease = null;
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    const group = await joinLaunchGroup(projectRoot, "claude", { environment });
+    assert.ok(group, "this fixture can join a launch group");
+    lease = sessionLeasePath("claude", projectRoot);
+    assert.equal(existsSync(lease), true, "the group's state lives in the system temp directory");
+  });
+  assert.equal(existsSync(lease), false, "and the fixture takes it away with the tree it made");
+});

@@ -3,6 +3,7 @@
 // every launch, capture and recovery test exercises the production paths.
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -10,6 +11,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { spawnExecutableSync } from "../../packages/core/src/runtime/process.mjs";
+import { sessionLeasePath } from "../../packages/core/src/runtime/sessions.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -581,6 +583,7 @@ export async function withOpenCodeProject(run, options = {}) {
     await run(helpers);
   } finally {
     await removeTree(root);
+    await removeLaunchState(projectRoot);
   }
 }
 
@@ -818,6 +821,20 @@ export async function withClaudeProject(run, options = {}) {
     await run(helpers);
   } finally {
     await removeTree(root);
+    await removeLaunchState(projectRoot);
+  }
+}
+
+// A launch group's state lives in the system temp directory, keyed by the
+// project's identity — deliberately, so a host that spells the same project
+// differently still sees the one group. It is not under this fixture's root,
+// so removing the tree does not reach it, and a fixture makes a fresh project
+// every run: without this, every launch test would leave one directory behind
+// on the machine for good.
+async function removeLaunchState(projectRoot) {
+  for (const agentId of ["claude", "codex", "opencode"]) {
+    const lease = sessionLeasePath(agentId, projectRoot);
+    if (existsSync(lease)) await removeTree(lease);
   }
 }
 
