@@ -65,6 +65,28 @@ extension never activated, and it never writes hook traffic into the shared
 conversation — the semantic session model and the automation event bus are
 separate.
 
+The other half is the install, and it is the same CLI (`avenic hook install |
+uninstall | status`, with `--dry-run` showing the diff before anything is
+written). It writes into the file each mechanism above names — project scope for
+this project, global scope for the machine — merges rather than rewrites, and
+recognises its own entries by the command they run, so a user's own hooks in the
+same file survive an install, an upgrade and an uninstall. Codex's caveat is
+printed whenever its hooks are installed: written is not the same as trusted.
+
+`avenic hook test` fires one synthetic completion so a user can watch the
+notification chain with VS Code closed, and it prints the first hop next to the
+last one: whether this agent's hooks are installed for this project in the
+first place. A test that proves the actions work and then says nothing about
+the file is how a user ends up staring at a silent hook they never installed.
+
+The emit path is charged to the turn, so it is measured: on Windows 11 the
+whole `avenic hook emit` process costs ~230 ms end to end, of which ~170 ms is
+Node's own start-up on this machine and single-digit milliseconds are Avenic's
+dispatch. The entry routes `hook` before the dispatcher (a loader test proves
+the process never resolves the dispatcher, the prompt layer, or core's session
+machinery), and every wait inside the dispatch — webhook, command — is bounded
+by the action's own budget rather than by the far side answering.
+
 ## Could not be confirmed
 
 - Whether Codex's `Stop` also fires when a turn dies on an API error (no failure
