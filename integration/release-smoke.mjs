@@ -199,7 +199,9 @@ async function main() {
   // `avenic status` is one page of blocks: the section is its own line and the
   // values hang under it on the rails.
   assert.match(status, /^◇\s+History$/m);
-  assert.match(status, /^│\s+Mode\s+shared$/m);
+  // The value is the Dashboard's own word, capitalised: the status page and the
+  // card name the same two modes the same way.
+  assert.match(status, /^│\s+Mode\s+Shared$/m);
   assert.match(status, /^◇\s+Agents$/m);
   assert.match(status, /Claude/);
   assert.match(status, /Codex/);

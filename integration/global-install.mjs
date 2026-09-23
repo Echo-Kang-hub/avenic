@@ -105,7 +105,9 @@ async function verifyInstall(archive, environment) {
   assert.match(calls[2][0], /- assistant: B/);
   assert.equal(continued.status, 0);
   const deinitialized = runLauncher(launcher, ["codex", "deinit", "--purge"], projectRoot, environment);
-  assert.match(deinitialized.stdout, /Runtime   Removed/);
+  // The vocabulary refactor renamed the row: what deinit takes back is the
+  // agent's own settings, and the summary says so in the Dashboard's words.
+  assert.match(deinitialized.stdout, /Settings  Removed/);
   assert.match(deinitialized.stdout, /Data      Purged/);
   assert.equal(existsSync(path.join(projectRoot, ".agents", "runtime.json")), false);
 }
