@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // Every one of the product's own files — a canonical session, the project
@@ -22,16 +22,35 @@ const REFUSED = new Set(["EPERM", "EACCES", "EBUSY"]);
 const ATTEMPTS = 5;
 const DELAY_MS = 50;
 
+/** The mode the file has now, or `undefined` when there is no file yet. */
+async function existingMode(file) {
+  try {
+    return (await stat(file)).mode & 0o7777;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function writeFileAtomic(file, value, { mode, renameFile = rename, removeFile = rm, writeFile: write = writeFile, attempts = ATTEMPTS, delayMs = DELAY_MS } = {}) {
-  const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`;
+  // The name ends in `.avenic-tmp` because that is the name the project's
+  // ignore rules promise to cover: the temporary is a copy of its target, and a
+  // target can hold a credential, so a kill between the write and the rename
+  // must not leave something a `git add -A` could pick up.
+  const temporary = `${file}.tmp-${process.pid}-${randomUUID()}.avenic-tmp`;
   await mkdir(path.dirname(file), { recursive: true });
+  // The rename replaces the file — inode and all — so the temporary's mode is
+  // the mode the target ends up with. A caller that says nothing about
+  // permissions is saying "as it was": a file created owner-only because a
+  // credential lives in it must not become world-readable because something
+  // rewrote it. A caller that names a mode gets that mode.
+  const permissions = mode ?? await existingMode(file);
   // The temporary file is Avenic's own, and a write that fails halfway through
   // is still a failed write: it leaves no more of itself behind than a failed
   // command leaves output. That holds for the write itself as much as for the
   // rename — anything else strands a half-written file beside the real one.
   const discard = () => removeFile(temporary, { force: true }).catch(() => {});
   try {
-    await write(temporary, value, mode === undefined ? { encoding: "utf8" } : { encoding: "utf8", mode });
+    await write(temporary, value, permissions === undefined ? { encoding: "utf8" } : { encoding: "utf8", mode: permissions });
   } catch (error) {
     await discard();
     throw error;

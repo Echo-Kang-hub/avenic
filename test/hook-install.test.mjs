@@ -97,6 +97,27 @@ test("the user's own settings survive an install and come back on uninstall", as
   }
 });
 
+test("installing hooks into a file that holds a credential does not republish it", async () => {
+  // 同一个文件里可能同时住着用户的密钥和 Avenic 的钩子：项目配置就是 Claude 读凭证
+  // 的地方。整文件写入是「写临时文件再改名」，改名换掉的是 inode —— 临时文件的权限
+  // 就是改完之后文件的权限。谁也没说过要换权限，那就不能换。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    const credential = "sk-fixture-not-a-real-key-000000000000";
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: credential } }, null, 2)}\n`, { mode: 0o600 });
+    if (process.platform === "win32") return; // Windows: mode 是 ACL 的事，stat 看不到
+
+    await installHooks(await hookPlan("claude", { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" }));
+
+    assert.equal((await stat(file)).mode & 0o777, 0o600, "装着密钥的文件必须还是只有它的主人能读");
+    assert.equal((await readJson(file)).env.ANTHROPIC_AUTH_TOKEN, credential, "安装只加钩子，不动环境变量");
+  } finally {
+    await run.done();
+  }
+});
+
 test("installing twice writes once", async () => {
   const run = await scratch();
   try {

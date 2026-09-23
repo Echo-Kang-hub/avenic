@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readdir, readFile, rename, writeFile as writeFileTo } from "node:fs/promises";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -6,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { writeFileAtomic } from "../packages/core/src/runtime/atomic-file.mjs";
+import { REQUIRED_RULES } from "../packages/core/src/runtime/gitignore.mjs";
 
 // A real Windows run of the cross-agent experiment died in the middle of a
 // write the product makes on every capture:
@@ -115,6 +117,33 @@ test("a write that fails on the way in takes its temporary file with it", async 
 
     assert.deepEqual(await readdir(path.dirname(file)), ["state.json"], "写坏的那一次不留碎片");
     assert.equal(await readFile(file, "utf8"), "what was there\n", "失败的那一次不动已经在盘上的那一份");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the name a killed write leaves behind is a name the project ignores", async () => {
+  // 中间态就住在目标旁边，而它可能是同一个文件的一份副本 —— 项目的配置里就放着凭证。
+  // 留在那里的那一个必须是被忽略的，所以写入器用的名字和 gitignore 声明的名字只能是
+  // 同一个名字；两边各叫各的，一次中断就是一次提交。
+  const root = scratch();
+  try {
+    spawnSync("git", ["init", "-q"], { cwd: root });
+    await writeFileTo(path.join(root, ".gitignore"), `${REQUIRED_RULES.join("\n")}\n`);
+    const file = path.join(root, ".claude", "settings.local.json");
+    mkdirSync(path.dirname(file), { recursive: true });
+    // 一次只差改名就完成、然后进程消失的写入：临时文件留在盘上。
+    const killed = async () => {
+      const error = new Error("ENOSPC: no space left on device");
+      error.code = "ENOSPC";
+      throw error;
+    };
+    await assert.rejects(writeFileAtomic(file, '{"env":{}}\n', { renameFile: killed, removeFile: async () => {} }));
+
+    const leftovers = (await readdir(path.dirname(file))).filter((name) => name !== "settings.local.json");
+    assert.equal(leftovers.length, 1, "the killed write's temporary is what this test is about");
+    const ignored = spawnSync("git", ["check-ignore", "-q", path.join(".claude", leftovers[0])], { cwd: root });
+    assert.equal(ignored.status, 0, `${leftovers[0]} 必须是被忽略的名字 —— 它是那个装着凭证的文件的副本`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
