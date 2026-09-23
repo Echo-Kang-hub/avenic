@@ -6,6 +6,7 @@
 // command dispatcher imports this module for it.
 import process from "node:process";
 import { getAgent } from "#core/runtime/agents.mjs";
+import { LABELS } from "#core/labels.mjs";
 import { machineEnvironment, agentRuntimeEnvironment, launchMethodQuestion, launchMethodReadiness, resolveEffectiveAgentRuntime } from "#core/runtime/agent-runtime.mjs";
 import {
   effectiveAgentConfig,
@@ -118,7 +119,7 @@ export async function launchAgent(agentId, argumentsList, options = {}) {
       }
     } else {
       launchMethod = "account";
-      console.log(`${agent.displayName} has no authentication method for this project; launching with its native account. Run \`avenic ${agentId} init\` to choose.`);
+      console.log(`${agent.displayName}: ${LABELS.authentication} ${LABELS.notChosen} for this project — launching with its native account. Run \`avenic ${agentId} init\` to choose.`);
     }
   }
   const environment = options.environment ?? machineEnvironment();

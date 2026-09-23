@@ -125,7 +125,7 @@
       "short": "OpenCode",
       "ready": true,
       "statusText": "Ready",
-      "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
+      "detail": "OpenCode manages its own provider, sign-in and model selection. Avenic does not modify them.",
       "fields": [
         {
           "label": "Authentication",

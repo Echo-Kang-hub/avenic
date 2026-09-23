@@ -524,7 +524,7 @@
 
     // --- Agent configuration -------------------------------------------------
     const agents = el("section", "section");
-    const head = cardHead({ sectionIcon: "organization", title: "Agent Configuration", subtitle: "Authentication, model configuration and sessions for each agent.", sectionHead: true });
+    const head = cardHead({ sectionIcon: "organization", title: "Agent Configuration", subtitle: "Authentication, configuration and sessions for each agent.", sectionHead: true });
     head.append(el("div", "spacer"));
     head.append(button({ label: "Open in Terminal", icon: "terminal", onClick: () => post({ type: "action", action: "openInTerminal" }) }));
     head.append(button({ iconOnly: true, icon: "ellipsis", title: "Activity log", onClick: () => post({ type: "action", action: "viewLogs" }) }));
@@ -894,9 +894,9 @@
     state.footEl = foot;
     paintFoot();
 
-    // 两个词的区别要有一句话，否则「Agent Sessions」和「Session Storage」看起来
+    // 两个词的区别要有一句话，否则「Shared Sessions」和「Agent Sessions」看起来
     // 只是同一个东西的两种叫法。
-    pane.append(el("div", "sessions-note", "Agent Sessions are the ones an agent's own CLI can open; Session Storage is where Avenic keeps this project's copies."));
+    pane.append(el("div", "sessions-note", "Shared Sessions hold the conversation every agent can pick up; Agent Sessions are the ones an agent's own CLI opens."));
     return pane;
   }
 

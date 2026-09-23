@@ -5,6 +5,7 @@ import { writeFileAtomic } from "./atomic-file.mjs";
 import { CREDENTIAL_FILE, getAgent } from "./agents.mjs";
 import { ensureModelConfiguration, modelConfigTarget, removeModelConfiguration } from "./model-config.mjs";
 import { agentHomeRoot, agentSessionsRoot, runtimePaths } from "./project-paths.mjs";
+import { LABELS } from "../labels.mjs";
 import { refreshStateStamp } from "./sessions.mjs";
 import { ensureRuntimeGitignore, removeRuntimeGitignore } from "./gitignore.mjs";
 
@@ -54,7 +55,7 @@ async function writeJsonIfChanged(file, value) {
 
 export function validateAuthMethod(method) {
   if (!AUTH_METHODS.has(method)) {
-    throw new Error(`Authentication must be account or api: ${method}`);
+    throw new Error(`${LABELS.authentication} must be ${LABELS.account} or ${LABELS.api}: ${method}`);
   }
   return method;
 }

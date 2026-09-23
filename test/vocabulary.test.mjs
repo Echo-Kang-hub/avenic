@@ -91,7 +91,8 @@ test("one project reads the same on every surface", async () => {
 
 // 用户可见的词只有一套：值怎么念，方法怎么念，作用域怎么念，都由 labels.mjs 说了算。
 // 这个测试扫的是两个宿主源码里的**字符串字面量** —— 注释不算，因为注释是在解释这些
-// 词从哪来，正是该提到它们的地方。
+// 词从哪来，正是该提到它们的地方。大小写也不设防：`authentication method` 小写写在
+// 句子中间，和首字母大写是同一个词。
 test("no host writes its own words into a string a user can read", () => {
   const banned = [
     "Runtime scope",
@@ -127,8 +128,9 @@ test("no host writes its own words into a string a user can read", () => {
     for (const match of source.matchAll(literals)) {
       const text = match[1] ?? match[2] ?? match[3] ?? "";
       if (allowed.some((entry) => text.includes(entry))) continue;
+      const lower = text.toLowerCase();
       for (const term of banned) {
-        if (text.includes(term)) offenders.push(`${path.relative(packageRoot, file)}: ${term} in ${JSON.stringify(text.slice(0, 80))}`);
+        if (lower.includes(term.toLowerCase())) offenders.push(`${path.relative(packageRoot, file)}: ${term} in ${JSON.stringify(text.slice(0, 80))}`);
       }
       // "Runtime" 单独一个词也是禁的：它是 Avenic 内部那份文件的名字，不是界面的词。
       if (/\bRuntime\b/.test(text)) offenders.push(`${path.relative(packageRoot, file)}: "Runtime" in ${JSON.stringify(text.slice(0, 80))}`);

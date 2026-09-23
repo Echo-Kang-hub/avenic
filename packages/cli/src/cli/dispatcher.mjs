@@ -414,7 +414,7 @@ function printMethodNote(agent, config) {
   // 借给了它——摘要里的 Authentication 行已经说了归谁。
   if (agent.managesOwnAuth) return;
   if (!config?.authMethod) {
-    console.log(`\n${agent.displayName} has no authentication method here yet: a plain launch asks once and runs on the answer, and \`avenic change\` records it for the project.`);
+    console.log(`\n${agent.displayName} : ${LABELS.authentication} ${LABELS.notChosen} yet — a plain launch asks once and runs on the answer, and \`avenic change\` records it for the project.`);
     return;
   }
   if (config.authMethod === "account") {

@@ -1269,9 +1269,7 @@ export const LABELS: {
   configurationScope: string;
   configurationScopeQuestion: string;
   accountStatus: string;
-  configFile: string;
   configSource: string;
-  configStatus: string;
   provider: string;
   model: string;
   opusModel: string;

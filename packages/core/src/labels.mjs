@@ -32,9 +32,7 @@ export const LABELS = {
   configurationScope: "Configuration Scope",
   configurationScopeQuestion: "Configuration scope",
   accountStatus: "Account Status",
-  configFile: "Config file",
   configSource: "Config Source",
-  configStatus: "Config status",
   provider: "Provider",
   model: "Model",
   opusModel: "Opus Model",
@@ -110,8 +108,3 @@ export function authenticationValue(entry) {
 export function scopedHomeValue(scope, home) {
   return home ? `${scopeLabel(scope)} (${home})` : scopeLabel(scope);
 }
-
-/** The wizard's own question titles, so two hosts ask the same question. */
-export const questionTitle = {
-  authentication: (name) => `${name} authentication`,
-};

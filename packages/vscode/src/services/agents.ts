@@ -201,12 +201,12 @@ export async function prepareAgentLaunch(projectRoot: string, agentId: string, o
       launchNote = runtime.note ?? logged;
     }
   } catch (error) {
-    // 走到这里只可能是一件事：这个项目还没回答认证方式（"未初始化"在函数开头
+    // 走到这里只可能是一件事：这个项目还没回答认证（"未初始化"在函数开头
     // 就已经返回了）。启动照常进行——core 解析不出方法时用的就是用户自己的环境
     // ——但原因必须说对：不是"API 配置没生效"，而是没有答案。插件不画这道题，
     // 因为它的答案要写进项目而不是这一次运行。
     if (options.argumentsList === undefined) {
-      launchNote = `${agent.displayName} 还没有为这个项目选择认证方式（Account 还是 API），本次按它自己的账号启动；请执行「Avenic: Configure Project」，或运行 \`avenic ${agentId} init\` 选择。`;
+      launchNote = `${agent.displayName} 还没有为这个项目选择认证（Account 还是 API），本次按它自己的账号启动；请执行「Avenic: Configure Project」，或运行 \`avenic ${agentId} init\` 选择。`;
     }
   }
   if (options.argumentsList !== undefined) launchArguments = options.argumentsList;

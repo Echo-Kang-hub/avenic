@@ -85,9 +85,10 @@ test("an unanswered project is asked, not guessed", async (t) => {
   assert.deepEqual(question.options.map((option) => option.value), ["account", "api"]);
   assert.equal(question.options[0].label, "Account");
   // Without an answer from a host, a launch refuses rather than assuming.
+  // 那句话用的是面板的词：Authentication 这一行、它的值 Not chosen。
   await assert.rejects(
     () => resolveEffectiveAgentRuntime(root, "claude", { environment: base }),
-    /authentication method/i,
+    /Authentication Not chosen/i,
   );
   const resolved = await resolveEffectiveAgentRuntime(root, "claude", { environment: base, launchMethod: "account" });
   assert.equal(resolved.authMethod, "account");

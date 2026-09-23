@@ -125,7 +125,7 @@ function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["histor
         ? "CLI not installed"
         : "Not configured",
     detail: id === "opencode"
-      ? "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them."
+      ? "OpenCode manages its own provider, sign-in and model selection. Avenic does not modify them."
       : null,
     fields: authFields(row, historyMode),
     sessions: { label: scope, count: row.history.sessions, tone: row.sessions === "project" ? "brand" : "blue" },

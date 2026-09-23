@@ -394,7 +394,11 @@ test("the two-way toggle says which history each list is, and the note explains 
   const agent = browser(rendered).querySelectorAll(".card-title").map((node) => node.textContent);
   assert.ok(agent.includes("Agent Sessions"), `Agent 那一半的表头是产品词，实际是 ${agent.join(" | ")}`);
   assert.ok(browser(rendered).textContent.includes("Independent histories for each agent."));
-  assert.ok(/Session Storage/.test(browser(rendered).textContent), "两种会话的区别要有一句话说清楚");
+  // 解释这两个词的那句话只能用这两个词：`Session Storage` 是自己造的第三个词，
+  // 上一个版本用它来讲区别，现在它连一个字符串都不该出现。
+  const note = browser(rendered).querySelector(".sessions-note")?.textContent ?? "";
+  assert.ok(/Shared Sessions/.test(note) && /Agent Sessions/.test(note), `两种会话的区别要用产品词说清楚，实际是 ${note}`);
+  assert.equal(/Session Storage|Project Sessions/.test(note), false, "解释两个词的那句话不造第三个词");
 
   // 「Project Sessions / Project History」是这份产品不要的词：它把「每个 agent 自己的
   // 会话」说成了这个项目的会话，而这两件事在隔离模式下正好相反。

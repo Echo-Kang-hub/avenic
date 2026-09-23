@@ -180,8 +180,10 @@ export async function resolveEffectiveAgentRuntime(projectRoot, agentId, options
   // agent that manages its own authentication has no method here, and that is
   // an answer rather than a gap: the launch runs on the agent's own sign-in.
   const authMethod = config.authMethod ?? options.launchMethod ?? null;
+  // 这句话会走到用户眼前（VS Code 的启动按钮把它写进提示），所以它说的是卡片那一行
+  // 的词：Authentication，值 Not chosen。
   if (!getAgent(agentId).managesOwnAuth && authMethod !== "account" && authMethod !== "api") {
-    throw new Error(`${getAgent(agentId).displayName} has no authentication method for this project`);
+    throw new Error(`${getAgent(agentId).displayName} : ${LABELS.authentication} ${LABELS.notChosen} for this project`);
   }
   const scope = authMethod === null
     ? null

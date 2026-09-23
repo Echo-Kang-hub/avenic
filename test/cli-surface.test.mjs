@@ -251,7 +251,7 @@ test("an agent that manages its own authentication is never told a launch will a
     const init = runAgent(projectRoot, ["opencode", "init", "--sessions", "project"]);
     assert.equal(init.status, 0, init.stderr);
     assert.match(init.stdout, /Authentication\s+Native \(OpenCode UI\)/);
-    assert.doesNotMatch(init.stdout, /no authentication method/);
+    assert.doesNotMatch(init.stdout, /Authentication Not chosen/);
   });
 });
 
@@ -458,7 +458,7 @@ test("agent auth reports the method, switches it, resets, and rejects unknown on
 
     const invalid = runAgent(projectRoot, ["claude", "auth", "bogus"]);
     assert.equal(invalid.status, 1);
-    assert.match(invalid.stderr, /Authentication must be account or api: bogus/);
+    assert.match(invalid.stderr, /Authentication must be Account or API: bogus/);
   });
 });
 
@@ -478,7 +478,7 @@ test("init validates options and auth/sessions modes", async () => {
   await withTempDirectory("avenic-init-validate-", async (projectRoot) => {
     const invalidAuth = runAgent(projectRoot, ["claude", "init", "--auth", "bogus"]);
     assert.equal(invalidAuth.status, 1);
-    assert.match(invalidAuth.stderr, /Authentication must be account or api: bogus/);
+    assert.match(invalidAuth.stderr, /Authentication must be Account or API: bogus/);
 
     const invalidSessions = runAgent(projectRoot, ["codex", "init", "--sessions", "bogus"]);
     assert.equal(invalidSessions.status, 1);
