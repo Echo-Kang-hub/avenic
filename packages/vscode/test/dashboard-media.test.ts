@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { SECTIONS, isWebviewMessage } from "../src/dashboard/protocol.ts";
+import { TEXT } from "../src/i18n/text.ts";
 
 // 面板的静态层守着自己的四条纪律：不请求远程资源（CSP 里没有远程来源）、用户数据
 // 不经 innerHTML、发出的消息都是宿主认识的、用到的图标都有字形。这些都是「肉眼看不
@@ -102,6 +103,17 @@ function postedActions(js: string, html: string): string[] {
 }
 
 // 每个 action 需要一个形状正确的样本：协议校验的不是名字，是名字加它带的参数。
+// Model Configuration 那一页问的每一句都带着整张表，所以样本也是一张表——凭据给 null
+// （「文件里那个别动」），因为一个长得像 key 的字面量不该为了测试被写进仓库。
+const CENTER_DRAFT = {
+  provider: "deepseek",
+  baseUrl: "https://api.deepseek.com/anthropic",
+  model: "deepseek-chat",
+  credential: null,
+  roles: {},
+  blocks: [],
+};
+
 const SAMPLES: Record<string, Record<string, unknown>> = {
   launch: { agent: "claude" },
   change: { agent: "claude" },
@@ -124,6 +136,25 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   openInTerminal: {},
   openDocs: {},
   openSettings: {},
+  centerOpen: { agent: "claude" },
+  centerFill: { agent: "claude", provider: "deepseek" },
+  centerOpenDocs: { agent: "claude", provider: "deepseek" },
+  centerOpenFile: { agent: "claude" },
+  centerPreview: { agent: "claude", draft: CENTER_DRAFT },
+  centerApply: { agent: "claude", draft: CENTER_DRAFT },
+  centerTest: { agent: "claude", draft: CENTER_DRAFT },
+  // 「刷一下有哪些模型」正是还不知道模型名的时候要做的事，所以这一句不带模型名也成立。
+  centerRefreshModels: { agent: "claude", draft: { ...CENTER_DRAFT, model: "" } },
+  // Hooks & Notifications：两个作用域各自是一份名单，所以每一条都带着它是哪一档。
+  hooksOpen: { scope: "project" },
+  hookPlan: { agent: "claude", scope: "project" },
+  hookInstall: { agent: "claude", scope: "project" },
+  hookUninstall: { agent: "claude", scope: "project" },
+  hookActionAdd: { scope: "project", kind: "webhook" },
+  hookActionEdit: { scope: "project", id: "webhook" },
+  hookActionRemove: { scope: "project", id: "webhook" },
+  // Settings & About 的那一行只递回一个 key：路径是宿主解析的，页面手里没有。
+  revealFile: { key: "config" },
 };
 
 test("every action the renderer posts is one the host accepts", async () => {
@@ -264,13 +295,18 @@ test("images come from the extension's own resources and nowhere else", async ()
 test("the registry line keeps core's three answers apart", async () => {
   const js = await read("main.js");
   // 「从未同步」「落后于项目钉住的那一版」「同步过」是三种状态，两个布尔说不清；
-  // 宿主把 core 的三态原样传来，渲染层就必须把三种都说出来。
+  // 宿主把 core 的三态原样传来，渲染层就必须把三种都说出来。三句话本身在词表里
+  // （i18n/text.ts），这一段钉的是渲染层真的按三态分别说了它们。
   assert.match(js, /data\.hub\.state === "current"/);
-  assert.match(js, /· up to date/);
-  assert.match(js, /· stale/);
-  assert.match(js, /Never synced/);
+  assert.match(js, /TF\("skills\.hub\.up-to-date", \{ revision \}\)/);
+  assert.match(js, /TF\("skills\.hub\.stale", \{ revision \}\)/);
+  assert.match(js, /T\("skills\.hub\.never"\)/);
   // 按钮跟着状态走：已经是当前那一份时说「再同步一次」，否则说「同步」。
-  assert.match(js, /data\.hub\.state === "current" \? "Sync again" : "Sync"/);
+  assert.match(js, /data\.hub\.state === "current" \? T\("skills\.hub\.sync-again"\) : T\("skills\.hub\.sync"\)/);
+  // 三句话仍然分得开：这一条挡的是「换了键、三态却挤进同一句话」那种退化。
+  const states = [TEXT["skills.hub.never"].en, TEXT["skills.hub.up-to-date"].en, TEXT["skills.hub.stale"].en];
+  assert.equal(new Set(states).size, 3, `三种状态说的是三句话，实际是 ${states.join(" | ")}`);
+  assert.ok(states[1].includes("· up to date") && states[2].includes("· stale"), "落后的那一份不能读起来和最新的一样");
 });
 
 test("a skill's name is the card's own type, in the width the reference gives it", async () => {

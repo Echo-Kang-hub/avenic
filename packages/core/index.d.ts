@@ -469,6 +469,304 @@ export function modelConfigCandidate(projectRoot: string, agentId: string, optio
  * which of the four cases it was.
  */
 export function removeModelConfiguration(projectRoot: string, agentId: string, scope: Scope, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<{ relative: string | null; outcome: "deleted" | "modified" | "foreign" | "missing"; removed: boolean }>;
+/** One line of "what this write would do", with a secret's value already masked by core. */
+export interface ConfigurationDiffLine {
+  kind: "same" | "add" | "remove";
+  text: string;
+  /** Whether masking changed this line — a secret by its name or by the shape of its value. */
+  masked: boolean;
+}
+/**
+ * The merge computed against the file that is really there. `after` is the whole
+ * document that would be written, in the clear: a surface that computes a diff
+ * holds it and returns lines, never the file.
+ */
+export interface ModelConfigurationPlan {
+  relative: string;
+  file: string;
+  scope: Scope;
+  exists: boolean;
+  /** Whether anything at all would change; false means the write is a no-op, byte for byte. */
+  changed: boolean;
+  diff: ConfigurationDiffLine[];
+  after: string;
+}
+/** What the merge would do to the file, for a surface that shows it before it is written. */
+export function previewModelConfiguration(projectRoot: string, agentId: string, scope: Scope, template: Record<string, unknown>, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ModelConfigurationPlan>;
+/**
+ * The same merge, written atomically at the tightest permissions that still let
+ * the agent read the file — and not written at all when nothing changed.
+ */
+export function applyModelConfiguration(projectRoot: string, agentId: string, scope: Scope, template: Record<string, unknown>, options?: { homeDir?: string; environment?: ProcessEnvLike }): Promise<ModelConfigurationPlan & { written: boolean }>;
+/**
+ * The preview itself, for a host that has two documents and no plan: line by
+ * line, with every credential masked on the way out.
+ */
+export function configurationDiff(before: string, after: string): ConfigurationDiffLine[];
+/** One line, credentials hidden — by the name they sit under and by their own shape. */
+export function maskSecrets(line: string): string;
+
+// ---- runtime: model providers ----
+// A provider preset is a fact about someone else's API: where that vendor's
+// Anthropic-format endpoint lives, which header carries the credential, what the
+// vendor's own Claude Code guide puts in each model role, and which page all of
+// that was read from. It is not a settings format of its own — a preset
+// describes how to fill *the agent's* native configuration, so the file on disk
+// stays the agent's file, in the agent's own keys. `custom` is the door for
+// everything else: name the base URL yourself and Avenic stops presuming.
+
+/** The environment keys Claude Code documents for a third-party provider. */
+export const CLAUDE_ENV: {
+  base: string;
+  token: string;
+  apiKey: string;
+  model: string;
+  opus: string;
+  sonnet: string;
+  haiku: string;
+  fable: string;
+  subagent: string;
+  effort: string;
+};
+/** The roles a template can map, in the order the model table shows them. */
+export const MODEL_ROLES: readonly string[];
+/** One vendor's side of the table, in that agent's own format. */
+export interface ProviderFormat {
+  /** The preset's own endpoint, or null for a proxy the user runs — the URL is then theirs to type. */
+  baseUrl: string | null;
+  /** The vendor's recommendation per Claude model role, or null where it published none. */
+  roles?: Record<string, string> | null;
+  /** Keys the vendor's own guide always writes, e.g. OpenRouter's empty ANTHROPIC_API_KEY. */
+  env?: Record<string, string>;
+  /** The environment variable a Codex configuration names as its key's home. */
+  envKey?: string;
+}
+/** One verified vendor: the two agents' sides, where its model list answers, and where that was read. */
+export interface ProviderPreset {
+  id: string;
+  displayName: string;
+  docs: string;
+  claude: ProviderFormat;
+  codex: ProviderFormat | null;
+  /** A full URL, or a path joined to the user's own root. Null for a vendor with no list route. */
+  catalog: { url?: string; path?: string; header: string | null } | null;
+  /** The model names the vendor documents itself; empty where it publishes none. */
+  curated: string[];
+}
+export const PROVIDERS: readonly ProviderPreset[];
+export function providerPreset(id: string): ProviderPreset | null;
+/**
+ * The preset a configured endpoint came from, or null when it came from nowhere
+ * in this table — a wrong highlight is worse than none. A URL whose host matches
+ * a preset but whose path does not is still that provider.
+ */
+export function providerForBaseUrl(agentId: string, baseUrl: string | null | undefined): ProviderPreset | null;
+/** The presets that can fill one agent's native configuration. Empty for an agent that keeps its own registry. */
+export function providersForAgent(agentId: string): ProviderPreset[];
+/**
+ * The optional halves of a Claude configuration: each one is a value Avenic can
+ * state truthfully, toggled by name. The user's own plugin and marketplace
+ * lists are deliberately absent — a preset that invented one would be writing a
+ * configuration the user never chose.
+ */
+export const CLAUDE_BLOCKS: readonly { id: string; values?: Record<string, unknown>; env?: Record<string, string> }[];
+/**
+ * The object to merge into Claude's settings for one provider, in Claude's own
+ * keys. An `apiKey` of `null`/`undefined` is an *omission* — the credential stays
+ * exactly where it is; an empty string is a refusal and throws. `presetRoles:
+ * false` says the file already names this provider, so the vendor's role mapping
+ * fills a configuration being created and never one already in place.
+ */
+export function claudeTemplate(
+  presetId: string,
+  input?: { apiKey?: string | null; baseUrl?: string | null; model?: string; roles?: Record<string, string>; presetRoles?: boolean },
+  blocks?: readonly string[],
+): Record<string, unknown>;
+/** The Codex side of the same answers, in Codex's own keys. */
+export function codexTemplate(presetId: string, input?: { baseUrl?: string | null; model?: string }): { providerId: string; displayName: string; baseUrl: string; envKey: string; model: string };
+
+// ---- runtime: model catalog ----
+// The two network calls a surface can make for a provider, and the cache it
+// reads when it makes neither. Both are made only when a user asks for one —
+// never on a page being drawn — and the credential goes in a header and nowhere
+// else: not in a URL, not in a result, not in a cache file, not in a log.
+
+/** Why a model list was not fetched. `unreadable` is a body that is not a list, never an empty vendor. */
+export type CatalogFailure = "unauthorized" | "http-error" | "unreadable" | "timeout" | "network-error";
+/** What one connection probe answered. A 404 is `model-unavailable`: the gateway authenticated first. */
+export type ConnectionState = "connected" | "authentication-failed" | "model-unavailable" | "network-error" | "timeout" | "unreadable" | "http-error";
+/**
+ * Ask one provider for its model list. A failure is reported as what it was and
+ * never as an empty list, which would read as "this provider has no models".
+ */
+export function fetchModelCatalog(options?: {
+  baseUrl?: string | null;
+  /** A full URL is used as it stands; a path is joined onto `baseUrl`. */
+  listPath?: string | null;
+  header?: string | null;
+  apiKey?: string | null;
+  timeoutMs?: number;
+  fetchImpl?: (url: string, init: { method?: string; headers?: Record<string, string>; body?: string; signal?: unknown }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+}): Promise<{ ok: true; models: string[] } | { ok: false; reason: CatalogFailure; status: number | null }>;
+/**
+ * The cheapest request that proves a base URL and a credential: a one-token call
+ * on the messages wire — or, when the provider has a model-list endpoint of its
+ * own (`listUrl`), a read of that list. Nothing is guessed: a provider without a
+ * list URL is asked on the messages wire, and a 404 on the list URL is the URL
+ * being wrong, never the model's name.
+ */
+export function testProviderConnection(options?: {
+  baseUrl?: string | null;
+  header?: string | null;
+  apiKey?: string | null;
+  model?: string;
+  /** The provider's own model-list endpoint (a full URL, or a path joined onto `baseUrl`). Absent → the messages wire. */
+  listUrl?: string | null;
+  timeoutMs?: number;
+  fetchImpl?: (url: string, init: { method?: string; headers?: Record<string, string>; body?: string; signal?: unknown }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+}): Promise<{ state: ConnectionState; status: number | null }>;
+/** The file one provider's list is kept in, so a surface can be drawn without a request. */
+export function modelCatalogCachePath(projectRoot: string, providerId: string): string;
+/** The list a previous fetch left behind, read without a network call; null for anything that is not one. */
+export function readModelCatalogCache(projectRoot: string, providerId: string): Promise<{ providerId: string; baseUrl: string; fetchedAt: string | null; models: string[] } | null>;
+/** Keep a fetched list where the Center can read it again. A list and the URL it came from — no field here could hold a credential. */
+export function writeModelCatalogCache(projectRoot: string, providerId: string, entry?: { baseUrl?: string | null; models?: string[] }): Promise<{ providerId: string; baseUrl: string; fetchedAt: string; models: string[] }>;
+
+// ---- runtime: hooks ----
+// One small vocabulary, not one integration per agent: six events say everything
+// the rest of the product needs, and every native mechanism is translated into
+// those six here, once. A mechanism that cannot report an event says `absent`
+// with the reason attached — a hook Avenic invented fires never, and a
+// notification that never arrives reads as a broken agent, not as a missing one.
+
+/** The six things an agent can report, in the order a session lives them. */
+export const HOOK_EVENTS: readonly string[];
+/** The thresholds a dispatcher obeys, in one place because both hosts ask the same question. */
+export const HOOK_POLICY: { completedMinSeconds: number; attentionImmediate: boolean; failedImmediate: boolean; dedupeSeconds: number };
+/** One native mechanism's answer for one event: which hook fires, how much it can be trusted, and why. */
+export interface HookEventCapability {
+  native: string | null;
+  reliability: "reliable" | "conditional" | "absent";
+  note: string;
+  /** The payload field carrying the reason, and the only values that count as this event. */
+  reason?: string;
+  reasons?: string[];
+  detail?: string;
+}
+export interface HookCapability {
+  displayName: string;
+  mechanism: string;
+  /** The file or directory the mechanism is installed into. */
+  file: string;
+  /** How a turn's duration is measured: from the payload, or correlated between two events. */
+  duration: "correlated" | string;
+  /** The version this row of the matrix was read off, and the one the mechanism arrived in. */
+  verified: string;
+  since: string;
+  /** Which payload field carries each fact. */
+  reads: { event: string; session: string; turn: string | null; cwd: string };
+  events: Record<string, HookEventCapability>;
+}
+export const HOOK_CAPABILITIES: Record<string, HookCapability>;
+export function hookCapability(agentId: string): HookCapability | null;
+/** Whether the agent installed on this machine is one the matrix was read off. */
+export function hookSupport(agentId: string, version: string | null | undefined): { supported: boolean; since: string; note: string | null } | null;
+/** One native payload in Avenic's own words, or null when it is not an event Avenic knows how to read. */
+export function normalizeHook(agentId: string, payload: unknown): {
+  agent: string;
+  event: string;
+  sessionId: string | null;
+  turnId: string | null;
+  cwd: string | null;
+  reason: string | null;
+  detail: string | null;
+} | null;
+/** The identity of one happening, for the dedupe window — deliberately not when it happened. */
+export function hookFingerprint(event: { agent: string; event: string; sessionId?: string | null; turnId?: string | null; reason?: string | null }): string;
+
+// ---- runtime: hook install & actions ----
+// The other end of the vocabulary: putting Avenic into each native mechanism,
+// and deciding what a notification is when one arrives. `hookPlan` is read-only
+// and carries the bytes an install would write, so every host shows the same
+// diff from the same plan. The actions file is Avenic's own (not an agent's
+// configuration), which is why it is written whole by one writer instead of
+// merged — and why nothing but the four dispatchable kinds is accepted.
+
+/** The four things an action may be, in the order a picker offers them. */
+export const HOOK_ACTION_KINDS: readonly ("desktop" | "openclaw" | "webhook" | "command")[];
+export interface HookAction {
+  id: string;
+  kind: "desktop" | "openclaw" | "webhook" | "command";
+  /** webhook: where it posts. openclaw: gateway and path, defaulting to the local one. */
+  url?: string;
+  gateway?: string;
+  path?: string;
+  /** A hook token, or the name of the environment variable holding it. Never echoed, never logged. */
+  token?: string;
+  tokenEnv?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  /** command: the program and its arguments. The event arrives on stdin; the shell's credentials do not. */
+  command?: string;
+  args?: string[];
+}
+/** One action's attempt at one event. A refusal is a result, never a thrown hook. */
+export interface HookActionResult {
+  id: string;
+  kind: string;
+  state: "sent" | "failed" | "skipped";
+  detail: string;
+}
+export interface HookEmitResult {
+  /** Whether the native payload was one Avenic could read at all. */
+  accepted: boolean;
+  event: { agent: string; event: string; sessionId: string | null; turnId: string | null; cwd: string | null; reason: string | null; detail: string | null } | null;
+  fingerprint: string | null;
+  /** Why nothing ran, when nothing did: deduped inside the window, or under the duration floor. */
+  skipped: "unknown-event" | "deduped" | "too-short" | null;
+  results: HookActionResult[];
+}
+export function hookActionsPath(projectRoot: string): string;
+/** The actions of one scope, exactly as that scope's own file holds them. */
+export function readHookActionsAt(projectRoot: string, scope: "project" | "global", environment?: Record<string, string | undefined>): HookAction[];
+/** Both scopes, the project winning by id — the list a dispatch actually runs. */
+export function readHookActions(projectRoot: string, environment?: Record<string, string | undefined>): HookAction[];
+/** One scope's list written as the whole list. Throws rather than write a file it cannot read. */
+export function writeHookActions(projectRoot: string, scope: "project" | "global", actions: HookAction[], options?: { environment?: Record<string, string | undefined> }): Promise<{ changed: boolean; file: string }>;
+/** Everything one native payload turns into: the event, its fingerprint, and one result per action. */
+export function emitHook(options: {
+  agentId: string;
+  payload: unknown;
+  projectRoot: string;
+  environment?: Record<string, string | undefined>;
+  io?: { now?: () => number; platform?: string; spawn?: (...args: unknown[]) => unknown; fetch?: typeof fetch };
+}): Promise<HookEmitResult>;
+
+/** What installing (or removing) one agent's hooks in one scope would do — read-only, and carrying the bytes. */
+export interface HookPlan {
+  agent: string;
+  displayName: string;
+  scope: "project" | "global";
+  /** The native mechanism in Avenic's words, and the exact file it lives in. */
+  mechanism: string;
+  file: string;
+  version: string | null;
+  supported: boolean;
+  /** Why not, when unsupported. */
+  note: string | null;
+  /** A condition the mechanism imposes that no screen can see from here (Codex's trust review). Empty when there is none. */
+  caveat: string;
+  installed: boolean;
+  before: string;
+  contents: string;
+}
+export function hookPlan(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<HookPlan>;
+/** Whether this scope currently holds Avenic's hooks, without building a write plan. */
+export function hookStatus(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<{ agent: string; scope: "project" | "global"; file: string; installed: boolean; supported: boolean; note: string | null; caveat: string }>;
+/** Merge Avenic's entry into the file's current state — never the snapshot the plan carried. */
+export function installHooks(plan: HookPlan): Promise<{ changed: boolean; file: string; skipped?: string | null }>;
+/** Remove Avenic's entry, and only Avenic's: a file Avenic did not write is never truncated. */
+export function uninstallHooks(plan: HookPlan): Promise<{ changed: boolean; file: string }>;
 
 // ---- project-local agent home: an agent's own config and auth, under the project ----
 // The directory a Project-scope Account signs in to, reached by the agent's own

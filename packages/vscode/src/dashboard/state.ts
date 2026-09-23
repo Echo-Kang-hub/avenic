@@ -21,9 +21,13 @@ import {
   type StatusModel,
 } from "@avenic/core";
 import { projectStatus } from "../services/agents.ts";
+import { aboutFacts, type AboutOptions } from "../services/about.ts";
 import { defaultSpec, packsFor } from "../services/catalog.ts";
+import { centerState } from "../services/center.ts";
+import { hooksFacts, type HookOptions } from "../services/hooks.ts";
 import { describeSkill, installedPackIds, readSkillsSnapshot } from "../services/skills.ts";
-import { AGENT_IDS, runStateOf, type ActivityRow, type AgentCard, type AgentId, type BadgeTone, type DashboardData, type FieldRow, type PackRow, type RunState, type SessionRow, type SessionSync, type SkillRow, type Transcript, type TranscriptTurn } from "./protocol.ts";
+import { CORE_VERSION } from "../product.ts";
+import { AGENT_IDS, runStateOf, type AboutState, type ActivityRow, type AgentCard, type AgentId, type BadgeTone, type CenterResult, type CenterState, type DashboardData, type FieldRow, type HookScope, type HooksResult, type PackRow, type RunState, type SessionRow, type SessionSync, type SkillRow, type Transcript, type TranscriptTurn } from "./protocol.ts";
 
 // 仪表盘的数据组装（无 vscode import，因此测试不需要编辑器）：面板上每一格都取自
 // core 的同一份答案 —— `avenic status` 的那张模型、core 的会话记录、core 的 Skill
@@ -307,7 +311,37 @@ export interface DashboardOptions {
   transcriptId?: string | null;
   /** 这一份是给「完整清单」那一页的：列到 DETAIL_LIMIT 为止，而不是概览的 5 条。 */
   detail?: boolean;
+  /**
+   * 模型配置中心正在看哪个 agent。**只有这一页会给出它**，所以只有这一页会去读
+   * agent 自己的配置文件：别的分区一个字节的额外读盘都不发生。没有它就不组装中心
+   * 的状态——「没打开过这一页」与「这一页是空的」是两件事。
+   */
+  centerAgent?: AgentId | null;
+  /** 上一次的测试／预览／写入结果；面板自己记着它，页面刷新后照着再画一遍。 */
+  centerResult?: CenterResult | null;
+  /** 编辑器自己的语言：中心那几块的名字是宿主给页面画的句子，按它说哪一半。 */
+  language?: string;
+  /**
+   * 钩子与通知那一页正看着哪一档作用域。**只有这一页会给出它**，而且只有这一档的名单
+   * 会被读：另一档的那份文件在这一帧里一个字节都不读。没有它就不组装这一页的状态。
+   */
+  hooksScope?: HookScope | null;
+  /** 钩子页上一次问题回答了什么（预览、装、卸、写名单）；面板自己记着它。 */
+  hooksResult?: HooksResult | null;
+  /** 钩子那三个版本从哪里读（默认是那一个真的探测器）。用例注入它，于是测试不跑任何 CLI。 */
+  detect?: HookOptions["detect"];
+  /**
+   * 设置与关于那一页要说的、只有宿主才知道的那几个事实（清单里的版本、编辑器自己的
+   * 版本、这个配置文件下的存储目录）。core 的版本与语言由这一层补上。
+   */
+  about?: Omit<AboutOptions, "coreVersion" | "language"> | null;
   now?: number;
+}
+
+// 模型表那一行说的是「手里有多少」与「上一次问供应商的结果」：core 的缓存里只有成功的
+// 名单，失败的原因不在盘上 —— 它只存在于面板记着的那一次结果里，于是从这里回到页面上。
+function catalogNote(result: CenterResult | null): string | null {
+  return result?.kind === "catalog" && result.state === "failed" ? result.note : null;
 }
 
 export async function buildDashboardData(
@@ -321,6 +355,9 @@ export async function buildDashboardData(
   // 底部那一行的两个版本：CLI 是主（产品版本），扩展是悬停时展开的那一个。
   const cli = options.cliVersion ?? "";
   const versionDetails = { cli, extension: options.extensionVersion ?? "" };
+  // 关于那一页说的是这套安装本身，不是这个项目：没有打开项目时它也说得出来（版本、
+  // 存储目录），只有那几行需要项目路径的行会换成「没有打开项目」。
+  const about: AboutState | null = options.about ? await aboutFacts(projectRoot, { ...options.about, coreVersion: CORE_VERSION, language: options.language ?? "en" }) : null;
   if (projectRoot === null) {
     return {
       version: cli,
@@ -335,6 +372,13 @@ export async function buildDashboardData(
       hub: { spec: null, revision: null, state: "missing" },
       activity: options.activity ?? [],
       transcript: null,
+      // 没有项目就没有 agent 的文件可读：这一页照旧画得出来，只是还没有事实可放。
+      center: null,
+      centerResult: null,
+      // 钩子装的是这个项目里的机制、写的是这个项目的名单：没有项目就没有这一页。
+      hooks: null,
+      hooksResult: null,
+      about,
       empty: "Open a project folder to see its Avenic state.",
     };
   }
@@ -379,6 +423,15 @@ export async function buildDashboardData(
     native[id] = { rows: byAgent.get(id) ?? [], total: agent.history.sessions };
   }
 
+  // 中心的状态只在它自己那一页组装，而且读的是 agent 自己的文件（service 里那一次
+  // core 读盘）。别的分区把 centerAgent 留空，于是这一行就是 null。
+  const centerResult = options.centerResult ?? null;
+  const center: CenterState | null = options.centerAgent ? await centerState(projectRoot, options.centerAgent, environment, options.language ?? "en") : null;
+  // 钩子页同理：只有它自己在屏幕上的时候才组装，而且只读它正看着的那一档作用域。三个
+  // agent 的版本探测器各跑一次，所以别的分区不会为这一页付这一次代价。
+  const hooks: DashboardData["hooks"] = options.hooksScope
+    ? await hooksFacts(projectRoot, options.hooksScope, { environment, language: options.language ?? "en", detect: options.detect })
+    : null;
   return {
     version: cli,
     versionDetails,
@@ -403,6 +456,12 @@ export async function buildDashboardData(
     hub: { spec: status.skills.hub.spec, revision: status.skills.hub.revision, state: status.skills.hub.cache },
     activity: (options.activity ?? []).slice(0, ACTIVITY_LIMIT),
     transcript: options.transcriptId ? await readTranscript(projectRoot, options.transcriptId, activeId, now) : null,
+    center: center === null ? null : { ...center, catalog: { ...center.catalog, note: catalogNote(centerResult) } },
+    centerResult,
+    hooks,
+    // 上一次问题的答案由面板记着；这一页不在屏幕上时它就是 null，页面也不会画它。
+    hooksResult: options.hooksScope ? options.hooksResult ?? null : null,
+    about,
     empty: status.project.configured ? null : "This project has no Avenic configuration yet.",
   };
 }

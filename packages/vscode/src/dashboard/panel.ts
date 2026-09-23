@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
-import { isWebviewMessage, type ActivityRow, type AgentId, type DashboardAction, type DashboardSection, type RunState, type StatusMessage } from "./protocol.ts";
+import { isWebviewMessage, type ActivityRow, type AgentId, type CenterDraft, type CenterResult, type DashboardAction, type DashboardSection, type HookScope, type HooksResult, type RunState, type StatusMessage } from "./protocol.ts";
 import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
+import type { AboutOptions } from "../services/about.ts";
 import { textScript } from "../i18n/text.ts";
 import { buildDashboardData } from "./state.ts";
 
@@ -38,6 +39,15 @@ export class DashboardPanel {
   private landing: DashboardSection | null = null;
   private payloadDetail = false;
   private sessionId: string | null = null;
+  // 模型配置中心看的是哪一个 agent，以及上一次向它问了什么（测试／预览／写入／模型
+  // 表的结果）。结果由宿主记着，页面刷新后再画一遍；它属于某一份表单，所以换 agent
+  // 时跟着换掉。
+  private centerAgent: AgentId | null = null;
+  private centerResult: CenterResult | null = null;
+  // 钩子与通知那一页看的是哪一档作用域，以及上一次向它问了什么（预览／装／卸／写名单）。
+  // 没打开过这一页时是 null —— 「没打开过」与「这一页是空的」是两件事。
+  private hooksScope: HookScope | null = null;
+  private hooksResult: HooksResult | null = null;
   private sending: Promise<void> = Promise.resolve();
 
   private constructor(
@@ -46,6 +56,8 @@ export class DashboardPanel {
     private readonly deps: DashboardPanelDeps,
     private readonly extensionVersion: string,
     private readonly activity: () => ActivityRow[],
+    /** 设置与关于那一页要说的、只有宿主才知道的那几个事实。 */
+    private readonly about: Omit<AboutOptions, "coreVersion" | "language" | "cliVersion">,
   ) {
     panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
     panel.webview.onDidReceiveMessage((message: unknown) => this.receive(message), undefined, this.disposables);
@@ -72,6 +84,17 @@ export class DashboardPanel {
       deps,
       String(context.extension.packageJSON.version ?? ""),
       activity,
+      {
+        // 清单就是这份安装的身份：名字、显示名、版本、id 全部从它读，不多一份常量。
+        extension: {
+          id: String(context.extension.id ?? ""),
+          name: String(context.extension.packageJSON.name ?? ""),
+          displayName: String(context.extension.packageJSON.displayName ?? ""),
+          version: String(context.extension.packageJSON.version ?? ""),
+        },
+        editorVersion: vscode.version,
+        storagePath: context.globalStorageUri.fsPath,
+      },
     );
     if (section !== undefined) {
       DashboardPanel.current.section = section;
@@ -116,6 +139,45 @@ export class DashboardPanel {
     this.section = section;
     this.landing = section;
     this.post({ type: "navigate", section });
+    // 钩子与设置这两页的数据只在它们自己的屏幕上组装，而这一次翻页是宿主起的（页面不会
+    // 为此回一句话），所以这里必须自己问一次——否则落到一张空页上。
+    if (section === "hooks" || section === "settings") void this.sendData();
+  }
+
+  /**
+   * 模型配置中心落到某个 agent 上，并把它的状态重新读一遍（换过供应商、写过文件
+   * 之后，那一页要说的正是文件现在的样子）。`result` 是刚问出来的答案：没有就沿用
+   * 上一次的，除非换的是另一个 agent —— 那份答案属于另一张表单。
+   */
+  centerOn(agentId: AgentId, result?: CenterResult): void {
+    if (agentId !== this.centerAgent) this.centerResult = null;
+    this.centerAgent = agentId;
+    if (result !== undefined) this.centerResult = result;
+    this.section = "center";
+    this.landing = "center";
+    void this.sendData();
+  }
+
+  /**
+   * 「Reset to preset」的答案：填的是那一页上的表单，不是盘上的文件，所以它单独
+   * 走一条消息 —— 不必为一次选择重读项目。
+   */
+  centerDraft(draft: CenterDraft): void {
+    this.post({ type: "draft", draft });
+  }
+
+  /**
+   * 钩子与通知落到某一档作用域上，并把这一档重新读一遍（装过、卸过、改过名单之后，
+   * 这一页要说的正是文件现在的样子）。`result` 是刚问出来的答案：没有就沿用上一次的，
+   * 除非换的是另一档 —— 那份答案属于另一份名单。
+   */
+  hooksOn(scope: HookScope, result?: HooksResult): void {
+    if (scope !== this.hooksScope) this.hooksResult = null;
+    this.hooksScope = scope;
+    if (result !== undefined) this.hooksResult = result;
+    this.section = "hooks";
+    this.landing = "hooks";
+    void this.sendData();
   }
 
   dispose(): void {
@@ -132,11 +194,16 @@ export class DashboardPanel {
       return;
     }
     if (message.type === "navigate") {
+      const entering = message.section !== this.section;
       this.section = message.section;
       // 一页有多深是宿主给的（概览是最近 5 条，清单页是 50 条），所以翻页要重取这一页
       // 的那一份；已经是对的那一份就不重复读盘。面板先用手上这份画出来，深的这份到了
       // 再接上——一次读盘不该挡住一次点击。
-      if (deep(this.section) !== this.payloadDetail) void this.sendData();
+      //
+      // 钩子与设置这两页的数据只在它们自己的屏幕上组装（与中心同一个道理：为画三行字
+      // 去读 agent 的原生文件是不该付的代价），所以落上这两页必须问一次，否则到的是一张
+      // 空页 —— 空页比一次读盘坏得多。
+      if (deep(this.section) !== this.payloadDetail || (entering && (this.section === "hooks" || this.section === "settings"))) void this.sendData();
       return;
     }
     this.deps.dispatch(message);
@@ -190,6 +257,15 @@ export class DashboardPanel {
           activity: this.activity(),
           transcriptId: this.sessionId,
           detail,
+          // 中心的读写只发生在它自己那一页上：别的分区连 agent 的配置文件都不碰。
+          centerAgent: section === "center" ? this.centerAgent : null,
+          centerResult: section === "center" ? this.centerResult : null,
+          // 钩子页同理，而且只读它正看着的那一档名单：没落到这一页时这是 null。
+          hooksScope: section === "hooks" ? this.hooksScope ?? "project" : null,
+          hooksResult: section === "hooks" ? this.hooksResult : null,
+          // 设置页说的是这套安装本身：它不需要项目，所以没有项目时也给得出来。
+          about: section === "settings" ? { ...this.about, cliVersion: cachedAvenicCliVersion() } : null,
+          language: vscode.env.language,
         });
         this.payloadDetail = detail;
         // 落点只在它还对的时候随包发出：其余时候这一份数据不替 webview 决定它停在

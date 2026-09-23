@@ -49,6 +49,16 @@
     menuEl: null,
     factNodes: null,
     newChip: null,
+    // Model Configuration 页那一份：看的是哪个 agent、简单还是高级、用户正在填的那张表，
+    // 以及他刚敲进去的凭据（只活在这一页里，见 seedCenter）。
+    centerAgent: null,
+    centerDraft: null,
+    centerCredential: "",
+    centerAdvanced: false,
+    // 钩子那一页：看的是哪一档（项目里还是这台机器上），以及命令类那一档开没开。
+    // 两个都是这一页自己的落点与档位——宿主那两档名单与它无关。
+    hooksScope: "project",
+    hooksAdvanced: false,
   };
 
   // 一次启动跑着没跑着，是 core 的一句话，这里只是它的英文：没有第三档，「不确定」
@@ -146,6 +156,41 @@
 
   function post(message) {
     vscode.postMessage(message);
+  }
+
+  /* ⋯ 打开的必须是一份真的菜单：几件真事，点了就走。菜单是悬着的东西，所以「什么时候收起
+   * 来」不归它管——点别处、按 Esc、页面换一帧，这三件事在这里各写一次，菜单只记着自己是屏幕
+   * 上开着的那一张（state.menuEl）。 */
+  function menuButton(options) {
+    const box = el("div", "session-menu");
+    box.hidden = true;
+    for (const item of options.items) {
+      box.append(button({ label: item.label, size: "sm", onClick: () => { closeMenu(); item.onClick(); } }));
+    }
+    const toggle = button({
+      iconOnly: true,
+      size: "sm",
+      icon: "ellipsis",
+      title: options.title,
+      onClick: () => {
+        const open = box.hidden;
+        closeMenu();
+        if (open) {
+          box.hidden = false;
+          state.menuEl = box;
+        }
+      },
+    });
+    const wrap = el("span", "menu-wrap");
+    wrap.append(toggle);
+    wrap.append(box);
+    return wrap;
+  }
+
+  function closeMenu() {
+    if (state.menuEl === null) return;
+    state.menuEl.hidden = true;
+    state.menuEl = null;
   }
 
   /* Which section the panel is on is the page's own state, so the page moves itself
@@ -347,17 +392,19 @@
       // about the agent. Everything downstream of those answers stays on the
       // Agents card, which is where it is changed.
       const fields = el("div", "agent-fields");
+      // 这一句是宿主的词（core 给每一行起名），不是这一页的：认得它，但不改写它。
       const auth = (agent.fields ?? []).find((field) => field.label === "Authentication");
       if (auth) fields.append(fieldRow(auth, agent.id));
-      fields.append(fieldRow({ label: "Sessions", icon: "folder", kind: "badge", tone: agent.sessions.tone, value: agent.sessions.label }, agent.id));
-      fields.append(fieldRow({ label: "History", icon: "history", kind: "badge", tone: agent.history.tone, value: agent.history.label }, agent.id));
+      // 「Sessions」这一行和侧栏那一条是同一个词、同一个意思，所以用的是它那个键。
+      fields.append(fieldRow({ label: T("nav.sessions"), icon: "folder", kind: "badge", tone: agent.sessions.tone, value: agent.sessions.label }, agent.id));
+      fields.append(fieldRow({ label: T("agent.history"), icon: "history", kind: "badge", tone: agent.history.tone, value: agent.history.label }, agent.id));
       card.append(fields);
       return card;
     }
 
     const canLaunch = agent.actions?.launch !== false && agent.ready;
     head.append(button({
-      label: "Launch",
+      label: T("agent.launch"),
       icon: "play",
       iconTone: "brand",
       size: "sm",
@@ -365,7 +412,7 @@
       onClick: () => post({ type: "action", action: "launch", agent: agent.id }),
     }));
     head.append(button({
-      label: "Change",
+      label: T("agent.change"),
       icon: "gear",
       size: "sm",
       disabled: agent.actions?.change === false,
@@ -382,7 +429,7 @@
 
     const runtime = el("div", "agent-fields agent-runtime");
     runtime.append(fieldRow({
-      label: "Sessions",
+      label: T("nav.sessions"),
       icon: "folder",
       kind: "badge",
       tone: agent.sessions.tone,
@@ -390,7 +437,7 @@
       // ("Claude (8)"), and the reference keeps the two apart.
       value: agent.sessions.label,
     }, agent.id));
-    runtime.append(fieldRow({ label: "History", icon: "history", kind: "badge", tone: agent.history.tone, value: agent.history.label }, agent.id));
+    runtime.append(fieldRow({ label: T("agent.history"), icon: "history", kind: "badge", tone: agent.history.tone, value: agent.history.label }, agent.id));
     card.append(runtime);
 
     if (agent.configLink) {
@@ -479,7 +526,7 @@
 
     const actions = el("div", "row-actions");
     actions.append(button({
-      label: "Continue",
+      label: T("sessions.continue"),
       icon: "play",
       size: "sm",
       onClick: () => (options?.native
@@ -487,12 +534,20 @@
         : post({ type: "action", action: "continueShared", id: row.id })),
     }));
     if (options?.native) {
-      actions.append(button({
-        iconOnly: true,
-        size: "sm",
-        icon: "ellipsis",
-        title: "Session actions",
-        onClick: () => post({ type: "action", action: "viewSession", id: row.id }),
+      // 行尾的 ⋯ 是一份菜单，不是第二个「打开」：这一行能做的几件事都在这儿。前两件在行上
+      // 已经有入口（标题、Continue），「设为 Active」只在菜单里——一份菜单的价值就是让人在
+      // 一个地方找齐，而不是记住哪个动作躲在哪一列。而它只在共享历史里才有意义：隔离模式下
+      // CLI 自己就不列这一项（dispatcher 的会话菜单只在 shared 时给出），面板也不该给一条
+      // 走不通的路 —— 与读取器头部那一个按钮是同一条规则，只是它读的是同一份 mode。
+      actions.append(menuButton({
+        title: T("sessions.actions"),
+        items: [
+          { label: T("sessions.open"), onClick: () => post({ type: "action", action: "viewSession", id: row.id }) },
+          { label: TF("sessions.continue-in", { agent: shortLabelOf(options.native) }), onClick: () => post({ type: "action", action: "continueNative", agent: options.native, id: row.id }) },
+          ...(state.data?.history?.mode === "shared"
+            ? [{ label: T("transcript.set-active"), onClick: () => post({ type: "action", action: "setActive", id: row.id }) }]
+            : []),
+        ],
       }));
     }
     line.append(actions);
@@ -533,8 +588,10 @@
     // "Enabled": the reference's pill is the word alone — the green dot belongs
     // to the agent cards' status line, and at 7x the pill's leftmost stroke is
     // the E's own stem, not a separate glyph.
-    line.append(badge(skill.enabled ? "Enabled" : "Disabled", skill.enabled ? "green" : "muted"));
-    line.append(button({ iconOnly: true, size: "sm", icon: "ellipsis", title: "Skill actions", onClick: () => post({ type: "action", action: "manageSkills" }) }));
+    line.append(badge(skill.enabled ? T("skills.enabled") : T("skills.disabled"), skill.enabled ? "green" : "muted"));
+    // 这条行上原来有一个 ⋯，点下去去的是整页的「管理技能」——一个不动这份清单、也不属于
+    // 这一行的选择器。一个不打开菜单的 ⋯ 和坏掉的是同一个东西，所以它没有了：装、卸、导入
+    // 这些真动作在 Skills 页的头部与 Packs 那一半上，各自说自己要动谁。
     return line;
   }
 
@@ -550,7 +607,9 @@
       head.append(box);
     }
     const titles = el("div", "card-titles");
-    titles.append(el("div", "card-title", options.title));
+    // 卡片标题是外壳那一层的话（`Shared Sessions` 在侧栏和卡片上是同一条），所以它走
+    // label()：英文永远是主标签，中文界面里才多出第二行。
+    titles.append(label(el("div", "card-title"), options.titleKey));
     if (options.subtitle) titles.append(el("div", "card-sub", options.subtitle));
     head.append(titles);
     return head;
@@ -563,10 +622,10 @@
 
     // --- Agent configuration -------------------------------------------------
     const agents = el("section", "section");
-    const head = cardHead({ sectionIcon: "organization", title: "Agent Configuration", subtitle: "Authentication, configuration and sessions for each agent.", sectionHead: true });
+    const head = cardHead({ sectionIcon: "organization", titleKey: "agents.title", subtitle: T("agents.subtitle"), sectionHead: true });
     head.append(el("div", "spacer"));
-    head.append(button({ label: "Open in Terminal", icon: "terminal", onClick: () => post({ type: "action", action: "openInTerminal" }) }));
-    head.append(button({ iconOnly: true, icon: "ellipsis", title: "Activity log", onClick: () => post({ type: "action", action: "viewLogs" }) }));
+    head.append(button({ label: T("agents.open-terminal"), icon: "terminal", onClick: () => post({ type: "action", action: "openInTerminal" }) }));
+    head.append(button({ iconOnly: true, icon: "ellipsis", title: T("agents.log"), onClick: () => post({ type: "action", action: "viewLogs" }) }));
     agents.append(head);
     const body = el("div", "section-body");
     const grid = el("div", "agent-grid");
@@ -599,14 +658,14 @@
     const card = el("section", "card");
     // 概览上的这两张卡是 Sessions 页那两半的摘要，所以它们用同一套词：同两个标题、
     // 同两句副标题——两张卡说的是两个列表，用两种叫法反而像四样东西。
-    const head = cardHead({ sectionIcon: "share", title: "Shared Sessions", subtitle: "Native sessions and projections for each agent." });
+    const head = cardHead({ sectionIcon: "share", titleKey: "sessions.shared.title", subtitle: T("sessions.shared.subtitle") });
     head.append(el("div", "spacer"));
     if (data.history.mode === "shared") {
       // Nothing to continue means nothing to click: the host drops an action
       // whose id it cannot validate, so the button says so instead of sending one.
       const newest = data.shared.rows[0];
       head.append(button({
-        label: "Continue in New Terminal",
+        label: T("sessions.shared.continue"),
         // The reference draws this one as a "take it from here" download glyph,
         // not the play it uses for Launch.
         icon: "download",
@@ -616,23 +675,23 @@
         onClick: () => post({ type: "action", action: "continueShared", id: newest.id }),
       }));
     } else {
-      head.append(button({ label: "Switch to Shared", icon: "history", size: "sm", variant: "brand", onClick: () => post({ type: "action", action: "switchHistory" }) }));
+      head.append(button({ label: T("sessions.shared.switch"), icon: "history", size: "sm", variant: "brand", onClick: () => post({ type: "action", action: "switchHistory" }) }));
     }
-    head.append(button({ iconOnly: true, icon: "ellipsis", size: "sm", title: "All shared sessions", onClick: () => go("sessions", "shared") }));
+    head.append(button({ iconOnly: true, icon: "ellipsis", size: "sm", title: T("sessions.shared.all"), onClick: () => go("sessions", "shared") }));
     card.append(head);
 
     const list = el("div", "list-box");
     if (data.history.mode !== "shared") {
-      list.append(emptyState("Shared history is off", "This project keeps each agent's sessions isolated. Switch to Shared and the conversations all three can pick up appear here."));
+      list.append(emptyState("sessions.shared.off-title", T("sessions.shared.off-detail")));
     } else if (data.shared.rows.length === 0) {
-      list.append(emptyState("No shared sessions yet", "Start an agent session and import it — the conversation shows up here, ready to continue."));
+      list.append(emptyState("sessions.shared.empty-title", T("sessions.empty.start-detail")));
     } else {
       for (const item of data.shared.rows) list.append(sessionRow(item));
     }
     card.append(list);
 
     card.append(listFoot(data, {
-      label: `View All Shared Sessions (${data.shared.total})`,
+      label: TF("sessions.shared.view-all", { total: data.shared.total }),
       section: "sessions",
       tab: "shared",
       shown: data.shared.rows.length,
@@ -650,40 +709,40 @@
   function listFoot(data, options) {
     const foot = el("div", options.compact ? "card-foot compact" : "card-foot");
     if (!data.detail) foot.append(link(options.label, "chevron-right", () => go(options.section, options.tab)));
-    else if (options.total > options.shown) foot.append(el("span", "foot-note", `Showing the newest ${options.shown} of ${options.total}.`));
+    else if (options.total > options.shown) foot.append(el("span", "foot-note", TF("list.showing-newest", { shown: options.shown, total: options.total })));
     return foot;
   }
 
   function projectCard(data) {
     const card = el("section", "card");
-    const head = cardHead({ sectionIcon: "database", title: "Agent Sessions", subtitle: "Independent histories for each agent." });
+    const head = cardHead({ sectionIcon: "database", titleKey: "sessions.agent.title", subtitle: T("sessions.agent.subtitle") });
     head.append(el("div", "spacer"));
 
     // The agent tabs sit in the head, not on their own strip.
     const active = state.agentTab ?? data.agents.find((agent) => data.native[agent.id]?.rows.length)?.id ?? data.agents[0]?.id;
     state.agentTab = active;
     head.append(tabStrip({
-      label: "Agents with sessions in this project",
+      label: T("sessions.agent.tabs-label"),
       panelId: "native-sessions",
       inline: true,
       active,
       // Short label: the reference's tabs read "Claude (8)", not "Claude Code (8)".
-      tabs: data.agents.map((agent) => [agent.id, `${agent.short ?? agent.label} (${data.native[agent.id]?.total ?? 0})`]),
+      tabs: data.agents.map((agent) => [agent.id, TF("sessions.agent.tab", { name: agent.short ?? agent.label, count: data.native[agent.id]?.total ?? 0 })]),
       onSelect: (key) => { state.agentTab = key; render(); },
     }));
     card.append(head);
 
-    const list = tabPanel("native-sessions", `Sessions for ${shortLabelOf(active)}`);
+    const list = tabPanel("native-sessions", TF("sessions.agent.panel", { name: shortLabelOf(active) }));
     const rows = data.native[active]?.rows ?? [];
     if (rows.length === 0) {
-      list.append(emptyState("No sessions here yet", `${shortLabelOf(active)} has no conversation in this project to continue.`));
+      list.append(emptyState("sessions.agent.empty-title", TF("sessions.agent.no-conversation", { name: shortLabelOf(active) })));
     } else {
       for (const item of rows) list.append(sessionRow(item, { native: active, showAgents: false }));
     }
     card.append(list);
 
     card.append(listFoot(data, {
-      label: "View All Agent Sessions",
+      label: T("sessions.agent.view-all"),
       section: "sessions",
       tab: "agent",
       compact: true,
@@ -698,31 +757,30 @@
   // (84px, its own names are short) cuts real skill names in that much room.
   function skillsCard(data, { wide = false } = {}) {
     const card = el("section", wide ? "card skills wide" : "card skills");
-    const head = cardHead({ sectionIcon: "package", title: "Skills", subtitle: "Manage and import skills for all agents.", compact: true });
+    const head = cardHead({ sectionIcon: "package", titleKey: "nav.skills", subtitle: T("skills.subtitle"), compact: true });
     head.append(el("div", "spacer"));
-    head.append(button({ label: "Import Skill", icon: "download", onClick: () => post({ type: "action", action: "importSkill" }) }));
-    head.append(button({ label: "Open Folder", icon: "folder-opened", onClick: () => post({ type: "action", action: "openFolder" }) }));
-    head.append(button({ iconOnly: true, icon: "ellipsis", title: "Skill actions", onClick: () => post({ type: "action", action: "manageSkills" }) }));
+    head.append(button({ label: T("skills.import"), icon: "download", onClick: () => post({ type: "action", action: "importSkill" }) }));
+    head.append(button({ label: T("shell.open-folder"), icon: "folder-opened", onClick: () => post({ type: "action", action: "openFolder" }) }));
     card.append(head);
 
     // Counts only where the reference carries them: Installed is tallied, Packs
     // and the registry are not. Whether the registry is synced is said inside
     // its pane, not by renaming the tab on the way in.
     card.append(tabStrip({
-      label: "Skill sources",
+      label: T("skills.sources"),
       panelId: "skills-panel",
       active: state.skillsTab,
       tabs: [
-        ["installed", `Installed (${data.skills.installedTotal})`],
-        ["packs", "Available Packs"],
-        ["hub", "Official Registry"],
+        ["installed", TF("skills.tab.installed", { count: data.skills.installedTotal })],
+        ["packs", T("skills.tab.packs")],
+        ["hub", T("skills.tab.hub")],
       ],
       onSelect: (key) => { state.skillsTab = key; render(); },
     }));
 
-    const list = tabPanel("skills-panel", "Skills from the selected source");
+    const list = tabPanel("skills-panel", T("skills.panel"));
     if (state.skillsTab === "packs") {
-      if (data.skills.packs.length === 0) list.append(emptyState("No packs available", "Sync the registry and the packs you can install show up here."));
+      if (data.skills.packs.length === 0) list.append(emptyState("skills.packs.empty-title", T("skills.packs.empty-detail")));
       for (const pack of data.skills.packs) {
         const line = el("div", "list-row");
         line.append(icon("package", "list-icon"));
@@ -730,35 +788,35 @@
         main.append(el("span", "skill-name", pack.name));
         main.append(el("span", "skill-desc", pack.description));
         line.append(main);
-        line.append(badge(`${pack.count} skills`, "muted"));
+        line.append(badge(TF("skills.packs.count", { count: pack.count }), "muted"));
         // 装的是这一个 pack：面板把它的 id 交给宿主已有的那条安装命令，而不是把用户
         // 再丢回选择器里——那等于让他在自己刚点过的地方重新选一次。
-        line.append(button({ label: pack.installed ? "Installed" : "Install", size: "sm", disabled: pack.installed, onClick: () => post({ type: "action", action: "installPack", pack: pack.id }) }));
+        line.append(button({ label: pack.installed ? T("skills.pack.installed") : T("skills.pack.install"), size: "sm", disabled: pack.installed, onClick: () => post({ type: "action", action: "installPack", pack: pack.id }) }));
         list.append(line);
       }
     } else if (state.skillsTab === "hub") {
       const line = el("div", "list-row");
       line.append(icon("database", "list-icon"));
       const main = el("div", "row-main");
-      main.append(el("span", "skill-name", data.hub.spec ?? "No registry configured"));
+      main.append(el("span", "skill-name", data.hub.spec ?? T("skills.hub.none")));
       // 三态是 core 的答案：拉过一次但落后于远端时，说「已同步」等于把 stale 说成
       // current。面板照抄它的词，不自己把三态压成一个布尔。
       const revision = data.hub.revision ? data.hub.revision.slice(0, 12) : null;
       main.append(el("span", "skill-desc", revision === null
-        ? "Never synced"
-        : data.hub.state === "current" ? `${revision} · up to date` : `${revision} · stale`));
+        ? T("skills.hub.never")
+        : data.hub.state === "current" ? TF("skills.hub.up-to-date", { revision }) : TF("skills.hub.stale", { revision })));
       line.append(main);
-      line.append(button({ label: data.hub.state === "current" ? "Sync again" : "Sync", size: "sm", onClick: () => post({ type: "action", action: "syncHub" }) }));
+      line.append(button({ label: data.hub.state === "current" ? T("skills.hub.sync-again") : T("skills.hub.sync"), size: "sm", onClick: () => post({ type: "action", action: "syncHub" }) }));
       list.append(line);
     } else if (data.skills.installed.length === 0) {
-      list.append(emptyState("No skills installed", "Import one from owner/repo, or install a pack from the registry."));
+      list.append(emptyState("skills.empty.title", T("skills.empty.detail")));
     } else {
       for (const skill of data.skills.installed) list.append(skillRow(skill));
     }
     card.append(list);
 
     card.append(listFoot(data, {
-      label: "View All Skills",
+      label: T("skills.view-all"),
       section: "skills",
       shown: data.skills.installed.length,
       total: data.skills.installedTotal,
@@ -768,20 +826,31 @@
 
   function quickCard(data) {
     const card = el("section", "card");
-    card.append(cardHead({ sectionIcon: "zap", title: "Quick Actions", subtitle: "Common tasks and workflows.", compact: true }));
+    card.append(cardHead({ sectionIcon: "zap", titleKey: "nav.quick", subtitle: T("quick.subtitle"), compact: true }));
     const body = el("div", "card-body");
     const grid = el("div", "quick-grid");
-    const ready = (agentId) => data.agents.find((agent) => agent.id === agentId)?.actions?.launch === true;
+    const agentOf = (agentId) => data.agents.find((agent) => agent.id === agentId);
+    const ready = (agentId) => agentOf(agentId)?.actions?.launch === true;
     const sharedId = data.shared.rows[0]?.id;
+    // 三句「新建 …… Session」只差 agent 的名字，所以它们是一句话和一个洞。灰掉的那一个
+    // 旁边那句话是 core 自己的说法（"CLI not installed"、"Not configured"），不是这里编的
+    // ——面板不知道一个 agent 为什么不能启动，编一个理由比没有理由更糟。
     const definitions = [
-      { label: "New Claude Session", mark: "claude", action: { action: "launch", agent: "claude" }, enabled: ready("claude") },
-      { label: "New Codex Session", mark: "codex", action: { action: "launch", agent: "codex" }, enabled: ready("codex") },
-      { label: "New OpenCode Session", mark: "opencode", action: { action: "launch", agent: "opencode" }, enabled: ready("opencode") },
+      { label: TF("quick.new-session", { agent: "Claude" }), mark: "claude", action: { action: "launch", agent: "claude" }, enabled: ready("claude"), reason: agentOf("claude")?.statusText },
+      { label: TF("quick.new-session", { agent: "Codex" }), mark: "codex", action: { action: "launch", agent: "codex" }, enabled: ready("codex"), reason: agentOf("codex")?.statusText },
+      { label: TF("quick.new-session", { agent: "OpenCode" }), mark: "opencode", action: { action: "launch", agent: "opencode" }, enabled: ready("opencode"), reason: agentOf("opencode")?.statusText },
       // 共享历史是这个项目的一种设置：隔离模式下拉起一条共享会话，CLI 会直接拒绝
-      // （它的会话菜单在隔离模式下连这一项都不列），所以这里也不给一条走不通的路。
-      { label: "Continue Shared Session", icon: "share", action: { action: "continueShared", id: sharedId }, enabled: data.history.mode === "shared" && sharedId !== undefined },
-      { label: "Manage Skills", icon: "package", action: { action: "manageSkills" }, enabled: true },
-      { label: "View Logs", icon: "list", action: { action: "viewLogs" }, enabled: true },
+      // （它的会话菜单在隔离模式下连这一项都不列），所以这里也不给一条走不通的路。灰掉的原因
+      // 有两种，说的分别是这两种：历史被设成隔离了，或者还没有可接着说的那一条。
+      {
+        label: T("quick.continue-shared"),
+        icon: "share",
+        action: { action: "continueShared", id: sharedId },
+        enabled: data.history.mode === "shared" && sharedId !== undefined,
+        reason: data.history.mode === "shared" ? T("quick.off-empty") : T("quick.off-isolated"),
+      },
+      { label: T("quick.manage-skills"), icon: "package", action: { action: "manageSkills" }, enabled: true },
+      { label: T("quick.view-logs"), icon: "list", action: { action: "viewLogs" }, enabled: true },
     ];
     for (const definition of definitions) {
       // A quick action is the same buttons the cards already have, so it is
@@ -792,12 +861,19 @@
       if (definition.mark) node.append(agentMark(definition.mark));
       else node.append(icon(definition.icon));
       node.append(el("span", undefined, definition.label));
-      if (!definition.enabled) node.disabled = true;
-      else {
+      if (definition.enabled) {
         const message = definition.action;
         node.addEventListener("click", () => post(Object.assign({ type: "action" }, message)));
+        grid.append(node);
+      } else {
+        // 灰按钮自己不发光标事件，所以「为什么灰着」挂在包着它的那一格上：鼠标停在灰按钮上
+        // 时事件落在盒子上，那句话就是盒子说的。
+        node.disabled = true;
+        const wrap = el("span", "quick-wrap");
+        if (definition.reason) wrap.title = definition.reason;
+        wrap.append(node);
+        grid.append(wrap);
       }
-      grid.append(node);
     }
     body.append(grid);
     card.append(body);
@@ -806,10 +882,10 @@
 
   function activityCard(data) {
     const card = el("section", "card");
-    card.append(cardHead({ sectionIcon: "clockface", title: "Recent Activity", subtitle: "View output and status.", inlineSub: true }));
+    card.append(cardHead({ sectionIcon: "clockface", titleKey: "activity.title", subtitle: T("activity.subtitle"), inlineSub: true }));
     const list = el("div", "activity-list");
     if (data.activity.length === 0) {
-      list.append(emptyState("No recent activity.", "What you do in this panel shows up here, newest first."));
+      list.append(emptyState("activity.empty-title", T("activity.empty-detail")));
     } else {
       for (const item of data.activity.slice(0, 3)) {
         const row = el("div", "activity-row");
@@ -823,16 +899,19 @@
       // The "view all" link takes the fourth cell of the two-column grid,
       // bottom right, exactly where the reference puts it.
       const more = el("div", "activity-row end");
-      more.append(link("View All Activity", "chevron-right", () => post({ type: "action", action: "viewLogs" })));
+      more.append(link(T("activity.view-all"), "chevron-right", () => post({ type: "action", action: "viewLogs" })));
       list.append(more);
     }
     card.append(list);
     return card;
   }
 
-  function emptyState(title, detail) {
+  // 空的时候要说一句话。标题收的是**键**不是句子：这一格是整块空白上唯一的标题，
+  // 和卡片标题一样是外壳那一层的话，所以它也走 label()（中文界面里多出一行）。
+  // detail 收的是已经渲染好的句子——有两处它是宿主给的错误原文，不是词表里的键。
+  function emptyState(titleKey, detail) {
     const box = el("div", "empty");
-    box.append(el("strong", undefined, title));
+    box.append(label(el("strong"), titleKey));
     if (detail) box.append(el("span", undefined, detail));
     return box;
   }
@@ -891,20 +970,20 @@
     const pane = el("aside", "card sessions-list-pane");
     pane.id = "sessions-list-pane";
     pane.setAttribute("role", "tabpanel");
-    pane.setAttribute("aria-label", "Sessions");
+    pane.setAttribute("aria-label", T("nav.sessions"));
     // 产品词是这两个：Shared Sessions 是这个项目跨 agent 的那一份历史，Agent Sessions
     // 是某个 agent 自己那份原生会话。两句话各自说清它列的是什么。
     pane.append(cardHead({
       sectionIcon: shared ? "share" : "database",
-      title: shared ? "Shared Sessions" : "Agent Sessions",
-      subtitle: shared ? "Native sessions and projections for each agent." : "Independent histories for each agent.",
+      titleKey: shared ? "sessions.shared.title" : "sessions.agent.title",
+      subtitle: shared ? T("sessions.shared.subtitle") : T("sessions.agent.subtitle"),
     }));
 
     pane.append(tabStrip({
-      label: "Which history to list",
+      label: T("sessions.which"),
       panelId: "sessions-list-pane",
       active: state.sessionsTab,
-      tabs: [["shared", "Shared"], ["agent", "Agent"]],
+      tabs: [["shared", T("sessions.tab.shared")], ["agent", T("sessions.tab.agent")]],
       // 换一半是这一页自己的事（它记着用户站在哪一半），顺带告诉宿主它现在停在哪儿。
       onSelect: (key) => { if (key !== state.sessionsTab) go("sessions", key); },
     }));
@@ -913,8 +992,8 @@
     const search = el("input", "session-search");
     search.type = "search";
     search.value = state.search;
-    search.placeholder = "Search sessions";
-    search.setAttribute("aria-label", "Search sessions");
+    search.placeholder = T("sessions.search");
+    search.setAttribute("aria-label", T("sessions.search"));
     search.addEventListener("input", () => { state.search = search.value; paintRows(); });
     pane.append(search);
 
@@ -923,7 +1002,7 @@
     const list = el("div", "sessions-list");
     list.id = "sessions-agent-list";
     list.setAttribute("role", "tabpanel");
-    list.setAttribute("aria-label", shared ? "Shared sessions" : `Sessions for ${shortLabelOf(activeAgent(data))}`);
+    list.setAttribute("aria-label", shared ? T("sessions.list.shared") : TF("sessions.agent.panel", { name: shortLabelOf(activeAgent(data)) }));
     list.append(...listChildren(data));
     pane.append(list);
     state.listEl = list;
@@ -935,7 +1014,7 @@
 
     // 两个词的区别要有一句话，否则「Shared Sessions」和「Agent Sessions」看起来
     // 只是同一个东西的两种叫法。
-    pane.append(el("div", "sessions-note", "Shared Sessions hold the conversation every agent can pick up; Agent Sessions are the ones an agent's own CLI opens."));
+    pane.append(el("div", "sessions-note", T("sessions.note")));
     return pane;
   }
 
@@ -945,12 +1024,12 @@
   function agentStrip(data) {
     const active = state.agentTab = activeAgent(data);
     return tabStrip({
-      label: "Agents with sessions in this project",
+      label: T("sessions.agent.tabs-label"),
       panelId: "sessions-agent-list",
       inline: true,
       active,
       // 短名：参考图的标签写的是「Claude (8)」，不是「Claude Code (8)」。
-      tabs: (data.agents ?? []).map((agent) => [agent.id, `${agent.short ?? agent.label} (${data.native?.[agent.id]?.total ?? 0})`]),
+      tabs: (data.agents ?? []).map((agent) => [agent.id, TF("sessions.agent.tab", { name: agent.short ?? agent.label, count: data.native?.[agent.id]?.total ?? 0 })]),
       onSelect: (key) => { state.agentTab = key; render(); },
     });
   }
@@ -974,10 +1053,10 @@
   function listChildren(data) {
     const { shared, source, rows } = listedRows(data);
     if (rows.length > 0) return rows.map((row) => browserRow(row, { agents: shared }));
-    if (source.length > 0) return [emptyState("No session matches", `Nothing in this list has “${state.search.trim()}” in its title, its agents or its time.`)];
+    if (source.length > 0) return [emptyState("sessions.no-match.title", TF("sessions.no-match.detail", { search: state.search.trim() }))];
     return [shared
-      ? emptyState("No shared sessions yet.", "Start an agent session and import it — the conversation shows up here, ready to continue.")
-      : emptyState("No sessions here yet.", `${shortLabelOf(activeAgent(data))} has no conversation in this project to continue.`)];
+      ? emptyState("sessions.empty.shared-title", T("sessions.empty.start-detail"))
+      : emptyState("sessions.empty.agent-title", TF("sessions.agent.no-conversation", { name: shortLabelOf(activeAgent(data)) }))];
   }
 
   // 搜索和换 agent 都只动这一列：右边正在读的那一段不跟着动，读到的位置也就还在。
@@ -998,8 +1077,8 @@
     // 时候说的就是「筛出来的几条」。
     if (total <= rows.length) return;
     foot.append(el("span", "foot-note", state.search.trim() === ""
-      ? `Showing the newest ${rows.length} of ${total}.`
-      : `${rows.length} of ${total} sessions match.`));
+      ? TF("list.showing-newest", { shown: rows.length, total })
+      : TF("sessions.foot.match", { shown: rows.length, total })));
   }
 
   function browserRow(row, options) {
@@ -1017,9 +1096,9 @@
     const meta = el("div", "row-meta");
     // 两枚胶囊各说各的：Active 是这个项目的当前会话，「Running」是参与它的 agent 里
     // 有人正在跑，「Stale」是这一份拷贝落后于共享历史了。合成一枚就会说错其中一件。
-    if (row.active) meta.append(el("span", "active-chip", "Active"));
+    if (row.active) meta.append(el("span", "active-chip", T("sessions.chip.active")));
     meta.append(rowRunPill(row.agents, row.sync?.running === true));
-    if (row.sync?.state === "stale") meta.append(el("span", "stale-chip", "Stale"));
+    if (row.sync?.state === "stale") meta.append(el("span", "stale-chip", T("sessions.chip.stale")));
     if (options.agents !== false) {
       for (const agent of row.agents ?? []) meta.append(agentChip(agent, toneOfAgent(agent)));
     }
@@ -1034,7 +1113,7 @@
     const view = el("section", "card session-view");
     const transcript = data.transcript;
     if (!transcript) {
-      view.append(emptyState("Nothing is open yet", "Pick a session on the left and its conversation is read here."));
+      view.append(emptyState("transcript.empty-title", T("transcript.empty-detail")));
       return view;
     }
 
@@ -1045,14 +1124,14 @@
     // 一段对话是不是「三个 agent 共用的那一份」，取决于这个项目的设置。隔离模式下把
     // 同一条会话说成共享历史，就是在替这个项目回答它没做的那个选择。
     titles.append(el("div", "session-sub", data.history.mode === "shared"
-      ? "Shared history — the same conversation every agent sees."
-      : "This project keeps its sessions isolated."));
+      ? T("transcript.sub.shared")
+      : T("transcript.sub.isolated")));
     top.append(titles);
     top.append(el("div", "spacer"));
 
     const actions = el("div", "session-actions");
     actions.append(button({
-      label: "Continue",
+      label: T("sessions.continue"),
       icon: "play",
       iconTone: "brand",
       size: "sm",
@@ -1064,7 +1143,7 @@
     // 拒绝的按钮不是功能。
     if (data.history.mode === "shared" && !transcript.active) {
       actions.append(button({
-        label: "Set as Active",
+        label: T("transcript.set-active"),
         icon: "check",
         size: "sm",
         onClick: () => post({ type: "action", action: "setActive", id: transcript.id }),
@@ -1074,15 +1153,13 @@
     // ⋯ 后面是这一页自己的两种读法：Raw 是这些轮的原样，Diagnostics 是这条会话的
     // 投影说过什么。两者都在已到的载荷里——一个点了要等宿主回包的菜单项，等不到就是
     // 死的，而这两个视图永远不会有第二条答案。
-    const menu = el("div", "session-menu");
-    menu.hidden = true;
-    menu.append(button({ label: "Raw", size: "sm", onClick: () => showView("raw") }));
-    menu.append(button({ label: "Diagnostics", size: "sm", onClick: () => showView("diagnostics") }));
-    actions.append(button({
-      iconOnly: true, size: "sm", icon: "ellipsis", title: "Session actions",
-      onClick: () => { menu.hidden = !menu.hidden; },
+    actions.append(menuButton({
+      title: T("sessions.actions"),
+      items: [
+        { label: T("transcript.raw"), onClick: () => showView("raw") },
+        { label: T("transcript.diagnostics"), onClick: () => showView("diagnostics") },
+      ],
     }));
-    actions.append(menu);
     top.append(actions);
     head.append(top);
 
@@ -1093,16 +1170,15 @@
       facts.append(value);
       return value;
     };
-    fact("Participants").textContent = (transcript.participants ?? []).join(", ");
-    const updated = fact("Updated");
-    const events = fact("Event count");
-    const sync = fact("Sync state");
+    fact(T("transcript.fact.participants")).textContent = (transcript.participants ?? []).join(", ");
+    const updated = fact(T("transcript.fact.updated"));
+    const events = fact(T("transcript.fact.events"));
+    const sync = fact(T("transcript.fact.sync"));
     paintFacts({ updated, events, sync }, transcript);
     head.append(facts);
     view.append(head);
 
     state.factNodes = { updated, events, sync };
-    state.menuEl = menu;
     const body = el("div", "session-view-body");
     body.append(conversationBox(transcript));
     state.viewEl = body;
@@ -1113,7 +1189,7 @@
   // 头部那几格是实时更新里唯一会变的东西：事件数、更新时间、同步状态。它们是同一批
   // 节点，改的是字而不是重建——重建会让正在读的人丢掉位置。
   function paintFacts(nodes, transcript) {
-    nodes.events.textContent = `${transcript.eventCount} events`;
+    nodes.events.textContent = TF("transcript.events", { count: transcript.eventCount });
     nodes.updated.textContent = transcript.updatedRelative;
     nodes.sync.textContent = transcript.sync?.label ?? "";
   }
@@ -1148,7 +1224,7 @@
     state.shownCount = shown.length;
     const nodes = [];
     // 没画全部的时候要说出来：一列看起来完整的对话和一条被截断的，字面上没有区别。
-    if (turns.length > shown.length) nodes.push(el("div", "turn-note", `Showing the newest ${shown.length} of ${turns.length} turns.`));
+    if (turns.length > shown.length) nodes.push(el("div", "turn-note", TF("transcript.showing-turns", { shown: shown.length, total: turns.length })));
     for (const turn of shown) nodes.push(turnBlock(turn));
     box.replaceChildren(...nodes);
   }
@@ -1171,8 +1247,10 @@
   // 不是新的一轮——把它写成一条发言，就是把 agent 干的事放进了键盘前那个人的嘴里。
   function toolRow(tool) {
     const row = el("div", "tool-row");
-    row.append(el("span", "tool-verb", tool.kind === "call" ? "ran" : "returned"));
+    row.append(el("span", "tool-verb", tool.kind === "call" ? T("transcript.tool.ran") : T("transcript.tool.returned")));
     row.append(el("span", "tool-name", tool.name));
+    // 括号里是宿主给的参数，外面那对括号是标点而不是句子：它在两种语言里长得一样，
+    // 所以不进词表（见 src/i18n/text.ts 里 tool 那两句旁边的说明）。
     if (tool.detail) row.append(el("span", "tool-detail", `(${tool.detail})`));
     return row;
   }
@@ -1182,7 +1260,6 @@
     const body = state.viewEl;
     if (!transcript || !body) return;
     state.view = kind;
-    if (state.menuEl) state.menuEl.hidden = true;
     if (kind === "raw") {
       state.transcriptEl = null;
       body.replaceChildren(rawView(transcript));
@@ -1210,7 +1287,7 @@
 
   function rawView(transcript) {
     const box = el("div", "raw-view");
-    box.append(el("div", "view-note", "The turns this host sent, as they arrived — nothing added, nothing rewritten."));
+    box.append(el("div", "view-note", T("transcript.raw.note")));
     // 载荷里只有语义上的那几轮：控制行与 CLI 自己的回显在宿主那侧就没进来，所以这里
     // 不筛原始记录——它画的就是它拿到的。
     for (const turn of transcript.turns ?? []) box.append(el("div", "raw-line", JSON.stringify(turn)));
@@ -1221,12 +1298,12 @@
     const box = el("div", "diagnostics-view");
     const warnings = transcript.diagnostics?.warnings ?? [];
     const notes = transcript.diagnostics?.notes ?? [];
-    box.append(el("div", "view-note", `Projection for this conversation: ${transcript.sync?.label ?? "unknown"}.`));
+    box.append(el("div", "view-note", TF("transcript.diagnostics.note", { state: transcript.sync?.label ?? T("transcript.diagnostics.unknown") })));
     if (warnings.length === 0 && notes.length === 0) {
-      box.append(emptyState("Nothing to report", "No projection of this conversation has anything to say about it."));
+      box.append(emptyState("transcript.diagnostics.empty-title", T("transcript.diagnostics.empty-detail")));
       return box;
     }
-    for (const [tone, lines] of [["Warning", warnings], ["Note", notes]]) {
+    for (const [tone, lines] of [[T("transcript.diagnostics.warning"), warnings], [T("transcript.diagnostics.note-tone"), notes]]) {
       for (const text of lines) {
         const row = el("div", "diagnostic-row");
         row.append(el("span", "diagnostic-tone", tone));
@@ -1257,7 +1334,7 @@
     if (state.factNodes) paintFacts(state.factNodes, now);
     if (atBottom) box.scrollTop = box.scrollHeight;
     else if (state.newChip === null && box.querySelectorAll(".new-messages").length === 0) {
-      const chip = el("button", "new-messages", "New messages ↓");
+      const chip = el("button", "new-messages", T("transcript.new-messages"));
       chip.type = "button";
       chip.addEventListener("click", () => {
         box.scrollTop = box.scrollHeight;
@@ -1269,12 +1346,616 @@
     return true;
   }
 
+  /* -------------------------------------------------- model configuration -- */
+  //
+  // 这一页问的是一个 agent 自己的 provider 怎么写进它自己的文件里：与 `avenic change`
+  // 同一份模板、同一次合并（都在 core 里），所以它是同一件事的第二种看法，不是第二个存储。
+  //
+  // 它与别的页有一处根本的不同：它手里有用户正在填的表单，而载荷每回答一次就整份重发。
+  // 所以草稿住在这一页（state.centerDraft），载荷只在换 agent 的时候用来播种——之后用户
+  // 打的字归用户，一次重画不能把打到一半的模型名抹掉。
+  //
+  // 凭据只出不进：载荷里只有 credentialSet 一个布尔，输入框里的字从表单直奔宿主，不回填、
+  // 不重画、不进标题、不进任何一句话——一个能把它印出来的面板就是一个会泄漏它的面板。
+
+  function seedCenter(payload) {
+    if (state.centerAgent === (payload?.agent ?? null)) return;
+    state.centerAgent = payload?.agent ?? null;
+    state.centerCredential = "";
+    if (payload === null) {
+      state.centerDraft = null;
+      return;
+    }
+    const providers = payload.providers ?? [];
+    state.centerDraft = {
+      provider: payload.provider ?? providers.find((item) => item.selected)?.id ?? providers[0]?.id ?? "",
+      baseUrl: payload.baseUrl ?? "",
+      model: payload.model ?? "",
+      // null 与空串是两件事：前者是「文件里那个别动」，后者是「我没给」。合并的那一半分得清
+      // 这两句，这一页也得分开带着走。
+      credential: null,
+      roles: {},
+      blocks: (payload.blocks ?? []).filter((block) => block.on).map((block) => block.id),
+    };
+  }
+
+  function centerDraft() {
+    const draft = state.centerDraft;
+    return {
+      provider: draft.provider,
+      baseUrl: draft.baseUrl,
+      model: draft.model,
+      credential: state.centerCredential === "" ? null : state.centerCredential,
+      roles: draft.roles ?? {},
+      blocks: draft.blocks ?? [],
+    };
+  }
+
+  // 屏幕上永远不该出现 key。宿主给的 diff 应当已经把它换掉了，但这一页不押那个注：手里有的
+  // 那一个（用户刚敲进去的）在这里再抹一道。「文件里已经有一个」的那一种只有读得到文件的
+  // 那一边抹得掉，所以那一道归宿主——两边都做，才不靠对方。
+  function redact(text) {
+    const secret = state.centerCredential;
+    const value = String(text ?? "");
+    return secret === "" ? value : value.split(secret).join("••••••");
+  }
+
+  // 一次问答的回答画在问它的那些按钮下面。失败的形状有好几种（认证、模型、网络、超时、
+  // 不是那个 API、被拒），它们是供应商的七种不同的话，所以一句话一种，不合并成「错误」——
+  // 用户要修的正是其中某一种。
+  function centerResultNode(result, payload) {
+    if (result === null || result === undefined) return null;
+    const line = el("div", "center-result");
+    line.setAttribute("role", "status");
+    if (result.kind === "connection") {
+      const good = result.state === "connected";
+      line.classList.add(good ? "ok" : "bad");
+      line.append(icon(good ? "check" : "error"));
+      line.append(el("span", "center-result-text", T("center.connection." + result.state)));
+      if (typeof result.status === "number") line.append(el("span", "center-hint", String(result.status)));
+    } else if (result.kind === "catalog") {
+      const good = result.state === "fetched";
+      line.classList.add(good ? "ok" : "bad");
+      line.append(icon(good ? "check" : "error"));
+      // 刷新失败时说的是宿主带回来的那一句原话（超时、401、不是那个 API），没有才退到一句
+      // 不编的「网络错误」。
+      line.append(el("span", "center-result-text", good
+        ? TF("center.catalog-fetched", { count: result.count ?? 0 })
+        : result.note ?? T("center.connection.network-error")));
+    } else if (result.kind === "error") {
+      line.classList.add("bad");
+      line.append(icon("error"));
+      line.append(el("span", "center-result-text", result.message));
+    } else if (result.kind === "diff") {
+      line.classList.add("diff");
+      const lines = result.lines ?? [];
+      // 「已写入」与「已经一致」只有真的写过那一次才说得出口：预览里的 written 是 false，
+      // 一份非空的预览说「没有写入」就把一次预览说成了「不需要改」。
+      if (result.written) line.append(el("div", "center-hint", TF("center.written", { file: payload.relative ?? "—" })));
+      else if (lines.length === 0) line.append(el("div", "center-hint", TF("center.unchanged", { file: payload.relative ?? "—" })));
+      const body = el("pre", "diff-body");
+      for (const entry of lines) body.append(el("div", "diff-line diff-" + entry.kind, redact(entry.text)));
+      line.append(body);
+    }
+    return line;
+  }
+
+  function centerSection(data) {
+    const payload = data.center;
+    seedCenter(payload);
+
+    const section = el("section", "section center");
+    const head = cardHead({ sectionIcon: "symbol-parameter", titleKey: "center.title", subtitle: T("center.subtitle"), sectionHead: true });
+    head.append(el("div", "spacer"));
+
+    // Simple/Advanced 换的是这一页画多少行，不换写进去的东西：高级里那些字段在简单里用的是
+    // 同一份预置值，所以两档之间来回切不会丢掉已经填好的答案。
+    const modes = el("div", "center-modes");
+    for (const [level, key] of [["simple", "center.simple"], ["advanced", "center.advanced"]]) {
+      const active = (level === "advanced") === state.centerAdvanced;
+      const node = el("button", active ? "btn btn-sm center-mode active" : "btn btn-sm center-mode", T(key));
+      node.type = "button";
+      node.title = PAIR(key);
+      node.setAttribute("aria-pressed", String(active));
+      node.addEventListener("click", () => { state.centerAdvanced = level === "advanced"; render(); });
+      modes.append(node);
+    }
+    head.append(modes);
+    section.append(head);
+
+    const agents = data.agents ?? [];
+    const current = payload?.agent ?? agents[0]?.id;
+    section.append(tabStrip({
+      label: T("nav.agents"),
+      panelId: "center-panel",
+      active: current,
+      tabs: agents.map((agent) => [agent.id, agent.label]),
+      // 换 agent 是这一页的落点之一（同一张页面问另一个 agent 的同一个问题）：页面知道自己
+      // 站在哪儿，宿主把那一个的配置读出来重发。
+      onSelect: (key) => { if (key !== current) post({ type: "action", action: "centerOpen", agent: key }); },
+    }));
+
+    const body = el("div", "section-body center-body");
+    body.id = "center-panel";
+    body.setAttribute("role", "tabpanel");
+    body.setAttribute("aria-label", T("center.title"));
+    section.append(body);
+
+    const draft = state.centerDraft;
+    if (payload === null || draft === null) {
+      body.append(emptyState("center.title", ""));
+      return [section];
+    }
+
+    const card = agents.find((agent) => agent.id === payload.agent);
+    const providers = payload.providers ?? [];
+    const models = payload.models ?? [];
+    if (providers.length === 0) {
+      // 有的 agent 自己管自己的供应商配置（OpenCode 装在自己的插件注册表里）：Avenic 这里
+      // 没有可合并的东西。这时候画一张填不进去的表单才是骗人。
+      body.append(emptyState("center.title", card?.detail ?? TF("center.not-owned", { name: payload.label })));
+      return [section];
+    }
+
+    const hasKey = payload.credentialSet === true || state.centerCredential !== "";
+    // 缺什么就说什么：宿主的守卫会把缺字段的问题整条丢掉，而一个点了没反应的按钮和坏掉的
+    // 没有区别。所以按钮灰着，旁边写着为什么——不是 tooltip：灰按钮不发光标事件，那上面的
+    // tooltip 永远不会出现。
+    const blocker = (needs) => {
+      if (draft.provider === "") return "center.need-provider";
+      if (draft.baseUrl === "") return "center.need-endpoint";
+      if (needs.model && draft.model === "") return "center.need-model";
+      if (needs.credential && !hasKey) return "center.need-credential";
+      return null;
+    };
+    const blockers = [];
+    // 这一页的按钮问的是同一张表的几种答法（连得上吗、要写什么、写下去、有哪些模型），
+    // 所以它们的盒子、尺寸与「灰掉的规则」是同一件事，不一样的只有那一次发送。动作名按
+    // 字面写在每一次调用上：面板与宿主对表的那一关读的正是这些字面量，一个拼错的字在这里
+    // 不报错，只会静默消失一次点击。
+    const ask = (key, iconName, needs, onClick, variant) => {
+      const node = button({ label: T(key), icon: iconName, size: "sm", variant, onClick });
+      blockers.push({ node, needs });
+      return node;
+    };
+
+    // 这一页写的不是 Avenic 的配置目录，是这个 agent 的原生文件——把它印在第一行，因为
+    // 「Apply 会写到哪儿」是这一页最该先回答的问题。认证方式那一枚胶囊用的是宿主卡片的词
+    // （Account | API | Native），这一页不自己造词。
+    const facts = el("div", "center-facts");
+    const auth = (card?.fields ?? []).find((field) => field.label === "Authentication");
+    if (auth) facts.append(badge(auth.value, auth.tone));
+    const target = el("span", "center-target");
+    target.append(icon("file-code"));
+    target.append(el("span", undefined, payload.relative ?? "—"));
+    if (payload.scope) target.setAttribute("title", payload.scope);
+    facts.append(target);
+    body.append(facts);
+    // 用账号认证的人在看着一张写 API 配置的表单，那么下一步会发生什么得说在前面。
+    if (payload.auth === "account") body.append(label(el("p", "center-note"), "center.account-note"));
+
+    const grid = el("div", "center-providers");
+    for (const provider of providers) {
+      const chosen = provider.id === draft.provider;
+      const tile = el("button", chosen ? "provider-tile active" : "provider-tile");
+      tile.type = "button";
+      tile.setAttribute("aria-pressed", String(chosen));
+      tile.append(el("span", "provider-name", provider.name));
+      if (provider.baseUrl) tile.append(el("span", "provider-url", provider.baseUrl));
+      // 点一次 = 用这个预设填一遍（Create 与 Reset 是同一件事）：已经选中的那个再点一次就是
+      // 把改乱的字段要回预置值，所以那一下照发，而不是「已经选中了，什么都不做」。
+      tile.addEventListener("click", () => post({ type: "action", action: "centerFill", agent: payload.agent, provider: provider.id }));
+      grid.append(tile);
+    }
+    body.append(label(el("div", "center-caption"), "center.provider"));
+    body.append(grid);
+    const chosenProvider = providers.find((provider) => provider.id === draft.provider) ?? providers[0];
+    body.append(link(T("center.provider-docs"), "link-external", () => post({ type: "action", action: "centerOpenDocs", agent: payload.agent, provider: chosenProvider.id })));
+
+    const endpoint = el("input", "center-input");
+    endpoint.type = "text";
+    endpoint.value = draft.baseUrl;
+    endpoint.placeholder = chosenProvider.baseUrl ?? "https://…";
+    endpoint.spellcheck = false;
+    endpoint.setAttribute("aria-label", T("center.endpoint"));
+    endpoint.addEventListener("input", () => { draft.baseUrl = endpoint.value; paintActions(); });
+    body.append(label(el("div", "center-caption"), "center.endpoint"));
+    body.append(endpoint);
+
+    body.append(label(el("div", "center-caption"), "center.model"));
+    const modelRow = el("div", "center-row");
+    const model = el("input", "center-input");
+    model.type = "text";
+    model.value = draft.model;
+    model.spellcheck = false;
+    model.setAttribute("aria-label", T("center.model"));
+    if (models.length > 0) {
+      // 三百个模型名不该变成三百个胶囊：装进 datalist，输入时才出现，不打字就一个都不占。
+      const list = el("datalist");
+      list.id = "center-models";
+      for (const name of models) {
+        const option = el("option");
+        option.value = name;
+        list.append(option);
+      }
+      model.setAttribute("list", "center-models");
+      modelRow.append(list);
+    }
+    model.addEventListener("input", () => { draft.model = model.value; paintActions(); });
+    modelRow.append(model);
+    body.append(modelRow);
+
+    // 模型列表是一次明确的请求（一次网络、一次缓存），所以它是这一行上的一个按钮，不是自动
+    // 发生的：装个扩展不该顺带问一次供应商。
+    const refresh = button({
+      label: T("center.refresh-models"),
+      icon: "refresh",
+      size: "sm",
+      onClick: () => post({ type: "action", action: "centerRefreshModels", agent: payload.agent, draft: centerDraft() }),
+    });
+    blockers.push({ node: refresh, needs: { model: false, credential: true } });
+    modelRow.append(refresh);
+    // 目录那一行说的是「手里现在有多少」与「上一次问的结果」：上一次失败的那句原话归宿主，
+    // 它给了就引它的话，没给就数一遍。
+    body.append(el("div", "center-hint", payload.catalog?.note
+      ?? (models.length > 0 ? TF("center.catalog-fetched", { count: models.length }) : T("center.models-empty"))));
+
+    body.append(label(el("div", "center-caption"), "center.credential"));
+    const credential = el("input", "center-input");
+    credential.type = "password";
+    // 文件里那个不是拿来显示的东西：输入框空着、占位符说明空着是什么意思，用户要换才敲。
+    credential.value = state.centerCredential;
+    credential.placeholder = hasKey ? T("center.credential-keep") : "";
+    credential.spellcheck = false;
+    credential.autocomplete = "off";
+    credential.setAttribute("aria-label", T("center.credential"));
+    credential.addEventListener("input", () => { state.centerCredential = credential.value; paintActions(); });
+    body.append(credential);
+    if (payload.credentialSet) body.append(el("p", "center-hint", T("center.credential-set")));
+
+    if (state.centerAdvanced) {
+      const roles = payload.roles ?? [];
+      if (roles.length > 0) {
+        body.append(label(el("div", "center-caption"), "center.roles"));
+        const table = el("div", "center-roles");
+        for (const role of roles) {
+          const row = el("div", "center-role");
+          row.append(el("span", "center-role-name", role.id));
+          const input = el("input", "center-input");
+          input.type = "text";
+          input.value = draft.roles[role.id] ?? role.current ?? "";
+          input.placeholder = role.recommended ?? "";
+          input.spellcheck = false;
+          input.setAttribute("aria-label", role.id);
+          input.addEventListener("input", () => { draft.roles[role.id] = input.value; });
+          row.append(input);
+          // 供应商推荐的那一个写在输入框里（占位符的位置），文件里现在的那一个写在框里：
+          // 「它现在是什么」和「厂商说用什么」是两件事，混在一起就分不出还没改过。
+          row.append(el("span", "center-hint", role.recommended ?? ""));
+          table.append(row);
+        }
+        body.append(table);
+      }
+      const blocks = payload.blocks ?? [];
+      if (blocks.length > 0) {
+        body.append(label(el("div", "center-caption"), "center.options"));
+        const box = el("div", "center-blocks");
+        for (const block of blocks) {
+          const item = el("label", "center-block");
+          const tick = el("input");
+          tick.type = "checkbox";
+          tick.checked = draft.blocks.includes(block.id);
+          tick.addEventListener("change", () => {
+            draft.blocks = tick.checked ? draft.blocks.concat([block.id]) : draft.blocks.filter((id) => id !== block.id);
+          });
+          item.append(tick);
+          item.append(el("span", undefined, block.name));
+          box.append(item);
+        }
+        body.append(box);
+      }
+    }
+
+    const actions = el("div", "center-actions");
+    actions.append(ask("center.test", "zap", { model: true, credential: true },
+      () => post({ type: "action", action: "centerTest", agent: payload.agent, draft: centerDraft() })));
+    actions.append(ask("center.diff", "file-code", { model: true, credential: true },
+      () => post({ type: "action", action: "centerPreview", agent: payload.agent, draft: centerDraft() })));
+    actions.append(ask("center.apply", "check", { model: true, credential: true },
+      () => post({ type: "action", action: "centerApply", agent: payload.agent, draft: centerDraft() }), "primary"));
+    if (state.centerAdvanced && payload.relative !== null) {
+      // 配置文件是高级那一档的事（简单那一档的用法是「填完就写完」）；没有文件时这个按钮没有
+      // 可开的东西，所以它不画，而不是画一个点了没反应的。
+      actions.append(button({
+        label: T("center.open-file"),
+        icon: "go-to-file",
+        size: "sm",
+        onClick: () => post({ type: "action", action: "centerOpenFile", agent: payload.agent }),
+      }));
+    }
+    body.append(actions);
+
+    // 灰按钮旁边那一块地方说的就是它为什么灰着：填上一个字段，这一行自己就变了——不重画，
+    // 所以正在打的字不会被抹掉。
+    const noteBox = el("div", "center-blocker");
+    body.append(noteBox);
+    function paintActions() {
+      let first = null;
+      for (const item of blockers) {
+        const reason = blocker(item.needs);
+        item.node.disabled = reason !== null;
+        if (reason !== null && first === null) first = reason;
+      }
+      noteBox.replaceChildren();
+      if (first === null) noteBox.hidden = true;
+      else {
+        noteBox.hidden = false;
+        noteBox.append(label(el("span"), first));
+      }
+    }
+    paintActions();
+
+    const result = centerResultNode(data.centerResult, payload);
+    if (result) body.append(result);
+    return [section];
+  }
+
   function quickSection(data) {
     return [quickCard(data), activityCard(data)];
   }
 
   function skillsSection(data) {
     return [skillsCard(data, { wide: true })];
+  }
+
+  /* ---------------------------------------------- hooks & notifications page -- */
+
+  // 四种通知的名字与图标。画哪几个由 core 的 kinds 决定（顺序也是它的）：core 将来多出
+  // 一种而这一页还没有词的时候，它不在这里冒充一个按钮——一个点下去什么都不发生的方块
+  // 和一个坏掉的方块，用户看起来是一样的。
+  const HOOK_KINDS = {
+    desktop: { key: "hooks.kind-desktop", icon: "bell-dot" },
+    openclaw: { key: "hooks.kind-openclaw", icon: "server-process" },
+    webhook: { key: "hooks.kind-webhook", icon: "link-external" },
+    command: { key: "hooks.kind-command", icon: "terminal" },
+  };
+
+  // 这一页问的是两个不同的问题，所以它是两张卡：上面一张是三个 agent 自己的机制（哪个
+  // 文件、装没装、它自己有没有条件），下面一张是 Avenic 自己的通知名单。装与响不是同
+  // 一件事，「装好了」从来不等于「会通知」。
+  function hooksSection(data) {
+    const payload = data.hooks;
+    const section = el("section", "section hooks");
+    const head = cardHead({ sectionIcon: "bell-dot", titleKey: "nav.hooks", subtitle: T("hooks.subtitle"), sectionHead: true });
+    head.append(el("div", "spacer"));
+    // 画的是「哪一档」：还没打开过这一页时是项目那一档（宿主的默认），打开过就以宿主
+    // 读出来的那一档为准（载荷里的 scope 永远是对的）。
+    head.append(scopeSwitch(payload === null ? state.hooksScope : payload.scope));
+    section.append(head);
+    if (payload !== null) state.hooksScope = payload.scope;
+
+    if (payload === null) {
+      // 这一页要读的每一个文件都在一个项目里：没有项目的时候，能说的只有这一句。
+      section.append(emptyState("hooks.agents-title", T("shell.no-project")));
+      return [section];
+    }
+
+    const body = el("div", "section-body hooks-body");
+    const result = hooksResultNode(data.hooksResult);
+    if (result) body.append(result);
+    body.append(hookAgentsCard(payload));
+    body.append(hookActionsCard(payload));
+    section.append(body);
+    return [section];
+  }
+
+  // 两个作用域的切换。它换的不是「用哪个账号认证」（那是卡片上的 Authentication），而是
+  // 这份通知名单写在项目里还是写在这台机器上——换它不碰任何一份认证配置。
+  // 点下去先按住这个选择、把落点交给宿主，等它把那一档读完：换一档是一次真的读盘（三个
+  // agent 的文件与那一档的名单都不一样），所以这 500 毫秒会说的话由 startReading 说。
+  function scopeSwitch(current) {
+    const box = el("div", "scope-switch");
+    box.setAttribute("role", "group");
+    box.setAttribute("aria-label", PAIR("hooks.scope-label"));
+    for (const scope of ["project", "global"]) {
+      const active = scope === current;
+      const node = el("button", active ? "btn btn-sm scope-pick active" : "btn btn-sm scope-pick", T(scope === "project" ? "hooks.scope-project" : "hooks.scope-global"));
+      node.type = "button";
+      node.title = PAIR("hooks.scope-label");
+      node.setAttribute("aria-pressed", String(active));
+      node.addEventListener("click", () => {
+        if (scope === current) return;
+        state.hooksScope = scope;
+        startReading();
+        render();
+        post({ type: "action", action: "hooksOpen", scope });
+      });
+      box.append(node);
+    }
+    return box;
+  }
+
+  function hookAgentsCard(payload) {
+    const card = el("section", "card");
+    card.append(cardHead({ sectionIcon: "organization", titleKey: "hooks.agents-title", subtitle: T("hooks.agents-subtitle") }));
+    const list = el("div", "hooks-list");
+    for (const row of payload.agents) list.append(hookAgentRow(row, payload.scope));
+    card.append(list);
+    return card;
+  }
+
+  // 一个 agent 的一行：它自己的机制、这一档里的文件、装没装。装与卸各自是真实的动作，
+  // 所以一行的右边只有一颗按钮——同一件事的两个名字里，灰着的那个是不用画的。
+  function hookAgentRow(row, scope) {
+    const line = el("div", "hook-row");
+    const main = el("div", "row-main");
+    const top = el("div", "hook-name-line");
+    top.append(agentMark(row.agent));
+    top.append(el("span", "hook-name", row.displayName));
+    // 版本在这一行上是必须的：「不支持」那一句说的正是它（Unsupported by Codex 1.0.0）。
+    if (row.version) top.append(badge(row.version, "muted"));
+    top.append(badge(row.installed ? T("hooks.installed") : T("hooks.not-installed"), row.installed ? "green" : "muted"));
+    main.append(top);
+    const file = el("div", "hook-file");
+    file.append(icon("file-code"));
+    file.append(el("span", undefined, row.file));
+    file.title = row.file;
+    main.append(file);
+    // 「不支持」是 core 的原话（它按编辑器语言说），它就在这一行上，不让人去别处找。
+    if (row.supportNote) main.append(el("p", "hook-note", row.supportNote));
+    // 机制自己带的条件（Codex 的钩子要审阅过才会响）：装了也可能是静音的，那就不算装好。
+    if (row.caveat) main.append(el("p", "hook-note", row.caveat));
+    line.append(main);
+
+    const actions = el("div", "row-actions");
+    if (row.installed) {
+      // 卸不需要「这个版本支持」：文件里有 Avenic 的东西就该拿得掉。
+      if (row.supportNote === null) actions.append(button({ label: T("hooks.view-config"), icon: "file-code", size: "sm", onClick: () => post({ type: "action", action: "hookPlan", agent: row.agent, scope }) }));
+      actions.append(button({ label: T("hooks.uninstall"), icon: "trash", size: "sm", onClick: () => post({ type: "action", action: "hookUninstall", agent: row.agent, scope }) }));
+    } else if (row.supportNote === null) {
+      // 装不上就没有「要写什么」可看：预览里那些字一个都不会被写下去，画出来是骗人。
+      actions.append(button({ label: T("hooks.view-config"), icon: "file-code", size: "sm", onClick: () => post({ type: "action", action: "hookPlan", agent: row.agent, scope }) }));
+      actions.append(button({ label: T("hooks.install"), icon: "download", size: "sm", variant: "primary", onClick: () => post({ type: "action", action: "hookInstall", agent: row.agent, scope }) }));
+    }
+    line.append(actions);
+    return line;
+  }
+
+  function hookActionsCard(payload) {
+    const card = el("section", "card");
+    const head = cardHead({ sectionIcon: "bell-dot", titleKey: "hooks.actions-title", subtitle: T("hooks.actions-subtitle") });
+    head.append(el("div", "spacer"));
+    // Advanced 只决定「命令类能不能加」，不换这一页写下去的东西：与模型配置中心那一档
+    // 同一个道理，档位本身是这一页的事，不必问宿主。
+    const level = el("button", state.hooksAdvanced ? "btn btn-sm advanced-pick active" : "btn btn-sm advanced-pick", T("hooks.advanced"));
+    level.type = "button";
+    level.title = PAIR("hooks.advanced");
+    level.setAttribute("aria-pressed", String(state.hooksAdvanced));
+    level.addEventListener("click", () => { state.hooksAdvanced = !state.hooksAdvanced; render(); });
+    head.append(level);
+    card.append(head);
+
+    const list = el("div", "hooks-list");
+    if (payload.actions.length === 0) list.append(emptyState("hooks.actions-empty-title", T("hooks.actions-empty-detail")));
+    for (const action of payload.actions) list.append(hookActionRow(action, payload.scope));
+    card.append(list);
+
+    // 加一条：四种各一颗按钮。命令类是这一页上唯一一条「会在这台机器上跑东西」的选项，
+    // 所以要开 Advanced 才能加；灰按钮不发光标事件，所以那句话就在这一行下面。
+    const add = el("div", "hook-add");
+    add.append(label(el("span", "hook-add-label"), "hooks.add"));
+    for (const kind of payload.kinds) {
+      const meta = HOOK_KINDS[kind];
+      if (meta === undefined) continue;
+      add.append(button({
+        label: T(meta.key),
+        icon: meta.icon,
+        size: "sm",
+        disabled: kind === "command" && !state.hooksAdvanced,
+        onClick: () => post({ type: "action", action: "hookActionAdd", scope: payload.scope, kind }),
+      }));
+    }
+    card.append(add);
+    if (payload.kinds.includes("command")) card.append(label(el("p", "hook-warning"), "hooks.command-warning"));
+
+    // core 的门槛（一轮对话至少多少秒才算完成、同一条多久之内只响一次）写在页脚上：
+    // 这两个数只从 core 读，页面从不自己记 20 这个数。
+    const foot = el("div", "card-foot");
+    foot.append(el("span", "foot-note", TF("hooks.threshold-note", { seconds: payload.completedMinSeconds, window: payload.dedupeSeconds })));
+    card.append(foot);
+    return card;
+  }
+
+  // 一条通知：认得出它的字样、它带了什么（有没有令牌、超时多久），以及改与删两颗按钮。
+  // 令牌本身从来不在这一页上——这里只说「设了一个」或「从哪个变量取」。
+  function hookActionRow(action, scope) {
+    const line = el("div", "hook-row");
+    const main = el("div", "row-main");
+    const meta = HOOK_KINDS[action.kind];
+    const top = el("div", "hook-name-line");
+    top.append(badge(meta ? T(meta.key) : action.kind, "muted", meta?.icon));
+    top.append(el("span", "hook-target", action.target || action.id));
+    main.append(top);
+    const facts = el("div", "hook-facts");
+    facts.append(el("span", "hook-id", action.id));
+    if (action.tokenSet) facts.append(badge(T("hooks.token-set"), "muted", "key"));
+    else if (action.tokenEnv) facts.append(badge(TF("hooks.token-from", { name: action.tokenEnv }), "muted", "key"));
+    if (typeof action.timeoutMs === "number") facts.append(el("span", "hook-timeout", TF("hooks.timeout-value", { ms: action.timeoutMs })));
+    main.append(facts);
+    line.append(main);
+
+    const buttons = el("div", "row-actions");
+    buttons.append(button({ label: T("hooks.edit"), icon: "edit", size: "sm", onClick: () => post({ type: "action", action: "hookActionEdit", scope, id: action.id }) }));
+    buttons.append(button({ label: T("hooks.remove"), icon: "trash", size: "sm", onClick: () => post({ type: "action", action: "hookActionRemove", scope, id: action.id }) }));
+    line.append(buttons);
+    return line;
+  }
+
+  // 上一次问出来的答案：一份将写入的配置（逐行、已经由宿主打过码），或者一次写入的结果。
+  // 预览那一档是等宽的整块，所以它排在这一页两张卡的前面——点「查看将写入的配置」的人
+  // 要看的就是它。页面自己手里没有凭据（令牌只从宿主的密码框走过），所以这里不再抹一遍。
+  function hooksResultNode(result) {
+    if (result === null || result === undefined) return null;
+    const line = el("div", "hook-result");
+    line.setAttribute("role", "status");
+    if (result.kind === "diff") {
+      line.classList.add("diff");
+      const lines = result.lines ?? [];
+      line.append(el("div", "center-hint", lines.length === 0
+        ? TF("hooks.result-plan-empty", { file: result.file })
+        : TF("hooks.result-plan", { file: result.file })));
+      const body = el("pre", "diff-body");
+      for (const entry of lines) body.append(el("div", "diff-line diff-" + entry.kind, entry.text));
+      line.append(body);
+      return line;
+    }
+    const good = result.changed;
+    line.classList.add(good ? "ok" : "muted");
+    line.append(icon(good ? "check" : "history"));
+    if (result.kind === "installed") {
+      // 装不下那一次（版本在这一行画出来之后变了）说的是 core 自己的那句话，不是「已经装好」。
+      line.append(el("span", "center-result-text", result.note
+        ?? (good ? TF("hooks.result-installed", { file: result.file }) : TF("hooks.result-already-installed", { file: result.file }))));
+    } else if (result.kind === "uninstalled") {
+      line.append(el("span", "center-result-text", good ? TF("hooks.result-uninstalled", { file: result.file }) : TF("hooks.result-not-installed", { file: result.file })));
+    } else {
+      line.append(el("span", "center-result-text", good ? TF("hooks.result-saved", { file: result.file }) : TF("hooks.result-unchanged", { file: result.file })));
+    }
+    return line;
+  }
+
+  /* ------------------------------------------------------ settings & about -- */
+
+  // 这一页不配置任何东西：它说这套安装是什么（版本、路径），以及这个项目的文件在哪里。
+  // 每一行右边那个事实只有一个来源（清单、core、已经探过的那一次 CLI），而「可不可点」
+  // 是宿主算的——页面的按钮只递回一个 key，它自己手里没有路径。
+  function settingsSection(data) {
+    const section = el("section", "section settings");
+    const about = data.about;
+    section.append(cardHead({ sectionIcon: "settings-gear", titleKey: "settings.title", subtitle: T("settings.subtitle"), sectionHead: true }));
+    if (about === null) {
+      section.append(emptyState("settings.title", ""));
+      return [section];
+    }
+    const body = el("div", "section-body settings-body");
+    const card = el("section", "card");
+    const rows = el("div", "about-rows");
+    for (const row of about.rows) {
+      const line = el("div", "about-row");
+      line.append(el("span", "about-label", row.label));
+      line.append(el("span", "about-value", row.value));
+      if (row.reveal) line.append(button({ label: T("settings.show"), icon: "folder-opened", size: "sm", onClick: () => post({ type: "action", action: "revealFile", key: row.key }) }));
+      rows.append(line);
+    }
+    card.append(rows);
+    // 唯一一条离开这一页的行：VS Code 自己的设置，按这个扩展过滤（查询字符串在宿主里）。
+    const foot = el("div", "card-foot");
+    foot.append(link(about.settings.label, "link-external", () => post({ type: "action", action: "openSettings" })));
+    card.append(foot);
+    body.append(card);
+    body.append(label(el("p", "settings-note"), "settings.note"));
+    section.append(body);
+    return [section];
   }
 
   /* ------------------------------------------------------------------ shell -- */
@@ -1304,6 +1985,8 @@
     const path = document.getElementById("project-path");
     path.disabled = data.project.root === null;
     path.onclick = () => post({ type: "action", action: "revealProject" });
+    // 灰着的那一个也要说得出为什么——没有目录可开的时候，理由就是页头写着的那一句。
+    path.title = PAIR(data.project.root === null ? "shell.no-project" : "shell.project-path-title");
     document.getElementById("refresh-button").onclick = () => { startReading(); post({ type: "refresh" }); };
     // 底部这一行说的是这台机器上真正在用的 Avenic CLI：探到之前只写「Avenic」——
     // 一个空着的「v」不是版本。扩展自己的版本不占这一行，悬停时和 CLI 的一起说。
@@ -1316,6 +1999,19 @@
     const line = document.getElementById("version-line");
     if (title) line.setAttribute("title", title);
     else line.removeAttribute("title");
+    // 侧栏脚下那一枚说的是这台机器上真正在用的那份 CLI 在不在：探到了才是 Ready，探不到就
+    // 直接说 PATH 里没有它。一句永远不改的 Ready 是一句假话——它读起来像「可以启动了」，
+    // 而那时按 Launch 什么都不会发生。
+    const ready = document.getElementById("ready-label");
+    const readyDot = document.getElementById("ready-dot");
+    if (details !== undefined && details.cli === "") {
+      ready.textContent = T("cli.missing");
+      ready.title = PAIR("cli.missing");
+      if (ZH_VISIBLE) ready.append(el("span", "zh", ZH("cli.missing")));
+      readyDot.className = "dot brand";
+    } else {
+      readyDot.className = "dot";
+    }
   }
 
   /* A read that is still going half a second after it was asked for says so,
@@ -1365,18 +2061,22 @@
       const line = el("div", "reading");
       line.setAttribute("role", "status");
       line.append(icon("refresh"));
-      line.append(el("span", undefined, T("shell.reading")));
+      // 这一行是外壳的话，不是某一条数据的话：中文界面里它和侧栏一样多出第二半。
+      line.append(label(el("span"), "shell.reading"));
       content.append(line);
     }
     if (state.error) {
-      content.append(emptyState(T("shell.read-failed"), state.error));
+      content.append(emptyState("shell.read-failed", state.error));
       return;
     }
-    if (data.empty) {
+    // 设置与关于那一页说的是这套安装本身，一个字都不需要项目（版本、路径、日志去哪儿
+    // 看），所以「一个项目都没打开」拦不住它。钩子那一页要读的每一个文件都在项目里，
+    // 所以照拦——它有自己的那句话。
+    if (data.empty && state.section !== "settings") {
       // 「没打开项目」与「项目还没配置」是两种状态，下一步也不一样：没有目录可写的
       // 时候，「初始化」要打开的那场问答一步都走不下去。
       const opened = data.project.root !== null;
-      const box = emptyState(opened ? T("shell.not-set-up") : T("shell.no-folder"), data.empty);
+      const box = emptyState(opened ? "shell.not-set-up" : "shell.no-folder", data.empty);
       box.append(opened
         ? button({ label: T("shell.initialize"), variant: "primary", onClick: () => post({ type: "action", action: "initialize" }) })
         : button({ label: T("shell.open-folder"), variant: "primary", onClick: () => post({ type: "action", action: "openProject" }) }));
@@ -1390,6 +2090,9 @@
       sessions: sessionsSection,
       skills: skillsSection,
       quick: quickSection,
+      center: centerSection,
+      hooks: hooksSection,
+      settings: settingsSection,
     };
     for (const node of (renderers[state.section] ?? overviewSection)(data)) content.append(node);
     landToNewest();
@@ -1415,6 +2118,17 @@
     }
   }
 
+  // 一张悬着的菜单不该等到页面重画才收起来：点别处、按 Esc，两件都在这一处写，因为这两件
+  // 事不属于任何一张菜单。点它自己（或那个 ⋯）不算「别处」，所以问的是包着它们的那一格。
+  document.addEventListener("click", (event) => {
+    if (state.menuEl === null) return;
+    if (state.menuEl.parentElement?.contains(event.target) === true) return;
+    closeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeMenu();
+  });
+
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (!message || typeof message !== "object") return;
@@ -1435,12 +2149,20 @@
         state.section = message.section;
         render();
       }
+    } else if (message.type === "draft") {
+      // centerFill 的答案是一张**表**，不是状态：预设的值变成用户手里正握着的东西，而握着它
+      // 的是这一页。所以它走自己的消息，而不是进载荷——进了载荷，每一次重画都会拿文件里的
+      // 旧值去和用户正在打的字抢同一个位置。
+      if (state.centerDraft === null || typeof message.draft !== "object" || message.draft === null) return;
+      state.centerDraft = message.draft;
+      state.centerCredential = message.draft.credential ?? "";
+      render();
     } else if (message.type === "status") {
       // 一次启动的开始或结束：这不需要重读项目，也不该重画页面。
       paintRuns(message.runs);
     } else if (message.type === "error") {
       stopReading();
-      state.error = typeof message.message === "string" ? message.message : "Unknown error";
+      state.error = typeof message.message === "string" ? message.message : T("shell.unknown-error");
       render();
     }
   });

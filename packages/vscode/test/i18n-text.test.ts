@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -70,8 +70,13 @@ test("the webview reads the table instead of spelling its own", async () => {
   assert.match(js, /globalThis\.AVENIC_TEXT/);
   // 模板里的静态标题按 data-text 重描一遍，脚本里写死的中文/英文句子按 T("键") 取。
   assert.match(js, /\[data-text\]/);
-  const keys = [...js.matchAll(/(?<![\w.])T\("([^"]+)"\)/g)].map((match) => match[1]);
-  assert.ok(keys.length > 0, "动态句子里至少有一个键；一个都没有说明还在写死");
+  // 认的不是「哪个函数被调用」，而是键**长什么样**：键名有自己的文法（命名空间.名字，
+  // 见上面第一条），而这个文法在 main.js 里不属于任何别的东西。所以凡是这么长的字符串
+  // 就必须是表里的键——不管它是 T 的实参、TF 的实参、还是交给 label()/emptyState()/
+  // cardHead() 的那个键。只认 T() 会漏掉后三种（它们不收句子，收键名），而漏掉的那种
+  // 拼错时不报错：屏幕上直接出现 nav.sesions 这样的字。
+  const keys = [...js.matchAll(/"([a-z][a-z0-9]*(?:\.[a-z0-9-]+)+)"/g)].map((match) => match[1]);
+  assert.ok(keys.length > 0, "脚本里一个键都没有，说明整页还在写死");
   for (const key of keys) assert.ok(key in TEXT, `main.js 用了不存在的键 ${key}`);
 });
 
@@ -79,4 +84,45 @@ test("the host fills the slot it promised", async () => {
   const panel = await readFile(path.join(pkg, "src", "dashboard", "panel.ts"), "utf8");
   assert.match(panel, /"\{\{text\}\}"/);
   assert.match(panel, /textScript\(/);
+});
+
+/** 只留字符串字面量里的字：注释和标识符里的中文不算「界面说了中文」。 */
+function stringLiterals(source: string): string {
+  const noBlocks = source.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));
+  return noBlocks.split("\n").map((line) => {
+    let out = "";
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (quote === null) {
+        if (char === "/" && line[i + 1] === "/") break;
+        if (char === '"' || char === "'" || char === "`") quote = char;
+        continue;
+      }
+      if (char === "\\") { out += line[i + 1] ?? ""; i += 1; continue; }
+      if (char === quote) quote = null;
+      else out += char;
+    }
+    return out;
+  }).join("\n");
+}
+
+// 双语只有一份才叫双语：宿主代码里不该再有中文字面量。少了这道闸门，迁移只会做一次就退回
+// 原样——新写的一句中文照样能编译、能跑、能过所有别的测试，只是永远不会说英文，而且没有
+// 人会发现：英文界面上出现一行中文，测试是不看的。词表本身是中文唯一该住的地方。
+test("no host source outside the layer spells its own Chinese", async () => {
+  const offenders: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(file); continue; }
+      if (!entry.name.endsWith(".ts") || file === path.join(pkg, "src", "i18n", "text.ts")) continue;
+      // 行号按原样保留：报出来的位置就是要去改的那一行。
+      stringLiterals(await readFile(file, "utf8")).split("\n").forEach((line, index) => {
+        if (CJK.test(line)) offenders.push(`${path.relative(pkg, file).split(path.sep).join("/")}:${index + 1}`);
+      });
+    }
+  };
+  await walk(path.join(pkg, "src"));
+  assert.deepEqual(offenders, [], `这些行还在自己说中文，把它们交给 src/i18n/text.ts：\n${offenders.join("\n")}`);
 });

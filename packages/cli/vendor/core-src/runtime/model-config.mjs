@@ -8,6 +8,8 @@ import { getAgent } from "./agents.mjs";
 import { AGENT_HOME_VARIABLE, CONFIG_FILE, CONFIG_FORMAT, NATIVE_HOME, accountHome } from "./agent-home.mjs";
 import { environmentHome } from "./environment.mjs";
 import { agentHomeRoot, ownershipFile } from "./project-paths.mjs";
+import { configurationDiff, mergeClaudeSettings, mergeCodexConfig } from "./model-write.mjs";
+import { CLAUDE_ENV } from "./providers.mjs";
 
 // What Avenic's own "API · <scope>" answer prepares, and all it does there.
 //
@@ -170,19 +172,19 @@ function parseConfiguration(agentId, format, source) {
     if (agentId === "claude") {
       const parsed = JSON.parse(source.replace(/^\uFEFF/, ""));
       const env = isPlainObject(parsed?.env) ? parsed.env : {};
-      const baseUrl = text(env.ANTHROPIC_BASE_URL);
+      const baseUrl = text(env[CLAUDE_ENV.base]);
       return {
         baseUrl,
         provider: hostOf(baseUrl),
-        model: text(env.ANTHROPIC_MODEL),
-        credentialSet: Boolean(text(env.ANTHROPIC_AUTH_TOKEN) ?? text(env.ANTHROPIC_API_KEY)),
+        model: text(env[CLAUDE_ENV.model]),
+        credentialSet: Boolean(text(env[CLAUDE_ENV.token]) ?? text(env[CLAUDE_ENV.apiKey])),
         settings: {
-          primary: text(env.ANTHROPIC_MODEL),
-          opus: text(env.ANTHROPIC_DEFAULT_OPUS_MODEL),
-          sonnet: text(env.ANTHROPIC_DEFAULT_SONNET_MODEL),
-          haiku: text(env.ANTHROPIC_DEFAULT_HAIKU_MODEL),
-          subagent: text(env.CLAUDE_CODE_SUBAGENT_MODEL),
-          effort: text(env.CLAUDE_CODE_EFFORT_LEVEL),
+          primary: text(env[CLAUDE_ENV.model]),
+          opus: text(env[CLAUDE_ENV.opus]),
+          sonnet: text(env[CLAUDE_ENV.sonnet]),
+          haiku: text(env[CLAUDE_ENV.haiku]),
+          subagent: text(env[CLAUDE_ENV.subagent]),
+          effort: text(env[CLAUDE_ENV.effort]),
         },
       };
     }
@@ -294,7 +296,21 @@ export async function modelConfigPresence(projectRoot, agents, options = {}) {
     const scope = entry.configScope ?? "global";
     const facts = await readModelConfiguration(projectRoot, agentId, scope, options);
     if (!facts) continue;
-    presence[agentId] = { relative: facts.relative, scope, exists: facts.exists, owned: facts.owned, unchanged: facts.unchanged };
+    presence[agentId] = {
+      relative: facts.relative,
+      scope,
+      exists: facts.exists,
+      owned: facts.owned,
+      unchanged: facts.unchanged,
+      // What the file itself says, so the Center's questions can open on the
+      // configuration a project already has instead of asking from nothing. The
+      // credential is *not* among these: the file either has one or it does not,
+      // and its value never leaves the file.
+      valid: facts.valid,
+      baseUrl: facts.baseUrl,
+      model: facts.model,
+      credentialSet: facts.credentialSet,
+    };
   }
   return presence;
 }
@@ -361,4 +377,51 @@ export async function removeModelConfiguration(projectRoot, agentId, scope, opti
   await rm(target.file, { force: true });
   await forget();
   return { relative: target.relative, outcome: "deleted", removed: true };
+}
+
+/**
+ * What the Model Configuration Center's Apply would do, computed against the
+ * file that is really there — the line-by-line answer a user approves before
+ * anything is written. Nothing here touches the disk beyond the read: the
+ * preview and the write are the same computation, and the second one only
+ * happens when the first has been seen.
+ */
+export async function previewModelConfiguration(projectRoot, agentId, scope, template, options = {}) {
+  const target = modelConfigTarget(projectRoot, agentId, scope, options);
+  if (!target) throw new Error(`${getAgent(agentId).displayName} keeps its own provider configuration`);
+  const exists = existsSync(target.file);
+  const before = exists ? await readFile(target.file, "utf8") : "";
+  // 两个格式两种合并：Claude 是 JSON 文档（解析、改键、写回），Codex 是带注释的
+  // TOML（只动点名的那几行）。哪一种都不允许把读不出来的东西当成空的。
+  const merged = target.format === "json" ? mergeClaudeSettings(before, template) : mergeCodexConfig(before, template);
+  return {
+    relative: target.relative,
+    file: target.file,
+    scope,
+    exists,
+    changed: merged.changed,
+    diff: configurationDiff(before, merged.text),
+    after: merged.text,
+  };
+}
+
+/**
+ * Preview, then write — atomically, at the tightest permissions that still let
+ * the agent read it, because one of the two formats holds the user's key.
+ *
+ * A file Avenic creates here is recorded in the same ledger as one it prepares
+ * empty, so "give it back" keeps working: the record names the path and the hash
+ * of what was written, never a value out of the file, and a file Avenic did not
+ * create is not recorded at all.
+ */
+export async function applyModelConfiguration(projectRoot, agentId, scope, template, options = {}) {
+  const plan = await previewModelConfiguration(projectRoot, agentId, scope, template, options);
+  if (!plan.changed) return { ...plan, written: false };
+  await writeAtomic(plan.file, plan.after);
+  if (!plan.exists) {
+    const ledger = await readLedger(projectRoot);
+    ledger.files[keyOf(agentId, scope)] = { file: plan.relative, createdByAvenic: true, hash: hashOf(plan.after) };
+    await writeLedger(projectRoot, ledger);
+  }
+  return { ...plan, written: true };
 }

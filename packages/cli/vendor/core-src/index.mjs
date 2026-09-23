@@ -62,6 +62,7 @@ export { durableEnvironment } from "./runtime/environment.mjs";
 export { formatSessionDiagnostics } from "./runtime/diagnostics.mjs";
 export { machineEnvironment, agentRuntimeEnvironment, effectiveAgentEnvironment, launchMethodQuestion, launchMethodReadiness, resolveEffectiveAgentRuntime } from "./runtime/agent-runtime.mjs";
 export {
+  applyModelConfiguration,
   ensureModelConfiguration,
   legacyModelConfiguration,
   modelConfigAgents,
@@ -69,10 +70,35 @@ export {
   modelConfigPresence,
   modelConfigRelative,
   modelConfigTarget,
+  previewModelConfiguration,
   readAccountConfiguration,
   readModelConfiguration,
   removeModelConfiguration,
 } from "./runtime/model-config.mjs";
+// 写入前给用户看的那一屏：逐行说清改了什么，而且**每一行都先打码** —— 预览是用户批准
+// 改动时读的东西，它不能自己变成文件权限本来要防住的泄漏点。两个宿主（CLI 与扩展）都
+// 渲染它，谁都不再各留一份遮罩。
+export { configurationDiff, maskSecrets } from "./runtime/model-write.mjs";
+// The Center's two halves: the verified preset table (what a provider is, in the
+// agent's own format) and the merge that puts one in place without taking the
+// file away from its owner. Both UIs render these; neither decides them.
+export { CLAUDE_BLOCKS, CLAUDE_ENV, MODEL_ROLES, PROVIDERS, claudeTemplate, codexTemplate, providerForBaseUrl, providerPreset, providersForAgent } from "./runtime/providers.mjs";
+// The Center's two network calls and the cache between them. Both are made only
+// when a user asks for one, the credential travels in a header, and a result —
+// or a cache file — is a fact about the provider that can never hold a key.
+export { fetchModelCatalog, modelCatalogCachePath, readModelCatalogCache, testProviderConnection, writeModelCatalogCache } from "./runtime/model-catalog.mjs";
+// What the three agents can tell Avenic, in Avenic's own six words: the matrix,
+// the thresholds a dispatcher obeys, and the one translation from a native
+// payload to an event both hosts read.
+export { HOOK_CAPABILITIES, HOOK_EVENTS, HOOK_POLICY, hookCapability, hookFingerprint, hookSupport, normalizeHook } from "./runtime/hooks.mjs";
+// The install half: which file of which native mechanism carries Avenic's entry,
+// whether it is there now, and the exact bytes an install would write — a screen
+// shows the plan and then calls install/uninstall, because "installed" may only
+// mean one thing.
+export { hookPlan, hookStatus, installHooks, uninstallHooks } from "./runtime/hook-install.mjs";
+// The actions file and its one writer: what a notification is, which scope owns
+// it, and the dispatch that reads both scopes when an event arrives.
+export { HOOK_ACTION_KINDS, emitHook, hookActionsPath, readHookActions, readHookActionsAt, writeHookActions } from "./runtime/hook-actions.mjs";
 export { LABELS, agentQuestion, authenticationValue, historyLabel, methodLabel, scopeLabel, scopedHomeValue, signInLabel } from "./labels.mjs";
 export { quoteShellLine, spawnExecutable, spawnExecutableSync } from "./runtime/process.mjs";
 export {

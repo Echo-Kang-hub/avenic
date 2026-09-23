@@ -16,11 +16,17 @@
 // Authentication and configuration are two different questions. Account answers
 // "who signs in", and its scope decides whose account state that is. API answers
 // "run on a provider/model configuration", and its scope decides which of the
-// agent's own configuration files carries it — Avenic prepares that file and
-// never fills it in, so there is nothing else to ask: no provider, no endpoint,
-// no model, no credential. Those are the file's business (the user's own hand,
-// their tooling, cc-switch) and the dashboard reads them back out of the file
-// once they are there.
+// agent's own configuration files carries it. That file is the agent's own — in
+// the agent's keys, in the agent's format — and there are two honest ways to fill
+// it: by hand (Avenic prepares an empty, valid file and writes nothing into it,
+// which is what `Set up by hand` means, and the default), or through the Center,
+// which asks for a provider, a model and — only when the file has no credential
+// yet — a key, and merges exactly those into the file the agent already reads.
+//
+// The Center is a way to answer, never a settings format of its own: the answers
+// do not become Avenic's configuration. They are written into the agent's file and
+// read back out of it, because a provider the interface remembers and a provider
+// the file holds are two answers, and only the second one is real.
 //
 // A step answers four questions about itself and nothing else:
 //   - what may be chosen (`options`),
@@ -37,8 +43,12 @@
 import { AGENTS, getAgent } from "./agents.mjs";
 import { accountHomeRelative } from "./agent-home.mjs";
 import { LABELS, agentQuestion, authenticationValue, historyLabel, methodLabel, scopeLabel, scopedHomeValue } from "../labels.mjs";
-import { modelConfigRelative } from "./model-config.mjs";
+import { applyModelConfiguration, modelConfigRelative, previewModelConfiguration } from "./model-config.mjs";
+import { claudeTemplate, codexTemplate, providerForBaseUrl, providerPreset, providersForAgent } from "./providers.mjs";
 import { applyProjectConfiguration, leftoverTargets, methodSwitches, releasePreviousMethod } from "./session-interop.mjs";
+
+/** The answer that means "the file is mine to fill in" — and the default one. */
+const BY_HAND = "hand";
 
 const titleCase = (word) => word.charAt(0).toUpperCase() + word.slice(1);
 
@@ -69,6 +79,117 @@ export function projectDraft(config, options = {}) {
 }
 
 const scopeOf = (entry) => (entry?.authMethod === "account" ? entry.accountScope : entry.configScope);
+
+/**
+ * The Center's questions for one API agent, as steps.
+ *
+ * They are asked only where Avenic knows the agent's own format — `providersForAgent`
+ * is the answer to that, and for an agent that keeps its own provider registry it
+ * is empty, so OpenCode is asked none of these. The first question always offers
+ * `Set up by hand` and opens on it unless the agent's file already names a
+ * provider: a project that never opens the Center must not be changed by it.
+ *
+ * The key is asked last, and only when the file has no credential yet — someone
+ * who already has one in the file is changing a model, not re-entering a secret.
+ * Codex is never asked for a key at all: its configuration names the environment
+ * variable its key lives in, so the secret stays in the environment, and the one
+ * thing the user does need to know is said in a note rather than asked.
+ *
+ * `entry.baseUrl`/`entry.model` are filled from the file the agent already reads
+ * when the two hosts disagree about nothing: the value a previous answer left in
+ * the draft wins, and the file is the fallback, so going back re-opens the
+ * question with the answer it already has.
+ */
+function centerSteps(draft, agentId, name, entryOf, setField) {
+  const providers = providersForAgent(agentId);
+  if (providers.length === 0) return [];
+  const ask = (step) => ({ kind: "single", group: agentId, groupTitle: name, ...step });
+  const chosenProvider = (draft_, entry) => entry.provider ?? providerForBaseUrl(agentId, draft_.files?.[agentId]?.baseUrl)?.id ?? BY_HAND;
+  const presetOf = (entry) => providerPreset(entry.provider);
+  const steps = [
+    ask({
+      id: `provider:${agentId}`,
+      title: agentQuestion(name, LABELS.provider),
+      description: "Set up by hand — Avenic prepares the file and writes nothing into it · or choose a provider and the Center fills in the endpoint and model it documents",
+      options: [
+        { value: BY_HAND, label: "Set up by hand", description: "your own file, your own tool" },
+        ...providers.map((preset) => ({ value: preset.id, label: preset.displayName, description: preset.docs })),
+      ],
+      value: (draft_) => chosenProvider(draft_, entryOf(draft_, agentId)),
+      write: (draft_, value) => setField(draft_, agentId, "provider", value),
+      summary: (draft_) => {
+        const entry = entryOf(draft_, agentId);
+        const provider = chosenProvider(draft_, entry);
+        return { label: LABELS.provider, value: provider === BY_HAND ? "by hand" : providerPreset(provider)?.displayName ?? provider };
+      },
+    }),
+  ];
+  const entry = entryOf(draft, agentId);
+  if ((entry.provider ?? null) === null || entry.provider === BY_HAND) return steps;
+  const preset = presetOf(entry);
+  if (preset === null) return steps;
+  const format = preset[agentId];
+  // A preset with no address of its own is a proxy the user runs: the address is
+  // theirs to type, and without it there is nothing to write.
+  if (format.baseUrl === null) {
+    steps.push({
+      kind: "text",
+      group: agentId,
+      groupTitle: name,
+      id: `baseurl:${agentId}`,
+      title: agentQuestion(name, LABELS.baseUrl),
+      placeholder: "https://gateway.internal/anthropic",
+      emptyMessage: "Enter the provider's base URL",
+      value: (draft_) => entryOf(draft_, agentId).baseUrl ?? "",
+      write: (draft_, value) => setField(draft_, agentId, "baseUrl", value),
+      summary: (draft_) => ({ label: LABELS.baseUrl, value: entryOf(draft_, agentId).baseUrl ?? "" }),
+    });
+  }
+  steps.push({
+    kind: "text",
+    group: agentId,
+    groupTitle: name,
+    id: `model:${agentId}`,
+    title: agentQuestion(name, LABELS.model),
+    // The names the vendor documents ride along as the hint, not as a list to
+    // choose from: a provider's models change more often than this file does.
+    placeholder: preset.curated.length > 0 ? preset.curated.join(" · ") : "the model id your provider documents",
+    emptyMessage: "Enter a model",
+    value: (draft_) => entryOf(draft_, agentId).model ?? draft_.files?.[agentId]?.model ?? "",
+    write: (draft_, value) => setField(draft_, agentId, "model", value),
+    summary: (draft_) => ({ label: LABELS.model, value: entryOf(draft_, agentId).model ?? "" }),
+  });
+  if (agentId === "codex") {
+    steps.push({
+      id: `key-note:${agentId}`,
+      kind: "note",
+      group: agentId,
+      groupTitle: name,
+      title: `${name} credential`,
+      summary: () => `${preset.codex.envKey} — Codex reads its key from that environment variable, so nothing secret is written into its configuration file.`,
+    });
+    return steps;
+  }
+  steps.push({
+    kind: "text",
+    group: agentId,
+    groupTitle: name,
+    id: `key:${agentId}`,
+    title: agentQuestion(name, LABELS.credential),
+    placeholder: "the key is written to the configuration file and never shown again",
+    mask: true,
+    // 文件里已经有凭据：留空是「别动它」，不是「清掉它」。
+    optional: Boolean(draft.files?.[agentId]?.credentialSet),
+    emptyMessage: "Enter the API key, or answer Set up by hand to keep your credential out of the file",
+    value: () => "",
+    write: (draft_, value) => setField(draft_, agentId, "apiKey", value),
+    summary: (draft_) => ({
+      label: LABELS.credential,
+      value: entryOf(draft_, agentId).apiKey ? `written to ${modelConfigRelative(agentId, scopeOf(entryOf(draft_, agentId)) ?? "global")}` : "left as the file has it",
+    }),
+  });
+  return steps;
+}
 
 /** The steps for a draft, as the host should present them. */
 export function projectWizardSteps(draft, editing = false) {
@@ -166,6 +287,7 @@ export function projectWizardSteps(draft, editing = false) {
             value: modelConfigRelative(agentId, entryOf(draft_, agentId).configScope ?? "global"),
           }),
         }));
+        steps.push(...centerSteps(draft, agentId, name, entryOf, setField));
       }
     }
     steps.push(single({
@@ -301,12 +423,66 @@ export function projectDraftSubmission(draft) {
 }
 
 /**
+ * The Center's answers, as the templates that would be written — built and
+ * *previewed* before anything is committed, so a file Avenic cannot read stops
+ * the run while the project settings are still untouched and the user is left
+ * with both answers in view rather than one of them.
+ *
+ * The credential is read from the in-memory draft here and nowhere else: it is
+ * not part of the submission, so it never reaches the project's own settings,
+ * and the only file that ever holds it is the agent's own.
+ */
+async function centerPlans(projectRoot, draft, options) {
+  const plans = [];
+  for (const agentId of draft.selected) {
+    const entry = draft.agents?.[agentId] ?? {};
+    if (entry.authMethod !== "api" || !entry.provider || entry.provider === BY_HAND) continue;
+    const scope = entry.configScope ?? "global";
+    // 文件里已经写着这家供应商：那么这是一次编辑，不是一次新建 —— 供应商推荐的
+    // 模型角色属于「新建一份配置」这件事，不属于「回来改一下 History」。
+    const presetFills = providerForBaseUrl(agentId, draft.files?.[agentId]?.baseUrl)?.id !== entry.provider;
+    // 凭据那一问留空是「别动它」，不是「清掉它」，而模板把空凭据当作错误 —— 所以
+    // 空的答案在这里就变成「不给这个字段」（那是模板对「别动它」的说法）。两者是
+    // 同一件事的两半：只有这个知道文件里已经有凭据的地方能把空答案读成「保持原样」，
+    // 别的地方给的空白仍然是一份会失败的配置，而不是一份悄悄没有凭据的配置。
+    const apiKey = typeof entry.apiKey === "string" && entry.apiKey.trim() === "" ? undefined : entry.apiKey;
+    const template = agentId === "codex"
+      ? codexTemplate(entry.provider, { model: entry.model, baseUrl: entry.baseUrl })
+      : claudeTemplate(entry.provider, { apiKey, model: entry.model, baseUrl: entry.baseUrl, roles: entry.roles, presetRoles: presetFills }, entry.blocks ?? []);
+    const preview = await previewModelConfiguration(projectRoot, agentId, scope, template, options);
+    plans.push({ agentId, scope, template, preview });
+  }
+  return plans;
+}
+
+/**
  * Commit a finished draft through the one project-settings writer, and — only
  * when the wizard's own question was answered "Remove" — give back what the
  * previous answer left behind. After, never before: a write that fails must not
  * leave the user with neither answer.
+ *
+ * The Center's answers are committed first, and only after all of them have been
+ * previewed: each one is a merge into a file that also holds the user's own
+ * permissions, hooks and plugins, so what comes back is the same projection a
+ * person reads on screen — which file, whether it changed, and the masked diff —
+ * never the file's next bytes, which hold the credential.
  */
 export async function applyProjectDraft(projectRoot, draft, options = {}) {
+  const plans = await centerPlans(projectRoot, draft, options);
+  const center = [];
+  for (const plan of plans) {
+    const applied = await applyModelConfiguration(projectRoot, plan.agentId, plan.scope, plan.template, options);
+    center.push({
+      agentId: plan.agentId,
+      relative: applied.relative,
+      file: applied.file,
+      scope: applied.scope,
+      exists: applied.exists,
+      changed: applied.changed,
+      written: applied.written,
+      diff: applied.diff,
+    });
+  }
   const result = await applyProjectConfiguration(projectRoot, projectDraftSubmission(draft), options);
   const released = [];
   if (draft.switchMode === "remove") {
@@ -315,5 +491,5 @@ export async function applyProjectDraft(projectRoot, draft, options = {}) {
       if (outcome) released.push(outcome);
     }
   }
-  return { ...result, released };
+  return { ...result, released, center };
 }

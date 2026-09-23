@@ -241,6 +241,10 @@ button {
 .icon[data-icon="chevron-down"]::before  { content: "\eab4"; }
 .icon[data-icon="arrow-right"]::before   { content: "\ea9c"; }
 .icon[data-icon="list"]::before          { content: "\eb17"; }
+.icon[data-icon="bell-dot"]::before      { content: "\eb9a"; }
+.icon[data-icon="server-process"]::before { content: "\eba2"; }
+.icon[data-icon="trash"]::before         { content: "\ea81"; }
+.icon[data-icon="edit"]::before          { content: "\ea73"; }
 
 /* --------------------------------------------------------------- sidebar -- */
 
@@ -1372,3 +1376,156 @@ button {
  * on purpose: it is the second half, not a second label. */
 .zh { color: var(--av-text-muted); font-size: 11px; margin-left: 6px; font-weight: 400; }
 .nav-item .label { display: inline-flex; align-items: baseline; }
+
+/* ----------------------------------------------------- model configuration -- */
+
+/* 这一页是一张表单，所以它是一条线：每块一个自己的小标题，控件占满那一行的宽度。
+ * 输入框不并排——两个并排的框会让人猜哪两个是一对，而这里的每一行本来就是一问一答。 */
+.center .section-body { display: flex; flex-direction: column; gap: 9px; padding-top: 11px; }
+
+/* 一行读不完的宽度对表单没有用：字段会拉得比眼睛能扫的一行还长。 */
+.center-body { max-width: 820px; }
+
+/* Simple/Advanced：一组互斥的档位。选中的那一档用品牌色，和侧栏当前那一条同一个说法。
+ * 钩子页上的两个作用域与它自己的 Advanced 是同一件东西（一排里选一个），所以三条规则
+ * 共用一个说法，而不是把这几行抄三遍。 */
+.center-modes, .scope-switch { display: flex; gap: 6px; }
+.center-mode, .scope-pick, .advanced-pick { height: 26px; padding: 0 10px; font-size: 12px; }
+.center-mode.active, .scope-pick.active, .advanced-pick.active { border-color: var(--av-brand-line); background: var(--av-brand-soft); color: var(--av-brand-text); font-weight: 600; }
+
+.center .tabs { margin: 0 0 0 var(--av-list-inset); }
+
+/* 第一行答的是「这次写入会落到哪个文件」：认证方式是宿主的词（Account | API），
+ * 文件名是等宽的一小段——路径是拿来核对的，不是拿来读的。 */
+.center-facts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.center-target { display: inline-flex; align-items: center; gap: 8px; color: var(--av-text-label); font-family: var(--av-font-mono); font-size: 12px; overflow-wrap: anywhere; }
+
+.center-note {
+  margin: 0; padding: 8px 10px;
+  border: 1px solid var(--av-brand-line); border-radius: var(--av-radius-sm);
+  background: var(--av-brand-soft); color: var(--av-text-body); font-size: 12.5px;
+}
+
+.center-caption { color: var(--av-text-label); font-size: 12px; font-weight: 600; }
+
+/* 预设是一只一只的方块：名字一行、地址一行。窄窗口里它自己往下折，而不是把名字压成
+ * 两行——地址是这里最长的东西，所以由它决定最小的宽度。 */
+.center-providers { display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 8px; }
+.provider-tile {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left;
+  padding: 8px 10px; min-height: 52px;
+  border: 1px solid var(--av-border); border-radius: var(--av-radius-sm);
+  background: var(--av-surface-hi); color: var(--av-text-body);
+}
+.provider-tile:hover { border-color: var(--av-brand-line); }
+.provider-tile.active { border-color: var(--av-brand-line); background: var(--av-brand-soft); }
+.provider-name { font-size: 13px; font-weight: 600; }
+.provider-url { color: var(--av-text-dim); font-family: var(--av-font-mono); font-size: 11px; overflow-wrap: anywhere; }
+
+.center-input {
+  width: 100%; height: var(--av-control-height); padding: 0 10px;
+  border: 1px solid var(--av-border); border-radius: var(--av-radius-sm);
+  background: var(--av-bg); color: var(--av-text);
+  font-family: var(--av-font); font-size: 13px;
+}
+.center-input::placeholder { color: var(--av-text-dim); }
+.center-input:focus-visible { border-color: var(--av-brand); }
+
+.center-row { display: flex; align-items: center; gap: 8px; }
+.center-hint { color: var(--av-text-dim); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* 角色表是三列：角色名、文件里现在的那一个、供应商推荐的那一个。推荐值单独一列而不是
+ * 塞进占位符里——占位符一打字就没了，而「厂商说该用什么」是要一路看着的。 */
+.center-roles { display: grid; gap: 6px; }
+.center-role { display: grid; grid-template-columns: 104px minmax(0, 1fr) minmax(0, 190px); align-items: center; gap: 8px; }
+.center-role-name { color: var(--av-text-body); font-size: 12.5px; }
+
+.center-blocks { display: flex; flex-wrap: wrap; gap: 6px 14px; }
+.center-block { display: inline-flex; align-items: center; gap: 7px; color: var(--av-text-body); font-size: 12.5px; }
+
+.center-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; }
+/* 灰按钮不发光标事件，所以「为什么灰着」写在旁边，不靠 tooltip。 */
+.center-blocker { color: var(--av-brand-text); font-size: 12px; }
+.center-blocker[hidden] { display: none; }
+
+/* 「问出去的那句话现在是什么答案」在这一页上是一种东西，两页共用同一个说法：钩子页的
+ * 预览与写入结果和中心的那一行长得一样，因为它就是同一件事。 */
+.center-result, .hook-result { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--av-text-body); }
+.center-result.ok .icon, .hook-result.ok .icon { color: var(--av-green); }
+.center-result.bad .icon, .hook-result.bad .icon { color: var(--av-brand); }
+.center-result.diff, .hook-result.diff { display: block; }
+/* 「什么都没变」不是成功也不是失败，所以它的图标和字都是次要的那一档。 */
+.hook-result.muted .icon { color: var(--av-text-dim); }
+
+/* 要写进去的那份文件读起来就是这个样子：等宽、按行、三色（原样、加、减）。 */
+.diff-body { margin: 6px 0 0; max-height: 260px; overflow: auto; background: var(--av-bg); border: 1px solid var(--av-border-soft); border-radius: var(--av-radius-sm); }
+.diff-line { padding: 1px 8px; font-family: var(--av-font-mono); font-size: 11.5px; color: var(--av-text-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-add { background: var(--av-green-soft); color: var(--av-green-text); }
+.diff-remove { background: var(--av-brand-soft); color: var(--av-brand-text); }
+.diff-same { color: var(--av-text-dim); }
+
+@media (max-width: 860px) {
+  .center-role { grid-template-columns: 90px minmax(0, 1fr); }
+  .center-role .center-hint { grid-column: 2; }
+}
+
+/* ⋯ 和它的菜单是同一格里的两件东西：按钮钉在行尾，菜单悬在它下面。这一格是定位祖先，
+ * 所以菜单的 right:0 说的是「和 ⋯ 的右边缘对齐」——一份菜单不该把行的宽度撑开。 */
+.menu-wrap { position: relative; display: inline-flex; }
+
+/* 灰掉的快捷方式那一句话挂在包着它的盒子上（灰按钮不发光标事件），所以盒子得占住那一格：
+ * 高度与按钮一样，宽度跟着网格走。 */
+.quick-wrap { display: flex; min-width: 0; }
+.quick-wrap .quick-btn { width: 100%; }
+
+/* ------------------------------------------- hooks & notifications page -- */
+
+/* 这一页是两张卡（装没装、响了做什么），每张卡里是一行一行。行与行之间只有一条细线：
+ * 这一页要读的是「哪一个 agent、哪一条通知」，不是两块要分开看的区域。 */
+.hooks-body { display: flex; flex-direction: column; gap: 10px; padding-top: 11px; }
+.hooks-list { display: flex; flex-direction: column; }
+.hook-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 24px 9px 14px;
+  border-top: 1px solid var(--av-border-soft);
+}
+.hook-row:first-child { border-top: none; }
+.hook-row .row-main { flex-direction: column; align-items: flex-start; gap: 3px; }
+.hook-name-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.hook-name-line .mark { width: 16px; height: 16px; }
+.hook-name { font-size: 13px; font-weight: 600; color: var(--av-text); }
+/* 路径是拿来核对的，不是拿来读的：等宽，窄了可以折行。 */
+.hook-file { display: inline-flex; align-items: center; gap: 6px; color: var(--av-text-dim); font-family: var(--av-font-mono); font-size: 11.5px; overflow-wrap: anywhere; }
+/* 「不支持」与机制自己的条件都是这一行的一部分，所以它们用同一档字：说清楚，但不抢标题。 */
+.hook-note { margin: 1px 0 0; color: var(--av-text-label); font-size: 12px; overflow-wrap: anywhere; }
+.hook-facts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--av-text-dim); font-size: 11.5px; }
+.hook-id { font-family: var(--av-font-mono); }
+.hook-target { color: var(--av-text-body); font-family: var(--av-font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.hook-row .row-actions { margin-left: auto; }
+
+/* 加一条那一行：名称在左，四种各一颗按钮。 */
+.hook-add { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 24px 4px 14px; border-top: 1px solid var(--av-border-soft); }
+.hook-add-label { color: var(--av-text-label); font-size: 12px; font-weight: 600; margin-right: 2px; }
+/* 命令类那一句警告：它既是「为什么那颗按钮是灰的」，也是那一档本身的风险说明，所以它
+ * 一直在这一行下面，不藏在 tooltip 里。 */
+.hook-warning { margin: 0; padding: 8px 14px 10px; color: var(--av-brand-text); font-size: 12px; overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------ settings & about -- */
+
+.settings-body { display: flex; flex-direction: column; gap: 10px; padding-top: 11px; max-width: 820px; }
+.about-rows { display: flex; flex-direction: column; }
+.about-row {
+  display: grid; grid-template-columns: 190px minmax(0, 1fr) auto;
+  align-items: center; gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--av-border-soft);
+}
+.about-row:first-child { border-top: none; }
+.about-label { color: var(--av-text-label); font-size: 12.5px; }
+.about-value { color: var(--av-text-body); font-family: var(--av-font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.settings-note { margin: 0; color: var(--av-text-dim); font-size: 11.5px; }
+
+@media (max-width: 860px) {
+  .about-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .about-value { grid-column: 1; }
+}

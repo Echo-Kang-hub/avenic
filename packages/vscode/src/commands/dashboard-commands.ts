@@ -6,10 +6,14 @@ import { projectStatus } from "../services/agents.ts";
 import * as skills from "../services/skills.ts";
 import { defaultSpec, sync } from "../services/catalog.ts";
 import { continueSession } from "../services/continue.ts";
+import { aboutFileFor } from "../services/about.ts";
+import { DOCS_URL } from "../product.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { importSkillsFlow, type ImportUi } from "../ui/skill-import.ts";
 import type { ActivityLog } from "../ui/activity.ts";
 import { reportDashboardFailure, type FailureUi } from "../views/dashboard-failure.ts";
+import { handleCenterAction } from "./center-commands.ts";
+import { handleHookAction } from "./hooks-commands.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
 
@@ -91,14 +95,55 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
           if (started === true) activity.record(`${getAgent(action.agent).displayName} session started`);
           return;
         }
+        case "change": {
+          // Change 落在哪一页，由这个 agent 自己那份答案决定：API 的模型配置归模型配置
+          // 中心（那一页读写的正是这个 agent 的文件），Account 与自管的 agent 仍然走那场
+          // 项目问答。分流看的是 agent 而不是项目 —— 同一个项目里 Claude 在 API 上、Codex
+          // 在账号上，是常态，把 agent 忘掉正是 P34。
+          const auth = root === null ? null : (await projectStatus(root)).agents.find((agent) => agent.id === action.agent)?.auth ?? null;
+          if (auth?.method === "api") {
+            panel().centerOn(action.agent);
+            return;
+          }
+          await vscode.commands.executeCommand("avenic.agents.configureProject");
+          return;
+        }
         case "reconfigure":
-        case "change":
         case "initialize":
         case "switchHistory":
-          // 修改、初始化与切换历史模式是同一场问答的不同入口：问题与写盘都在 core
+          // 重新配置、初始化与切换历史模式是同一场问答的不同入口：问题与写盘都在 core
           // 的 projectDraft/applyProjectDraft 里，插件不另做一套。
           await vscode.commands.executeCommand("avenic.agents.configureProject");
           return;
+        case "centerOpen":
+        case "centerFill":
+        case "centerOpenFile":
+        case "centerOpenDocs":
+        case "centerPreview":
+        case "centerTest":
+        case "centerRefreshModels":
+        case "centerApply":
+          // 这一页的八条都归 center-commands：表单握在页面手里，这里只把宿主接上去。
+          await handleCenterAction(action, { root: deps.root, queue, refresh, activity, open: (agent) => openAgentConfiguration(root, agent) });
+          return;
+        case "hooksOpen":
+        case "hookPlan":
+        case "hookInstall":
+        case "hookUninstall":
+        case "hookActionAdd":
+        case "hookActionEdit":
+        case "hookActionRemove":
+          // 钩子与通知那一页同理：页面只说「哪一档、哪个 agent、哪一条」，文件与问答都在
+          // hooks-commands 里，凭据那一问也只在那一层（密码框）。
+          await handleHookAction(action, { root: deps.root, queue, refresh, activity });
+          return;
+        case "revealFile": {
+          // 设置页那一行只递回一个 key（协议里它只允许是 key 的形状）：路径由宿主解析，
+          // 解析不出来就什么都不开 —— 页面拿不到、也编不出一个要打开的文件。
+          const target = aboutFileFor(root, action.key, context.globalStorageUri.fsPath);
+          if (target !== null) await reveal(vscode.Uri.file(target), { pick: null, fallback: null });
+          return;
+        }
         case "openConfig":
           await openAgentConfiguration(root, action.agent);
           return;
@@ -145,11 +190,13 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
           activity.show();
           return;
         case "openDocs":
-          // 随包 README 就是这份插件的文档：不在运行时去取远程页面，VSIX 里有的
-          // 东西才保证「点开就有」。
-          await vscode.commands.executeCommand("markdown.showPreview", vscode.Uri.joinPath(context.extensionUri, "README.md"));
+          // 文档是这份产品的那个真实地址（src/product.ts，测试盯着它与清单里的
+          // repository 是同一个）：随包 README 讲的是这个插件自己，不是这份文档。
+          await vscode.env.openExternal(vscode.Uri.parse(DOCS_URL));
           return;
         case "openSettings":
+          // 设置那一页是 Avenic 自己的（版本、路径、这一档的名单都在上面说清楚），而
+          // 这一条是那一页上唯一一条离开页面的行：VS Code 自己的设置，按扩展过滤。
           await vscode.commands.executeCommand("workbench.action.openSettings", `@ext:${context.extension.id}`);
           return;
         case "openFolder":

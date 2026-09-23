@@ -134,7 +134,10 @@ test("skipping to a section from the sidebar tells the host the same thing", asy
   const { source, sections } = await page();
   const rendered = renderDataMessage(await payload(), source, { seed: sidebar(sections) });
 
-  const skills = rendered.byId.get("nav")?.querySelectorAll(".nav-item[data-section]")[4];
+  // 按分区名找，不按序号：侧栏多一页（中心）就把后面每一格都推到下一个位置，而这一条
+  // 问的是「点这一页会不会告诉宿主」。
+  const skills = rendered.byId.get("nav")?.querySelectorAll(".nav-item[data-section]")
+    .find((item) => item.getAttribute("data-section") === "skills");
   assert.ok(skills);
   fire(skills);
   assert.deepEqual(activeSections(rendered), ["skills"]);
@@ -539,10 +542,14 @@ test("Continue and Set as Active keep the behaviour the Overview cards already h
   const shared = renderDataMessage(await payload({ transcript: TRANSCRIPT }), source, { seed: sidebar(sections) });
   openSessions(shared);
 
-  fire(button(shared, "Set as Active"));
+  const reader = browser(shared).querySelectorAll(".session-view")[0];
+  // 这一条问的是「读的这一条能不能设成当前那条」，所以点的是右半边头部那一个：列表里
+  // 每一行也有自己的（作用于那一行的原生会话），页面上同名的不止一个。
+  const setActive = reader.querySelectorAll(".btn").find((node) => node.textContent.includes("Set as Active"));
+  assert.ok(setActive, "右边这一段有个 Set as Active");
+  fire(setActive);
   assert.deepEqual(lastPosted(shared, "action"), { type: "action", action: "setActive", id: TRANSCRIPT.id }, "共享历史里能把它设成当前那条");
 
-  const reader = browser(shared).querySelectorAll(".session-view")[0];
   const continueButton = reader.querySelectorAll(".btn").find((node) => node.textContent.includes("Continue"));
   assert.ok(continueButton, "右边这一段有个 Continue");
   fire(continueButton);
@@ -719,5 +726,239 @@ test("a plain push leaves the half where the reader put it", async () => {
   rendered.send({ type: "data", payload: base });
   const titles = browser(rendered).querySelectorAll(".card-title").map((node) => node.textContent);
   assert.ok(titles.includes("Agent Sessions"), `一次推送不该换掉用户选的那一半，实际表头有 ${titles.join(" | ")}`);
+});
+
+/* --------------------------------------------------- hooks & notifications -- */
+//
+// 这一页最贵的三件事都不是「画错了」那一类，所以每一条都由用例盯着一件具体的动作：
+//   1. 换一档作用域必须真的去读那一档（不是只换一个高亮）。
+//   2. 每一行右边那颗按钮必须发出它自己那一件事（装、卸、预览、改、删），
+//      一颗什么都不发生的按钮和一个坏掉的按钮，用户看起来是一样的。
+//   3. 命令类那一颗在 Advanced 之前是灰的，理由就写在它下面。
+//
+// 阈值那两个数只从载荷读：用例故意给一组不是 20/5 的数，页面要是自己记着默认值，
+// 「42 秒」那一句就会露馅。
+
+const HOOK_ACTIONS = [
+  { id: "openclaw", kind: "openclaw", target: "http://127.0.0.1:18789/hooks/avenic", tokenSet: false, tokenEnv: "OPENCLAW_HOOK_TOKEN", timeoutMs: null },
+  { id: "webhook-release", kind: "webhook", target: "https://example.test/hook", tokenSet: true, tokenEnv: null, timeoutMs: 30000 },
+];
+
+const HOOKS: Payload = {
+  scope: "project",
+  agents: [
+    { agent: "claude", displayName: "Claude Code", mechanism: "settings-hooks", version: "2.1.0", supported: true, supportNote: null, file: "/p/.claude/settings.json", installed: true, caveat: "" },
+    { agent: "codex", displayName: "Codex", mechanism: "config-hooks", version: "0.9.7", supported: true, supportNote: null, file: "/p/.codex/config.toml", installed: false, caveat: "Codex only runs a hook you have reviewed." },
+    { agent: "opencode", displayName: "OpenCode", mechanism: "plugin", version: "1.4.2", supported: false, supportNote: "Unsupported by OpenCode 1.4.2", file: "/p/.config/opencode/plugin/avenic.js", installed: false, caveat: "" },
+  ],
+  actions: HOOK_ACTIONS,
+  actionsFile: "/p/.avenic/hook-actions.json",
+  kinds: ["desktop", "openclaw", "webhook", "command"],
+  completedMinSeconds: 42,
+  dedupeSeconds: 7,
+};
+
+/** 翻到某一页：走的是侧栏那一格，和用户走的是同一条路。 */
+function openSection(rendered: Rendered, section: string): void {
+  const item = rendered.byId.get("nav")?.querySelectorAll(".nav-item[data-section]").find((node) => node.getAttribute("data-section") === section);
+  assert.ok(item, `侧栏上应当有「${section}」这一格`);
+  fire(item);
+}
+
+async function hooksPage(patch: Payload = {}): Promise<Rendered> {
+  const { source, sections } = await page();
+  const rendered = renderDataMessage(await payload({ hooks: HOOKS, ...patch }), source, { seed: sidebar(sections) });
+  openSection(rendered, "hooks");
+  return rendered;
+}
+
+/** 一张卡里的一行：agent 那一张与通知那一张的行长得一样，先认出是哪一张。 */
+function hookRow(rendered: Rendered, text: string): StubNode {
+  const found = rendered.content.querySelectorAll(".hook-row").find((row) => row.textContent.includes(text));
+  assert.ok(found, `这一页上应当有一行提到「${text}」，实际是 ${rendered.content.querySelectorAll(".hook-row").map((row) => row.textContent).join(" | ")}`);
+  return found;
+}
+
+/** 行里有没有这么一颗按钮。「没有」本身也是一种答案（装着的行不给第二颗「安装」）。 */
+function findRowButton(row: StubNode, label: string): StubNode | undefined {
+  return row.querySelectorAll("button").find((node) => node.textContent === label);
+}
+
+/** 行里的按钮：两行可能都有同名的一颗（「View Generated Config」就有两颗），所以按行取。 */
+function rowButton(row: StubNode, label: string): StubNode {
+  const found = findRowButton(row, label);
+  assert.ok(found, `这一行上应当有一颗「${label}」，实际是 ${row.querySelectorAll("button").map((node) => node.textContent).join(" | ")}`);
+  return found;
+}
+
+// 桩记着「这一页一共创建过什么」，所以重画之后按文案找按钮要取**当前树上**那一颗：
+// 第一颗是上一帧的，它上面的字与灰不灰都是上一帧的答案。
+function liveButton(rendered: Rendered, label: string): StubNode {
+  const found = rendered.content.querySelectorAll("button").find((node) => node.textContent === label);
+  assert.ok(found, `这一页上应当有一颗「${label}」，实际是 ${rendered.content.querySelectorAll("button").map((node) => node.textContent).join(" | ")}`);
+  return found;
+}
+
+test("the hooks page's scope switch asks the host for that scope, and never claims it before the rows arrive", async () => {
+  const rendered = await hooksPage();
+  assert.equal(liveButton(rendered, "Project").getAttribute("aria-pressed"), "true", "打开时读的是项目那一档");
+  assert.equal(liveButton(rendered, "Global").getAttribute("aria-pressed"), "false");
+
+  fire(liveButton(rendered, "Global"));
+
+  // 换它换的是「这份名单写在哪里」，所以它是一次真的读盘：页面把落点交给宿主，请它读那一档。
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hooksOpen", scope: "global" });
+  // 整页刷新会把用户从这一页拽走：换一档要的是那一档的数据，不是重开一次面板。
+  assert.equal(rendered.posted.some((message) => (message as { type?: string }).type === "refresh"), false, "换一档不是重读整份载荷");
+  // 回包之前高亮不动：此刻画在纸上的三行与那份名单都是项目那一档的，「已选全局」会是这一页
+  // 上唯一一句与事实相反的话（中心那一栏换 agent 用的是同一条规矩：载荷画哪儿，哪儿才亮）。
+  assert.equal(liveButton(rendered, "Project").getAttribute("aria-pressed"), "true", "回包之前不替宿主宣布答案");
+
+  // 宿主把那一档读回来，高亮与内容一起换过去。
+  rendered.send({ type: "data", payload: await payload({ hooks: { ...HOOKS, scope: "global" } }) });
+  assert.equal(liveButton(rendered, "Global").getAttribute("aria-pressed"), "true", "宿主说读的是哪一档，高亮就在哪一档");
+  assert.equal(liveButton(rendered, "Project").getAttribute("aria-pressed"), "false");
+  fire(rowButton(hookRow(rendered, "Webhook"), "Edit"));
+  // 改与删报的是**画出来的那一档**：页面不是凭自己的高亮记的，是凭载荷说的。
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookActionEdit", scope: "global", id: "webhook-release" });
+});
+
+test("every agent row offers exactly what this scope can do, and says what Avenic cannot", async () => {
+  const rendered = await hooksPage();
+
+  const installed = hookRow(rendered, "Claude Code");
+  assert.ok(installed.textContent.includes("2.1.0"), "行上写着装的是哪个版本——「不支持」那一句说的就是它");
+  assert.ok(installed.textContent.includes("Installed"));
+  assert.ok(installed.textContent.includes("/p/.claude/settings.json"), "行上写着这份机制是哪个文件");
+  rowButton(installed, "Uninstall");
+  assert.equal(findRowButton(installed, "Install"), undefined, "装着的行不给第二颗「安装」");
+  fire(rowButton(installed, "View Generated Config"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookPlan", agent: "claude", scope: "project" });
+  fire(rowButton(installed, "Uninstall"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookUninstall", agent: "claude", scope: "project" });
+
+  const missing = hookRow(rendered, "Codex");
+  assert.ok(missing.textContent.includes("Not installed"));
+  assert.ok(missing.textContent.includes("Codex only runs a hook you have reviewed."), "机制自己带的条件就在这一行上，不让用户去别处找");
+  fire(rowButton(missing, "Install"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookInstall", agent: "codex", scope: "project" });
+
+  // 不支持的行：core 说的是哪一句就在行上，而且它一颗按钮都不给——一颗点下去什么都不会发生
+  // 的按钮，和一颗坏掉的按钮，看起来是一样的。
+  const unsupported = hookRow(rendered, "OpenCode");
+  assert.ok(unsupported.textContent.includes("Unsupported by OpenCode 1.4.2"), "「不支持」是哪个版本不支持，说清楚");
+  assert.deepEqual(unsupported.querySelectorAll("button"), [], "不支持的行没有可点的东西");
+});
+
+test("the command kind stays shut until Advanced, and the page reads core's threshold instead of its own", async () => {
+  const rendered = await hooksPage();
+
+  // Advanced 之前：那一颗是灰的，理由（会在这台机器上跑一个程序）就写在它下面。
+  assert.equal(liveButton(rendered, "Command").disabled, true, "没开 Advanced 时命令类加不了");
+  assert.ok(rendered.content.textContent.includes("A command notification runs a program on this machine every time a hook fires."), "灰着的那一颗必须把理由写出来");
+
+  fire(liveButton(rendered, "Advanced"));
+  assert.equal(liveButton(rendered, "Command").disabled, false, "开了 Advanced，命令类那一颗就可用");
+  assert.ok(liveButton(rendered, "Advanced").className.includes("active"));
+  fire(liveButton(rendered, "Command"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookActionAdd", scope: "project", kind: "command" });
+
+  // 别的三种一直在：它们不在 Advanced 后面。
+  for (const label of ["Desktop notification", "OpenClaw gateway", "Webhook"]) {
+    assert.equal(liveButton(rendered, label).disabled, false, `「${label}」不该被 Advanced 挡着`);
+  }
+
+  // 门槛只从载荷读：这一份给的是 42 秒 / 7 秒，页面要是自己记着 20，这两句就对不上。
+  const foot = rendered.content.querySelectorAll(".foot-note").map((node) => node.textContent).join(" ");
+  assert.ok(foot.includes("42s"), `页脚要说载荷里的那个门槛，实际是「${foot}」`);
+  assert.ok(foot.includes("7s"), `页脚要说载荷里的那个去重窗口，实际是「${foot}」`);
+  assert.equal(foot.includes("20s"), false, "页面不自己记 20 这个数");
+});
+
+test("a notification row names the entry and where its token comes from, never the token", async () => {
+  const rendered = await hooksPage();
+
+  const openclaw = hookRow(rendered, "http://127.0.0.1:18789/hooks/avenic");
+  assert.ok(openclaw.textContent.includes("OpenClaw gateway"), "行上认得出这是哪一种通知");
+  assert.ok(openclaw.textContent.includes("openclaw"), "行上有它的 id，改与删报的就是它");
+  assert.ok(openclaw.textContent.includes("Token from OPENCLAW_HOOK_TOKEN"), "有令牌时说的是它从哪个变量取，而不是令牌");
+  assert.equal(openclaw.textContent.includes("Token set"), false, "从变量取的那种不说「已设令牌」");
+
+  const webhook = hookRow(rendered, "https://example.test/hook");
+  assert.ok(webhook.textContent.includes("Webhook"));
+  assert.ok(webhook.textContent.includes("Token set"), "存在文件里的那种说「已设令牌」");
+  assert.ok(webhook.textContent.includes("30000 ms timeout"), "超时是行上的一个事实");
+
+  // 出站消息逐字相等：页面把令牌回传进载荷的写法，会在这里多出一个字段。
+  fire(rowButton(webhook, "Edit"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookActionEdit", scope: "project", id: "webhook-release" });
+  fire(rowButton(webhook, "Remove"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookActionRemove", scope: "project", id: "webhook-release" });
+
+  const empty = await hooksPage({ hooks: { ...HOOKS, actions: [] } });
+  assert.ok(empty.content.textContent.includes("No notifications yet"), "一条都没有的时候这一页说一句话，而不是一张空卡");
+});
+
+test("a preview shows the lines the host computed, and the result of a write says what core said", async () => {
+  const rendered = await hooksPage({
+    hooksResult: { kind: "diff", agent: "claude", file: "/p/.claude/settings.json", lines: [{ kind: "add", text: '+  "hooks": {}' }, { kind: "remove", text: '-  "old": true' }] },
+  });
+
+  assert.ok(rendered.content.textContent.includes("What an install would change in /p/.claude/settings.json"), "预览说的是这份计划会改哪个文件");
+  assert.deepEqual(rendered.content.querySelectorAll(".diff-line.diff-add").map((node) => node.textContent), ['+  "hooks": {}']);
+  assert.deepEqual(rendered.content.querySelectorAll(".diff-line.diff-remove").map((node) => node.textContent), ['-  "old": true']);
+  // 预览是加在这一页上的，不是替掉这一页：看完还得能装。
+  assert.equal(rendered.content.querySelectorAll(".hook-row").length, HOOK_ACTIONS.length + HOOKS.agents.length, "预览不换掉下面的两张卡");
+
+  // core 拒绝写的那一次（这一行画出来之后版本变了）：说的是 core 那句话，不是「本来就装着」。
+  const refused = await hooksPage({
+    hooksResult: { kind: "installed", agent: "codex", file: "/p/.codex/config.toml", changed: false, note: "Codex 0.9.8 no longer reads hooks." },
+  });
+  const line = refused.content.querySelectorAll(".hook-result")[0];
+  assert.ok(line?.textContent.includes("Codex 0.9.8 no longer reads hooks."), "拒绝的那一次说 core 的理由");
+  assert.equal(line?.textContent.includes("Already installed"), false, "「本来就装着」是另一件事，不能拿来顶替");
+});
+
+/* ------------------------------------------------------------ settings page -- */
+
+test("Settings answers without a project open, and its rows hand back a key, not a path", async () => {
+  const { source, sections } = await page();
+  const rendered = renderDataMessage(await payload({
+    project: { name: "", root: null, configured: false, lastUpdated: null },
+    empty: "Open a project folder to see its Avenic state.",
+    about: {
+      rows: [
+        { key: "extension", label: "Extension", value: "Avenic Agent Manager 0.6.0", reveal: false },
+        { key: "cli", label: "Avenic CLI", value: "1.8.2", reveal: false },
+        { key: "core", label: "Avenic core", value: "1.6.3", reveal: false },
+        { key: "project", label: "Project root", value: "No project open", reveal: false },
+        { key: "logs", label: "Logs", value: "Output panel → Avenic", reveal: false },
+        { key: "storage", label: "Extension storage (this profile)", value: "/home/u/.vscode/avenic", reveal: true },
+      ],
+      settings: { label: "Open VS Code Settings" },
+    },
+  }), source, { seed: sidebar(sections) });
+  openSection(rendered, "settings");
+
+  const rows = rendered.content.querySelectorAll(".about-row");
+  assert.equal(rows.length, 6, "每一行一个事实");
+  assert.ok(rendered.content.textContent.includes("Avenic Agent Manager 0.6.0"), "扩展自己的版本在这一页上");
+  assert.ok(rendered.content.textContent.includes("1.8.2"), "用的是哪一份 CLI 在这一页上");
+  assert.ok(rendered.content.textContent.includes("Output panel → Avenic"), "日志去哪儿看是一个事实，不是一句「见文档」");
+
+  // 「一个项目都没打开」拦不住这一页：它说的是这套安装本身。拦住了，用户在没有项目时
+  // 连版本都问不出来。
+  assert.deepEqual(rendered.content.querySelectorAll(".empty"), [], "没有项目时这一页仍然是这一页，不是「先打开一个文件夹」");
+  assert.equal(rows.find((row) => row.textContent.includes("Extension storage"))?.querySelectorAll("button").length, 1, "路径真的在盘上的那一行才有一颗按钮");
+  assert.equal(rows.find((row) => row.textContent.includes("Avenic CLI"))?.querySelectorAll("button").length, 0, "宿主说打不开的行没有按钮");
+
+  const show = rows.find((row) => row.textContent.includes("Extension storage"))!.querySelectorAll("button")[0];
+  fire(show);
+  // 页面手里没有路径，也不该有：它递回的是那一行的 key，路径由宿主解析。
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "revealFile", key: "storage" });
+  assert.equal(allText(rendered).includes("/home/u/.vscode/avenic"), true, "行上写着那条路径");
+
+  fire(liveButton(rendered, "Open VS Code Settings"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "openSettings" }, "唯一一条离开这一页的行");
 });
 

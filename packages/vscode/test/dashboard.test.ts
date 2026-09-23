@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { configureProject, finishLaunch, importProjectSessions, joinLaunchGroup, sessionLeasePath, setActiveCanonicalSession } from "@avenic/core";
+import { HOOK_POLICY, configureProject, finishLaunch, importProjectSessions, joinLaunchGroup, sessionLeasePath, setActiveCanonicalSession, type AgentInstallation } from "@avenic/core";
 import { fillApiConfiguration } from "./api-config.ts";
 import { buildDashboardData } from "../src/dashboard/state.ts";
 import { isWebviewMessage, runStateOf } from "../src/dashboard/protocol.ts";
@@ -737,5 +737,63 @@ test("core 的两种拼写都读成同一个 RunState", () => {
   assert.equal(runStateOf("interrupted"), "interrupted", "stamp 的拼写");
   for (const idle of ["idle", "current", "stale", "missing", "none"]) {
     assert.equal(runStateOf(idle), "idle", `${idle} 不是一次启动`);
+  }
+});
+
+// 钩子与关于是两个只有自己那一页才付代价的切片：钩子那三个 agent 各问一次「本机装的是
+// 哪个版本」（三次真的去跑 CLI），关于那几行要把路径一条条 stat 一遍。每一帧都组装它们，
+// 等于每次点侧栏都重跑一遍这三件事（P26）。
+//
+// 版本探测器由用例注入，而且这一段把 PATH 清空：就算注入被绕过，这台机器上也没有任何 CLI
+// 可跑。三次调用是三个 agent 各一次，不多问第二遍。
+test("the hooks and about slices are built only for the page that is on screen", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-"));
+  const project = path.join(root, "project");
+  const storage = path.join(root, "storage");
+  const env = testEnv(path.join(root, "state"));
+  await mkdir(project, { recursive: true });
+  const asked: string[] = [];
+  const installed = async (agentId: string): Promise<AgentInstallation> => {
+    asked.push(agentId);
+    return { executable: `/${agentId}`, resolvedExecutable: `/${agentId}`, version: "9.9.9", installMethod: "npm-global", packageManager: "npm", updateStrategy: { kind: "npm-global", command: null } };
+  };
+  // PATH 指向一个空目录：就算注入被绕过，这台机器上也没有 CLI 可跑（Windows 上 PATH 的大小写
+  // 两种拼法都算数，所以两种都换）。
+  const bin = path.join(root, "bin");
+  await mkdir(bin, { recursive: true });
+  const names = ["PATH", "Path"].filter((name) => process.env[name] !== undefined);
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) process.env[name] = bin;
+  try {
+    // 别的分区：两份切片都不组装，一个探测器都不跑。
+    const other = await buildDashboardData(project, env, { detect: installed });
+    assert.equal(other.hooks, null, "不在钩子那一页就不读那三个版本");
+    assert.equal(other.hooksResult, null);
+    assert.equal(other.about, null, "不在设置那一页就不去 stat 那些路径");
+    assert.deepEqual(asked, [], "别的分区一次 CLI 都不问");
+
+    // 钩子那一页：三行都在，版本是那一个探测器给的；另一档的名单在这一帧里一个字节都不读。
+    const hooks = await buildDashboardData(project, env, { detect: installed, hooksScope: "project" });
+    assert.equal(hooks.hooks?.scope, "project");
+    assert.deepEqual(hooks.hooks?.agents.map((row) => row.agent), ["claude", "codex", "opencode"]);
+    assert.deepEqual(hooks.hooks?.agents.map((row) => row.version), ["9.9.9", "9.9.9", "9.9.9"]);
+    assert.deepEqual(asked, ["claude", "codex", "opencode"], "三个 agent 各问一次，不多问第二遍");
+    assert.equal(hooks.hooks?.completedMinSeconds, HOOK_POLICY.completedMinSeconds, "门槛只从 core 读");
+    assert.equal(hooks.about, null, "同一帧里设置那一页仍然是空的");
+
+    // 设置那一页：说的是这套安装本身 —— 没有项目也说得出来。
+    const about = { extension: { id: "avenic.avenic-agent-manager", name: "avenic", displayName: "Avenic Agent Manager", version: "0.6.0" }, editorVersion: "1.99.0", cliVersion: "1.8.2", storagePath: storage };
+    const settings = await buildDashboardData(project, env, { about });
+    assert.equal(settings.hooks, null, "反过来也一样：设置那一页不组装钩子的切片");
+    assert.equal(settings.about!.rows.find((row) => row.key === "cli")?.value, "1.8.2", "用的是哪一份 CLI 是这一页上的一个事实");
+    assert.ok(settings.about!.rows.some((row) => row.label === "Avenic core"), "core 的版本在这里，用户查得到");
+
+    const closed = await buildDashboardData(null, env, { about });
+    assert.ok(closed.about, "一个项目都没打开时这一页照样说得出来（版本、日志、存储目录）");
+    assert.equal(closed.about!.rows.find((row) => row.key === "project")?.value, "No project open");
+    assert.equal(closed.about!.rows.find((row) => row.key === "project")?.reveal, false, "没有项目就没有可打开的路径");
+  } finally {
+    for (const [name, value] of saved) process.env[name] = value;
+    await rm(root, { recursive: true, force: true });
   }
 });
