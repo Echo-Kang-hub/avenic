@@ -5,11 +5,12 @@
 ```bash
 npm install -g avenic@latest
 
-cd <你的项目>
-avenic init          # 交互式配置：Agent、Authentication、Sessions、History
-avenic claude        # 进入 Claude Code；codex / opencode 同理
-avenic sessions      # 查看与管理共享会话
-avenic change        # 随时改配置
+cd <your project>
+avenic init          # Interactive setup: agents, Authentication, Sessions, History
+avenic claude        # Start Claude Code; codex / opencode likewise
+avenic sessions      # View and manage shared sessions
+avenic hook status   # Whether each agent's hooks are installed (read-only)
+avenic change        # Change the configuration at any time
 ```
 
 安装提供两个等价命令：`avenic` 与简写 `ave`。要求 Node.js ≥ 18.17。

@@ -5,13 +5,13 @@ Avenic 用一个命令统一管理编码 Agent（Claude Code、Codex、OpenCode�
 日常只需要这几条命令：
 
 ```bash
-avenic init          # 配置本项目（在终端上是交互式界面）
-avenic claude        # 启动某个 Agent 的原生 TUI（codex / opencode 同理）
-avenic status        # 这个项目现在是什么样：配置 / 历史 / Agent / Skills
-avenic skills        # 交互式 Skills 菜单：添加 / 已装 / 更新 / 移除 / 同步 Hub / 从仓库导入
-avenic sessions      # 查看与管理共享会话
-avenic change        # 随时改 Authentication、Sessions 或 History
-avenic self-update   # 从 npm 更新
+avenic init          # Set up this project (interactive on a terminal)
+avenic claude        # Start an agent's own TUI (codex / opencode likewise)
+avenic status        # What this project looks like right now: configuration / history / agents / Skills
+avenic skills        # Interactive Skills menu: Add / Installed / Update / Remove / Sync Hub / Import from repository
+avenic sessions      # View and manage shared sessions
+avenic change        # Change Authentication, Sessions or History at any time
+avenic self-update   # Update from npm
 ```
 
 ## 安装
@@ -33,20 +33,20 @@ npm uninstall -g avenic
 ## 快速开始
 
 ```bash
-cd <你的项目>
-avenic init          # 交互式配置：选 Agent → 每个 Agent 答 Authentication（Account / API）与它自己的作用域 → 选 Sessions → 选 History → 确认
-avenic claude        # 进入 Claude Code；avenic codex / avenic opencode 同理
+cd <your project>
+avenic init          # Interactive setup: pick agents → each agent answers Authentication (Account / API) and its own scope → pick Sessions → pick History → confirm
+avenic claude        # Start Claude Code; avenic codex / avenic opencode likewise
 ```
 
 `avenic init` 只在你确认后写入。之后：
 
 ```bash
-avenic change                       # 重开配置界面，改完确认才生效
-avenic status                       # 这个项目的配置、Agent、历史、Skills 一览
-avenic sessions                     # 交互式会话管理
-avenic skills                       # 交互式 Skills 菜单
-avenic --version                    # 打印已安装版本
-avenic self-update                  # 更新到 npm 上的最新版
+avenic change                       # Reopen the setup UI; nothing takes effect until you confirm
+avenic status                       # This project's configuration, agents, history and Skills at a glance
+avenic sessions                     # Interactive session management
+avenic skills                       # Interactive Skills menu
+avenic --version                    # Print the installed version
+avenic self-update                  # Update to the latest version on npm
 ```
 
 不改配置也能用：除 `init`、`change`、`<agent> auth` 之外的命令都不写配置；还没回答 Authentication 的项目，普通启动会先问一次（非终端环境按该 Agent 自己的账号启动并说明），尚未初始化的项目会提示先跑 `avenic <agent> init`。
@@ -121,13 +121,13 @@ avenic change --agents codex --auth api --scope project --replace-agents
 Authentication 与 History 完全解耦：**继续一条共享会话不改变任何一个 Agent 的 Authentication 答案**——接力只把各 Agent 平时用的那套运行环境交给它，不切换 provider、不复制凭据、不要求重新登录，也不会为了会话另造一套凭据目录。
 
 ```bash
-avenic sessions list                        # 列出共享会话与各 Agent 游标
-avenic sessions status                      # 当前活动会话与同步状态
-avenic sessions continue <id> --agent codex # 换一个 Agent 继续同一条会话
+avenic sessions list                        # List shared sessions and each agent's cursor
+avenic sessions status                      # The current active session and its sync status
+avenic sessions continue <id> --agent codex # Continue the same session with another agent
 avenic sessions continue <id> --agent claude
 avenic sessions continue <id> --agent opencode
-avenic sessions sync                        # 把原生历史增量导入共享工作区
-avenic sessions git on|off|status           # 共享会话记录是否进 Git
+avenic sessions sync                        # Incrementally import native history into the shared workspace
+avenic sessions git on|off|status           # Whether project session records are committed to Git
 ```
 
 `continue` 会说明这次是新建投射还是续接，以及新补入了多少条共享事件。Claude Code 与 Codex 走 L3a 语义续接，OpenCode 走 L3 原生续接（`opencode import` + `--session`）。
@@ -213,9 +213,16 @@ AVENIC · Status
 | `avenic <agent> status` | 查看该 Agent 的配置与状态 |
 | `avenic <agent> sessions import\|writeback\|status` | 管理便携会话 |
 | `avenic status [--json]` | 这个项目的一览：配置 / 历史 / Agent / Skills |
+| `avenic hook emit --agent <agent> [--verbose\|--json]` | Agent 自己的钩子调用它：读 stdin 上的一条原生载荷，归一化成 Avenic 的六种事件（`session.started` / `turn.started` / `turn.completed` / `turn.failed` / `attention.required` / `session.ended`），再派发通知动作；VS Code 关着照常工作 |
+| `avenic hook install --agent <agent> [--scope project\|global] [--dry-run] [--json]` | 把 Avenic 的条目并入该 Agent 自己读的那份配置（Claude 的 settings 文件、Codex 的 `config.toml`、OpenCode 的插件文件），用户自己的内容一个字节不动；`--dry-run` 只打印 diff，末行是 `Nothing was written — this was --dry-run.` |
+| `avenic hook uninstall --agent <agent> [--scope project\|global] [--json]` | 把自己写进去的那一条取出来，文件回到安装前的字节 |
+| `avenic hook status [--agent <agent>] [--scope project\|global] [--json]` | 只读：每个 Agent 的钩子装没装、落在哪个文件 |
+| `avenic hook test --agent <agent>` | 打一条合成的 `turn.completed`，让人在 VS Code 关着时看完整条通知链，并同时打印这个项目的钩子是否已装 |
 | `avenic doctor` | 环境自检（已弃用：用 `avenic status`） |
 
 这些按 Agent 的子命令是项目配置的薄包装：它们读写的仍是 `avenic init` 建的同一份配置——项目自己的答案在 `.agents/runtime.json`，本机对这个项目的覆盖在 `.agents/local/runtime.local.json`——不会另起一套状态。
+
+钩子是另一条路：Agent 自己的钩子调用 `avenic hook emit`，把原生载荷在 stdin 上归一化成那六个事件，再按项目 `.agents/local/hook-actions.json` 里的动作发通知——VS Code 关着、扩展从没被激活过也一样。`avenic hook install` 只并入一条属于 Avenic 的条目，并认得出哪条是自己的（Claude 按命令认，Codex 按自己的 `# avenic:hooks` 标记，OpenCode 是一个由 Avenic 整份拥有的插件文件），所以用户自己的钩子与注释原样保留，`uninstall` 之后文件回到装之前的字节；Codex 的钩子在用户审阅之前是 untrusted，安装时把这句提醒一并打印。`emit` 的退出码 0 也包括「收下或有意跳过」：动作失败会被报出来，但不会让报出它的那一轮跟着失败。
 
 `init` 的结果页用 Dashboard 的同一批字段说出每个 Agent 的答案（`Authentication`、`Account Scope` / `Config Source`、`Sessions`，最后是 `History`）：
 
@@ -300,10 +307,10 @@ Avenic 把下列路径写进项目 `.gitignore` 的 `# Agent Runtime` 分节：`
 `avenic <agent> auth` 走同一条路口：先问旧答案，再写新答案，然后打印这个 Agent 的状态页，外加一句说明这次的答案落在磁盘的哪里。
 
 ```bash
-avenic claude auth api --scope project   # 这个项目改用 API，准备 .claude/settings.local.json
-avenic claude auth account               # 改回由 Claude 自己登录
-avenic claude auth reset                 # 清掉本机覆盖，回到项目自己的答案
-avenic claude auth                       # 查看当前生效的答案与作用域
+avenic claude auth api --scope project   # Switch this project to API; prepare .claude/settings.local.json
+avenic claude auth account               # Switch back to Claude signing in itself
+avenic claude auth reset                 # Clear the local override and return to the project's own answer
+avenic claude auth                       # Show the answer and scope currently in effect
 ```
 
 `auth reset` 清掉的是**本机覆盖**（`.agents/local/runtime.local.json`），项目在 `.agents/runtime.json` 里的答案随即重新生效。
@@ -322,8 +329,8 @@ Authentication 与 History 是独立的两个维度，四种组合都成立：Ac
 - `Global`：会话直接留在 Agent 的原生全局存储，不产生项目副本。
 
 ```bash
-avenic codex sessions import      # 全局会话 → 项目会话记录（复制不删除）
-avenic codex sessions writeback   # 项目会话记录 → 原生存储（显式回写）
+avenic codex sessions import      # Global sessions → project session records (copied, not deleted)
+avenic codex sessions writeback   # Project session records → native storage (explicit write-back)
 avenic codex sessions status
 ```
 
@@ -344,7 +351,7 @@ avenic codex sessions status
 看门狗只监视当前项目已知的原生目录，不递归扫描整个 HOME；空闲时几乎不占 CPU、不发起网络请求、不调用模型，也从不修改 Agent 的原生文件。轮询间隔可用环境变量调整：
 
 ```bash
-AVENIC_WATCH_INTERVAL_MS=1000 avenic claude   # 默认 3000
+AVENIC_WATCH_INTERVAL_MS=1000 avenic claude   # default 3000
 ```
 
 > OpenCode 例外：其会话存储由官方 CLI 自行管理，`avenic opencode` 启动后原生存储仍保留本次运行产生的会话，不受上述回滚保护。
@@ -359,13 +366,13 @@ Hub 是一个 git 仓库，公开或私有均可；私有仓库使用本机 git 
 
 ```
 my-hub/
-├── sources.lock.json                    # 上游源登记：id、仓库地址、锁定 commit、Skill 根目录、许可证
+├── sources.lock.json                    # Upstream source registry: id, repo URL, locked commit, Skill root, license
 ├── packs/
-│   ├── common.json                      # Pack 定义（common 为默认 Pack，安装时自动包含）
+│   ├── common.json                      # Pack definition (common is the default Pack, included automatically when installing)
 │   └── development.json
-├── skills/                              # 按源归档的 Skill 副本
+├── skills/                              # Skill copies filed by source
 │   └── <source-id>/<skill-name>/SKILL.md
-└── licenses/                            # 上游许可证（登记源时自动保存）
+└── licenses/                            # Upstream licenses (saved automatically when a source is registered)
 ```
 
 Pack 定义示例（`packs/development.json`）：
@@ -405,22 +412,22 @@ Pack 定义示例（`packs/development.json`）：
 同一条流程也能直接走命令行（脚本里同样可用，不需要终端）：
 
 ```bash
-avenic skills add <owner/repo>          # 点名仓库：终端里进发现→多选，管道里装它的全部 Skill
-avenic skills add <owner/repo> a b      # 点名 Skill：直接安装，不询问
-avenic skills remove <skill...>         # 移除直装 Skill
+avenic skills add <owner/repo>          # Name a repo: on a terminal it opens discover → multi-select; in a pipe it installs all of its Skills
+avenic skills add <owner/repo> a b      # Name Skills: install directly, no prompting
+avenic skills remove <skill...>         # Remove directly installed Skills
 ```
 
 Hub 这边则是 Pack 为单位：
 
 ```bash
-avenic hub add <owner/repo>         # 导入 Hub（owner/repo[#ref]、URL 或本地路径），成功后打印 Pack 预览树
-avenic skills install                   # 安装默认 Pack（common）
-avenic skills install development       # 安装多个 Pack；common 自动包含
-avenic skills uninstall development     # 卸载 Pack（不带参数移除全部受管理 Skills）
-avenic skills -g development            # 安装到全局作用域（skills <pack> 是 install 的简写）
-avenic skills tree [pack...]            # 查看 Hub 内容树
-avenic skills packs                     # 列出可用 Packs
-avenic skills status [-g]               # 当前安装状态
+avenic hub add <owner/repo>         # Add a Hub (owner/repo[#ref], URL or local path); on success prints the Pack preview tree
+avenic skills install                   # Install the default Pack (common)
+avenic skills install development       # Install several Packs; common is included automatically
+avenic skills uninstall development     # Uninstall a Pack (no arguments removes all managed Skills)
+avenic skills -g development            # Install to the global scope (skills <pack> is shorthand for install)
+avenic skills tree [pack...]            # Show the Hub content tree
+avenic skills packs                     # List available Packs
+avenic skills status [-g]               # Current install status
 ```
 
 非终端环境（管道、CI、脚本）不会卡在提示上：裸 `avenic skills` 回退为安装默认 Pack（common），`avenic skills install` 同理。
@@ -428,10 +435,10 @@ avenic skills status [-g]               # 当前安装状态
 `hub add` 拉取失败不影响源保存，之后 `avenic hub sync` 重试。可反复 `add` 注册多个 Hub，同一时间生效一个（该 Hub 聚合的多个上游源共享所有 Pack）：
 
 ```bash
-avenic hub select [name|spec]       # ↑/↓ 选择当前 Hub（无终端时打印列表）
-avenic hub list                     # 列出已注册 Hub（> 标记当前）
-avenic hub default                  # 查看当前 Hub
-avenic hub sync                     # 拉取或更新缓存（~/.config/avenic/catalog/）
+avenic hub select [name|spec]       # ↑/↓ pick the current Hub (prints the list when there is no terminal)
+avenic hub list                     # List registered Hubs (> marks the current one)
+avenic hub default                  # Show the current Hub
+avenic hub sync                     # Fetch or update the cache (~/.config/avenic/catalog/)
 ```
 
 每次安装把 Hub commit 写入项目锁 `.avenic.lock.json`，跨设备可复现。
@@ -449,11 +456,11 @@ mkdir my-hub && cd my-hub
 git init
 mkdir -p packs skills
 echo '{"schemaVersion":1,"sources":[]}' > sources.lock.json
-avenic hub pack-add common --name Common                        # 新建 Pack
-avenic hub skill-add <owner/repo> --pack common                 # 登记第一个上游源并收录其全部 Skill
+avenic hub pack-add common --name Common                        # Create a Pack
+avenic hub skill-add <owner/repo> --pack common                 # Register the first upstream source and take in all of its Skills
 avenic hub pack-add development --name Development
 avenic hub skill-add <owner/repo> skill-a skill-b --pack development
-avenic hub doctor                                               # 校验结构
+avenic hub doctor                                               # Validate the structure
 git add -A && git commit -m "hub" && git push
 ```
 
@@ -463,12 +470,12 @@ git add -A && git commit -m "hub" && git push
 
 ```bash
 avenic hub skill-add <source-id|owner/repo> [skill...] [--pack <pack,pack>]
-avenic hub remove <source-id|owner/repo> <skill...> [--pack <pack,pack>]   # 从 Pack 移除 Skill；无 Pack 引用时删除副本
+avenic hub remove <source-id|owner/repo> <skill...> [--pack <pack,pack>]   # Remove Skills from Packs; deletes the copy once no Pack references it
 avenic hub pack-add <id> [--name <name>] [--description <text>]
-avenic hub pack-remove <pack...>                                          # 删除 Pack（common 不可删），无引用 Skill 一并清理
+avenic hub pack-remove <pack...>                                          # Delete Packs (common cannot be deleted); unreferenced Skills are cleaned up too
 avenic hub source-add <id> <repo> [--name <name>] [--skill-root <path>] [--license <path>]
-avenic hub update [source] [--check]                                      # 跟进上游更新，锁定新 commit
-avenic hub doctor                                                         # 校验 Hub
+avenic hub update [source] [--check]                                      # Follow upstream updates and lock the new commit
+avenic hub doctor                                                         # Validate the Hub
 ```
 
 #### 连接私有 Skills 仓库
@@ -476,10 +483,10 @@ avenic hub doctor                                                         # 校�
 私有仓库不需要额外配置：CLI 不接触 token，clone 与 fetch 全部由本机 git 完成。以连接私有 Hub `Echo-Kang-hub/SkillsHub` 为例：
 
 ```bash
-gh auth login                                            # 1. 登录 GitHub（或改用 SSH key，二选一，只需一次）
-avenic hub add Echo-Kang-hub/SkillsHub    # 2. 设置 Hub 源（换成 <你的用户名>/<你的仓库>），终端会打印 Pack 预览树
-avenic hub sync                                   # 3. 验证可拉取（成功后打印 Synced · <short sha> · <时间>）
-avenic skills install                                 # 4. 安装默认 Pack（common）
+gh auth login                                            # 1. Sign in to GitHub (or use an SSH key instead — either one, only once)
+avenic hub add Echo-Kang-hub/SkillsHub    # 2. Set the Hub source (replace with <your-user>/<your-repo>); a terminal prints the Pack preview tree
+avenic hub sync                                   # 3. Verify it can be fetched (on success prints Synced · <short sha> · <time>)
+avenic skills install                                 # 4. Install the default Pack (common)
 ```
 
 - Windows 上 HTTPS 方式默认使用 Git Credential Manager（首次自动弹窗登录）；也可以使用 SSH 地址：`avenic hub add git@github.com:<owner>/<repo>.git`
@@ -505,8 +512,8 @@ avenic skills install                                 # 4. 安装默认 Pack（c
 同一作用域内每个 Skill 只保留一份物理文件：`.agents/skills/<name>` 是真身，`.claude/skills/<name>` 是指向它的链接（Windows 为 junction，macOS/Linux 为相对符号链接）。安装、更新、接管、直装以及 `avenic <agent>` 启动时都会补齐缺失的链接、清理已失效的链接，反复安装不会产生第二份副本。
 
 ```text
-<项目>/.agents/skills/<name>     真身（canonical）
-<项目>/.claude/skills/<name>     链接 → .agents/skills/<name>
+<project>/.agents/skills/<name>     the real copy (canonical)
+<project>/.claude/skills/<name>     link → .agents/skills/<name>
 ```
 
 链接创建失败时（例如文件系统不支持链接），该 Skill 自动退回真实副本：功能不受影响，`avenic skills status` 标记为「可用但未共享」，下一次安装会再尝试迁移为链接。
@@ -560,7 +567,7 @@ Incomplete
 
 ```bash
 avenic skills add <owner/repo> [skill...] [-g]
-avenic skills remove <skill...>   # 撤回：移除通过 add 安装的 Skills
+avenic skills remove <skill...>   # Retract: remove Skills installed through add
 ```
 
 从任意 GitHub 仓库直接安装 Skill（递归发现），锁定 commit 并保存许可证。公开仓库直接可用；私有仓库使用本机 git 认证（`gh auth login` 或 SSH）。与 Pack 管理的 Skill 重名会被拒绝。在终端里不点名 Skill 时，这条命令进入 `avenic skills` 的「发现 → 多选」流程。
