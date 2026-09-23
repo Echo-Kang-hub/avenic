@@ -392,8 +392,8 @@
       // about the agent. Everything downstream of those answers stays on the
       // Agents card, which is where it is changed.
       const fields = el("div", "agent-fields");
-      // 这一句是宿主的词（core 给每一行起名），不是这一页的：认得它，但不改写它。
-      const auth = (agent.fields ?? []).find((field) => field.label === "Authentication");
+      // 认的是 core 给那一行起的键，不是它此刻的措辞：这一页认得它，但不改写它。
+      const auth = (agent.fields ?? []).find((field) => field.key === "authentication");
       if (auth) fields.append(fieldRow(auth, agent.id));
       // 「Sessions」这一行和侧栏那一条是同一个词、同一个意思，所以用的是它那个键。
       fields.append(fieldRow({ label: T("nav.sessions"), icon: "folder", kind: "badge", tone: agent.sessions.tone, value: agent.sessions.label }, agent.id));
@@ -1521,9 +1521,9 @@
 
     // 这一页写的不是 Avenic 的配置目录，是这个 agent 的原生文件——把它印在第一行，因为
     // 「Apply 会写到哪儿」是这一页最该先回答的问题。认证方式那一枚胶囊用的是宿主卡片的词
-    // （Account | API | Native），这一页不自己造词。
+    // （Account | API | Native），这一页不自己造词；认的是那一行的键（同 Configure）。
     const facts = el("div", "center-facts");
-    const auth = (card?.fields ?? []).find((field) => field.label === "Authentication");
+    const auth = (card?.fields ?? []).find((field) => field.key === "authentication");
     if (auth) facts.append(badge(auth.value, auth.tone));
     const target = el("span", "center-target");
     target.append(icon("file-code"));

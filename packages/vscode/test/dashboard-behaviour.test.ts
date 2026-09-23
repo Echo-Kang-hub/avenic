@@ -982,3 +982,47 @@ test("Settings answers without a project open, and its rows hand back a key, not
   assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "openSettings" }, "唯一一条离开这一页的行");
 });
 
+
+// 一行在宿主与页面之间有两个名字：给人读的标签，和归属的键。标签 core 会改措辞、将来
+// 也会按语言变，页面按可见文字去找它要的那一行——core 改一次词，Configure 的认证行与
+// 中心的认证胶囊就认成别人，或者谁也不认。这里把两行摆成「标签像、键不像」的样子：
+// 认对了的那一行，标签是 Sign-in，值仍是认证自己的。
+const RENAMED_AUTH = [
+  { key: "configSource", label: "Authentication", kind: "value", value: ".claude/settings.local.json", tone: "muted", icon: "file-code" },
+  { key: "authentication", label: "Sign-in", kind: "badge", value: "API (Project)", tone: "brand", icon: "account" },
+];
+
+const CENTER: Payload = {
+  agent: "claude",
+  label: "Claude Code",
+  runtime: "cli",
+  relative: ".claude/settings.json",
+  scope: null,
+  auth: "api",
+  credentialSet: true,
+  provider: "deepseek",
+  baseUrl: "https://api.deepseek.com/anthropic",
+  model: "deepseek-chat",
+  blocks: [],
+  providers: [{ id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/anthropic", selected: true }],
+  models: ["deepseek-chat"],
+};
+
+test("the authentication row is found by its key, not by the words core happens to use", async () => {
+  const { source, sections } = await page();
+  const base = await payload();
+  const agents = base.agents.map((agent: Payload, index: number) => (index === 0 ? { ...agent, fields: RENAMED_AUTH } : agent));
+
+  const configure = renderDataMessage({ ...base, agents }, source, { seed: sidebar(sections) });
+  openSection(configure, "configure");
+  const row = configure.content.querySelectorAll(".field-row").find((candidate) => candidate.textContent.includes("Sign-in"));
+  assert.ok(row, "Configure 上的认证行按 key 找——标签改成什么，那一行还是它");
+  assert.ok(row.textContent.includes("API (Project)"), "认出来的是认证那一行自己的值，不是同名的邻行");
+
+  const center = renderDataMessage({ ...base, agents, center: CENTER }, source, { seed: sidebar(sections) });
+  openSection(center, "center");
+  const facts = center.content.querySelectorAll(".center-facts")[0];
+  assert.ok(facts, "中心的认证胶囊就在 facts 那一条上");
+  assert.ok(facts.textContent.includes("API (Project)"), "胶囊认的也是那一行自己的值");
+  assert.ok(!facts.textContent.includes(".claude/settings.local.json"), "同名的邻行没有顶替它");
+});

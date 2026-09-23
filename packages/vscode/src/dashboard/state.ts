@@ -98,7 +98,7 @@ function authFields(row: StatusAgent, historyMode: StatusModel["project"]["histo
   return agentCardRows(row, historyMode)
     .filter((row_) => !CHIP_ROWS.has(row_.key))
     .map((row_) => {
-      const field: FieldRow = { label: row_.label, value: row_.value, ...(FIELD_STYLE[row_.key] ?? { kind: "value", tone: "muted", icon: "file-code" }) };
+      const field: FieldRow = { key: row_.key, label: row_.label, value: row_.value, ...(FIELD_STYLE[row_.key] ?? { kind: "value", tone: "muted", icon: "file-code" }) };
       // 徽章的颜色说的是哪一半答案：Account 是蓝色，API 是灰，自管的 agent 是紫色；
       // 图标同理 —— 自管认证和还没回答用的都是钥匙（那一格不是 Avenic 的答案）。
       if (row_.key === "authentication") {
@@ -292,7 +292,7 @@ function unopenedCards(): AgentCard[] {
     run: "idle",
     statusText: "No project open",
     detail: null,
-    fields: [{ label: "Authentication", kind: "badge", value: "Not chosen", tone: "muted", icon: "key" }],
+    fields: [{ key: "authentication", label: "Authentication", kind: "badge", value: "Not chosen", tone: "muted", icon: "key" }],
     sessions: { label: "—", count: 0, tone: "muted" },
     history: { label: "—", tone: "muted" },
     configLink: null,

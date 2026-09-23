@@ -63,6 +63,8 @@ export function needsSectionData(section: DashboardSection, payloadDetail: boole
 }
 
 export type FieldRow = {
+  /** core 给这一行起的键：标签是给人读的（措辞会改、将来会按语言变），键才是它。 */
+  key: string;
   label: string;
   kind: "badge" | "value" | "select" | "status";
   value: string;
