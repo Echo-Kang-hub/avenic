@@ -1,14 +1,17 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import {
+  LABELS,
   agentCardRows,
   agentLabel,
   formatSessionDiagnostics,
+  historyLabel,
   listCanonicalSessionRecords,
   mappingState,
   readCanonicalSession,
   readCanonicalSessionRecord,
   runtimePaths,
+  scopeLabel,
   shortTimestamp,
   transcriptSummary,
   transcriptTurns,
@@ -20,6 +23,7 @@ import {
   type StatusAgent,
   type StatusModel,
 } from "@avenic/core";
+import { sentence } from "../i18n/text.ts";
 import { projectStatus } from "../services/agents.ts";
 import { aboutFacts, type AboutOptions } from "../services/about.ts";
 import { defaultSpec, packsFor } from "../services/catalog.ts";
@@ -47,7 +51,6 @@ const LIST_LIMIT = 5;
 const DETAIL_LIMIT = 50;
 const ACTIVITY_LIMIT = 3;
 
-const SESSION_SCOPE_LABEL: Record<string, string> = { project: "Project", global: "Global" };
 // 安装目标按运行时分组，面板按 agent 一一平等分行。目标是 agent id 的超集。
 const TARGET_AGENTS: Record<string, AgentId | null> = {
   "claude-code": "claude",
@@ -56,19 +59,24 @@ const TARGET_AGENTS: Record<string, AgentId | null> = {
   universal: null, // 不是某一个 agent 的目录
 };
 
-/** "2 hours ago" — 相对时间由面板算，存在盘上的永远是那个 ISO 时刻。 */
-export function relativeTime(iso: string | null | undefined, now = Date.now()): string {
+/**
+ * "2 hours ago" — 相对时间由面板算，存在盘上的永远是那个 ISO 时刻。
+ *
+ * 这句话也是宿主说的，于是它也来自词表：中文没有单复数，所以“1 minute”与“5 minutes”
+ * 是表里两条不同的句子，而不是在这里拼一个 `s`。
+ */
+export function relativeTime(iso: string | null | undefined, now = Date.now(), language = "en"): string {
   if (typeof iso !== "string") return "—";
   const at = Date.parse(iso);
   if (Number.isNaN(at)) return "—";
   const seconds = Math.max(0, Math.floor((now - at) / 1_000));
-  if (seconds < 60) return "just now";
+  if (seconds < 60) return sentence(language, "time.just-now");
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+  if (minutes < 60) return sentence(language, minutes === 1 ? "time.minute-ago" : "time.minutes-ago", { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  if (hours < 24) return sentence(language, hours === 1 ? "time.hour-ago" : "time.hours-ago", { count: hours });
   const days = Math.floor(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
+  return sentence(language, days === 1 ? "time.day-ago" : "time.days-ago", { count: days });
 }
 
 // 卡片上半部分：这个 agent 的认证答案。**行的名字与值不在这里** —— 它们来自 core
@@ -113,35 +121,32 @@ function authFields(row: StatusAgent, historyMode: StatusModel["project"]["histo
     });
 }
 
-function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["historyMode"]): AgentCard {
+// 卡片上的每一句话都在这里成形，而这一层没有语言：语言是宿主给的参数，句子去词表里
+// 取。作用域与历史模式更进一步——它们是 core 的词（`avenic status` 印的也是它们），
+// 于是它们连词表都不经过：谁都不许为它们另写一份。
+function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["historyMode"], language: string): AgentCard {
   const id = row.id as AgentId;
   const ready = row.initialized && row.available;
-  const scope = row.sessions === null ? "Not set" : SESSION_SCOPE_LABEL[row.sessions] ?? row.sessions;
+  const scope = row.sessions === null ? sentence(language, "agent.scope-unset") : scopeLabel(row.sessions);
   return {
     id,
     label: row.displayName,
     short: agentLabel(id),
     ready,
     run: runStateOf(row.history.sync),
-    statusText: ready
-      ? "Ready"
-      : !row.available
-        ? "CLI not installed"
-        : "Not configured",
-    detail: id === "opencode"
-      ? "OpenCode manages its own provider, sign-in and model selection. Avenic does not modify them."
-      : null,
+    statusText: sentence(language, ready ? "shell.ready" : !row.available ? "agent.no-cli" : "agent.not-configured"),
+    detail: id === "opencode" ? sentence(language, "agent.opencode-note") : null,
     fields: authFields(row, historyMode),
     sessions: { label: scope, count: row.history.sessions, tone: row.sessions === "project" ? "brand" : "blue" },
     // 共享与隔离是两种不同的项目：颜色是这句话在面板上的那一半。
-    history: { label: historyMode === "shared" ? "Shared" : "Isolated", tone: historyMode === "shared" ? "brand" : "muted" },
+    history: { label: historyLabel(historyMode), tone: historyMode === "shared" ? "brand" : "muted" },
     // 引导图标说「这一步会打开什么」：Claude 是一份文件，Codex 是它的目录，
     // OpenCode 是它自己的界面。目的地箭头由渲染层统一补在末尾。
     configLink: id === "claude"
-      ? { label: "Open Config File", icon: "go-to-file" }
+      ? { label: sentence(language, "center.open-file"), icon: "go-to-file" }
       : id === "codex"
-        ? { label: "Open Config Folder", icon: "folder-opened" }
-        : { label: "Open OpenCode", icon: "link-external" },
+        ? { label: sentence(language, "agent.open-folder"), icon: "folder-opened" }
+        : { label: sentence(language, "agent.open-opencode"), icon: "link-external" },
     // 启动是「跑这个项目里的这个 agent」：没装、没配置都跑不起来。Change 永远可用 ——
     // 它正是「还没配置」时要走的那一步。
     actions: { launch: ready, change: true },
@@ -172,7 +177,7 @@ function shortId(id: string): string {
   return (separator === -1 ? id : id.slice(separator + 1)).slice(0, 8);
 }
 
-function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: boolean, now: number, sync: SessionSync): SessionRow {
+function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: boolean, now: number, sync: SessionSync, language: string): SessionRow {
   const updated = typeof record.updatedAt === "string" ? record.updatedAt : null;
   return {
     id: record.id,
@@ -181,7 +186,7 @@ function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: b
     title: typeof record.title === "string" && record.title ? record.title : shortId(record.id),
     agents,
     updated: updated ?? "",
-    relative: relativeTime(updated, now),
+    relative: relativeTime(updated, now, language),
     active,
     sync,
   };
@@ -283,16 +288,17 @@ function packRows(packs: Map<string, Pack>, installed: string[]): PackRow[] {
 }
 
 // 没有项目就没有状态模型 —— 不是三个「未配置」的 agent，而是三张说不出话的卡。
-function unopenedCards(): AgentCard[] {
+// 「说不出话」说的只是 Avenic 没有事实可讲：那一行认证仍然是 core 的两个词。
+function unopenedCards(language: string): AgentCard[] {
   return AGENT_IDS.map((id) => ({
     id,
     label: agentLabel(id),
     short: agentLabel(id),
     ready: false,
     run: "idle",
-    statusText: "No project open",
+    statusText: sentence(language, "shell.no-project"),
     detail: null,
-    fields: [{ key: "authentication", label: "Authentication", kind: "badge", value: "Not chosen", tone: "muted", icon: "key" }],
+    fields: [{ key: "authentication", label: LABELS.authentication, kind: "badge", value: LABELS.notChosen, tone: "muted", icon: "key" }],
     sessions: { label: "—", count: 0, tone: "muted" },
     history: { label: "—", tone: "muted" },
     configLink: null,
@@ -350,6 +356,8 @@ export async function buildDashboardData(
   options: DashboardOptions = {},
 ): Promise<DashboardData> {
   const now = options.now ?? Date.now();
+  // 编辑器自己的语言在这一层只经过一次：从这里往下，每个说句子的地方都带着它。
+  const language = options.language ?? "en";
   const detail = options.detail === true;
   const limit = detail ? DETAIL_LIMIT : LIST_LIMIT;
   // 底部那一行的两个版本：CLI 是主（产品版本），扩展是悬停时展开的那一个。
@@ -357,14 +365,14 @@ export async function buildDashboardData(
   const versionDetails = { cli, extension: options.extensionVersion ?? "" };
   // 关于那一页说的是这套安装本身，不是这个项目：没有打开项目时它也说得出来（版本、
   // 存储目录），只有那几行需要项目路径的行会换成「没有打开项目」。
-  const about: AboutState | null = options.about ? await aboutFacts(projectRoot, { ...options.about, coreVersion: CORE_VERSION, language: options.language ?? "en" }) : null;
+  const about: AboutState | null = options.about ? await aboutFacts(projectRoot, { ...options.about, coreVersion: CORE_VERSION, language }) : null;
   if (projectRoot === null) {
     return {
       version: cli,
       versionDetails,
       detail,
       project: { name: "", root: null, configured: false, lastUpdated: null },
-      agents: unopenedCards(),
+      agents: unopenedCards(language),
       history: { mode: "shared", sharedCount: 0 },
       shared: { rows: [], total: 0 },
       native: { claude: emptyRows(), codex: emptyRows(), opencode: emptyRows() },
@@ -379,7 +387,7 @@ export async function buildDashboardData(
       hooks: null,
       hooksResult: null,
       about,
-      empty: "Open a project folder to see its Avenic state.",
+      empty: sentence(language, "shell.no-folder-detail"),
     };
   }
   const status = await projectStatus(projectRoot, environment);
@@ -396,7 +404,7 @@ export async function buildDashboardData(
     const lastEventId = typeof record.lastEventId === "string" ? record.lastEventId : null;
     const { agents, projections, sync } = await participation(projectRoot, record.id, lastEventId, runs);
     const active = record.id === activeId;
-    sharedRows.push(sessionRow(record, agents, active, now, sync));
+    sharedRows.push(sessionRow(record, agents, active, now, sync, language));
     // Agent Sessions：这条会话归哪几个 agent，就同时出现在哪几张分卡里。分卡上这一行
     // 的同步说的是「那一个 agent 的投影」，所以只问它自己那一份映射 —— 同一份映射，
     // 不再读第二遍盘。
@@ -404,7 +412,7 @@ export async function buildDashboardData(
       byAgent.get(agent)?.push(sessionRow(record, [], active, now, {
         state: syncAcross([projections[agent]], lastEventId),
         running: runs[agent] === "running",
-      }));
+      }, language));
     }
   }
 
@@ -426,11 +434,11 @@ export async function buildDashboardData(
   // 中心的状态只在它自己那一页组装，而且读的是 agent 自己的文件（service 里那一次
   // core 读盘）。别的分区把 centerAgent 留空，于是这一行就是 null。
   const centerResult = options.centerResult ?? null;
-  const center: CenterState | null = options.centerAgent ? await centerState(projectRoot, options.centerAgent, environment, options.language ?? "en") : null;
+  const center: CenterState | null = options.centerAgent ? await centerState(projectRoot, options.centerAgent, environment, language) : null;
   // 钩子页同理：只有它自己在屏幕上的时候才组装，而且只读它正看着的那一档作用域。三个
   // agent 的版本探测器各跑一次，所以别的分区不会为这一页付这一次代价。
   const hooks: DashboardData["hooks"] = options.hooksScope
-    ? await hooksFacts(projectRoot, options.hooksScope, { environment, language: options.language ?? "en", detect: options.detect })
+    ? await hooksFacts(projectRoot, options.hooksScope, { environment, language, detect: options.detect })
     : null;
   return {
     version: cli,
@@ -442,7 +450,7 @@ export async function buildDashboardData(
       configured: status.project.configured,
       lastUpdated: await lastUpdated(projectRoot, status.history.updatedAt),
     },
-    agents: status.agents.map((row) => agentCard(row, status.project.historyMode)),
+    agents: status.agents.map((row) => agentCard(row, status.project.historyMode, language)),
     history: { mode: status.project.historyMode, sharedCount: status.history.sessions },
     shared: { rows: sharedRows, total: records.length },
     native,
@@ -455,14 +463,14 @@ export async function buildDashboardData(
     // 三态照抄，不压成布尔：落后于远端的那份缓存不是「已同步」。
     hub: { spec: status.skills.hub.spec, revision: status.skills.hub.revision, state: status.skills.hub.cache },
     activity: (options.activity ?? []).slice(0, ACTIVITY_LIMIT),
-    transcript: options.transcriptId ? await readTranscript(projectRoot, options.transcriptId, activeId, now) : null,
+    transcript: options.transcriptId ? await readTranscript(projectRoot, options.transcriptId, activeId, now, language) : null,
     center: center === null ? null : { ...center, catalog: { ...center.catalog, note: catalogNote(centerResult) } },
     centerResult,
     hooks,
     // 上一次问题的答案由面板记着；这一页不在屏幕上时它就是 null，页面也不会画它。
     hooksResult: options.hooksScope ? options.hooksResult ?? null : null,
     about,
-    empty: status.project.configured ? null : "This project has no Avenic configuration yet.",
+    empty: status.project.configured ? null : sentence(language, "shell.unconfigured-detail"),
   };
 }
 
@@ -478,7 +486,7 @@ function emptyRows(): { rows: SessionRow[]; total: number } {
 // 页宽的量级——一条比这更长的会话，页面会说出它没读到的那些轮，而不是假装这就是全部。
 const TURN_LIMIT = 200;
 
-async function readTranscript(projectRoot: string, id: string, activeId: string | null, now: number): Promise<DashboardData["transcript"]> {
+async function readTranscript(projectRoot: string, id: string, activeId: string | null, now: number, language: string): Promise<DashboardData["transcript"]> {
   try {
     const { session, events, mappings } = await readCanonicalSession(projectRoot, id);
     // 轮次、说话人、标题全部交给 core：CLI 的 `sessions show` 与这一页读的是同一份
@@ -504,9 +512,9 @@ async function readTranscript(projectRoot: string, id: string, activeId: string 
       active: id === activeId,
       participants: summary.agents.map((agent) => agentLabel(agent)),
       updated: summary.updatedAt ?? null,
-      updatedRelative: relativeTime(summary.updatedAt, now),
+      updatedRelative: relativeTime(summary.updatedAt, now, language),
       eventCount: summary.events,
-      sync: transcriptSync(summary.projections),
+      sync: transcriptSync(summary.projections, language),
       turns,
       diagnostics: formatSessionDiagnostics(projections.flatMap((mapping) => mapping.diagnostics ?? [])),
     };
@@ -518,11 +526,12 @@ async function readTranscript(projectRoot: string, id: string, activeId: string 
 
 // 这条对话同步到什么程度：投影是 core 给的（它读了事件日志，比列表那一格更准），
 // 这一页只说一句话——全都跟上了就是 Synced，有一个落后就说清几个落后。
-function transcriptSync(projections: Array<{ state: string }>): Transcript["sync"] {
+function transcriptSync(projections: Array<{ state: string }>, language: string): Transcript["sync"] {
   const current = projections.filter((projection) => projection.state === "current").length;
-  if (projections.length === 0) return { state: "none", label: "No native session yet" };
-  if (current === projections.length) return { state: "current", label: "Synced" };
-  return { state: "stale", label: current === 0 ? "Stale" : `${projections.length - current} of ${projections.length} stale` };
+  if (projections.length === 0) return { state: "none", label: sentence(language, "transcript.sync-none") };
+  if (current === projections.length) return { state: "current", label: sentence(language, "transcript.sync-current") };
+  if (current === 0) return { state: "stale", label: sentence(language, "sessions.chip.stale") };
+  return { state: "stale", label: sentence(language, "transcript.sync-partial", { count: projections.length - current, total: projections.length }) };
 }
 
 export type { DashboardData, BadgeTone };

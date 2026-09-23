@@ -45,6 +45,19 @@ export const TEXT = {
   "shell.initialize": { en: "Initialize Avenic", zh: "初始化 Avenic" },
   "shell.open-folder": { en: "Open Folder", zh: "打开文件夹" },
   "shell.project-path-title": { en: "Reveal this project in the file manager", zh: "在文件管理器中显示这个项目" },
+  // 空屏那两句话：一句给没打开项目的时候，一句给打开了但还没配置过的项目。标题是上面
+  // 那两个键（shell.no-folder / shell.not-set-up），这里是标题下面那句理由。
+  "shell.no-folder-detail": { en: "Open a project folder to see its Avenic state.", zh: "打开一个项目文件夹，就能看到它的 Avenic 状态。" },
+  "shell.unconfigured-detail": { en: "This project has no Avenic configuration yet.", zh: "这个项目还没有配置 Avenic。" },
+  // 相对时间：宿主算的（存在盘上的永远是那个 ISO 时刻），所以这句也由宿主说。单数复数
+  // 各是一条：中文没有复数，英文有，而这两种说法都得是人写下的句子，不是拼出来的。
+  "time.just-now": { en: "just now", zh: "刚刚" },
+  "time.minute-ago": { en: "1 minute ago", zh: "1 分钟前" },
+  "time.minutes-ago": { en: "{count} minutes ago", zh: "{count} 分钟前" },
+  "time.hour-ago": { en: "1 hour ago", zh: "1 小时前" },
+  "time.hours-ago": { en: "{count} hours ago", zh: "{count} 小时前" },
+  "time.day-ago": { en: "1 day ago", zh: "1 天前" },
+  "time.days-ago": { en: "{count} days ago", zh: "{count} 天前" },
   "shell.noscript": { en: "The dashboard needs JavaScript to read the project.", zh: "仪表盘需要 JavaScript 才能读取项目。" },
   // 一次启动跑着没跑着：core 只有这两档（再加上不说话的那一档 idle）。
   "run.running": { en: "Running", zh: "运行中" },
@@ -173,6 +186,18 @@ export const TEXT = {
   "agent.launch": { en: "Launch", zh: "启动" },
   "agent.change": { en: "Change", zh: "更改" },
   "agent.history": { en: "History", zh: "历史" },
+  // 状态那一格说的是「这个 agent 现在能不能跑」，三个答案各自说完：能跑用的是外壳那一
+  // 句 Ready（同一个词，两种界面说的是同一件事），另两半是各自的原因。
+  "agent.no-cli": { en: "CLI not installed", zh: "没有安装 CLI" },
+  "agent.not-configured": { en: "Not configured", zh: "未配置" },
+  // 自管的 agent 那一句：它自己的供应商、登录与模型不归 Avenic 管，所以卡片只能这么说。
+  "agent.opencode-note": { en: "OpenCode manages its own provider, sign-in and model selection. Avenic does not modify them.", zh: "OpenCode 自己管它的供应商、登录与模型，Avenic 不改动它们。" },
+  // 会话作用域那两格的值来自 core；这一句是它答不出时的那一格（这个 agent 没定过）。
+  "agent.scope-unset": { en: "Not set", zh: "未设置" },
+  // 卡片底下那一步打开的是这个 agent 自己的东西：Claude 是一份文件（center.open-file 就
+  // 是同一句话，写一次），Codex 是一个目录，OpenCode 是它自己的界面。
+  "agent.open-folder": { en: "Open Config Folder", zh: "打开配置文件夹" },
+  "agent.open-opencode": { en: "Open OpenCode", zh: "打开 OpenCode" },
 
   // Model Configuration Center：一个 agent 自己那份 provider 配置。这一页写下去的是
   // agent 的原生文件，Avenic 只做合并 —— 所以每一句说的都是这件事，凭据那一栏尤其：
@@ -482,6 +507,11 @@ export const TEXT = {
   "transcript.fact.updated": { en: "Updated", zh: "更新时间" },
   "transcript.fact.events": { en: "Event count", zh: "事件数" },
   "transcript.fact.sync": { en: "Sync state", zh: "同步状态" },
+  // 投影跟不跟得上：三句话各自说完（全都跟上了、有的落后了、还没有原生会话）。落后那
+  // 一句连「几个落后」一起说出来，不写成「N of M stale」这样的公式。
+  "transcript.sync-none": { en: "No native session yet", zh: "还没有原生会话" },
+  "transcript.sync-current": { en: "Synced", zh: "已同步" },
+  "transcript.sync-partial": { en: "{count} of {total} stale", zh: "{count} / {total} 已落后" },
   "transcript.events": { en: "{count} events", zh: "{count} 条事件" },
   "transcript.showing-turns": { en: "Showing the newest {shown} of {total} turns.", zh: "只显示最新的 {shown} 轮，共 {total} 轮。" },
   // 工具的两种动词：它跑过什么、它带回来什么。工具不是发言人，所以它只说这两句。

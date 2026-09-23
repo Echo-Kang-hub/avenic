@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { HOOK_POLICY, configureProject, finishLaunch, importProjectSessions, joinLaunchGroup, sessionLeasePath, setActiveCanonicalSession, type AgentInstallation } from "@avenic/core";
+import { HOOK_POLICY, LABELS, configureProject, finishLaunch, historyLabel, importProjectSessions, joinLaunchGroup, scopeLabel, sessionLeasePath, setActiveCanonicalSession, type AgentInstallation } from "@avenic/core";
+import { en, sentence } from "../src/i18n/text.ts";
 import { fillApiConfiguration } from "./api-config.ts";
 import { buildDashboardData } from "../src/dashboard/state.ts";
 import { isWebviewMessage, needsSectionData, payloadDetailFor, runStateOf } from "../src/dashboard/protocol.ts";
@@ -19,6 +20,7 @@ import { makeCatalogFixture, testEnv } from "./helpers.ts";
 // 某段文案长什么样；文案的排版在 media/ 里，由 visual fixture 负责。
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const CJK = /[㐀-鿿]/;
 
 function fieldOf(card: { fields: Array<{ label: string; value: string; kind: string; options?: string[] }> }, label: string) {
   return card.fields.find((field) => field.label === label);
@@ -397,6 +399,67 @@ test("buildDashboardData renders the not-opened state for a null root", async ()
     assert.ok(data.empty, "没打开项目也要说清楚原因");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// 卡片上的每一个词都是宿主说的话，而宿主这一层没有语言：它必须问词表。词表本身由
+// i18n-text.test.ts 管着（两半都在、用到的键都在）；这一条管的是另一半——**这一层
+// 有没有走那张表**。少走一处，中文界面里就多一行英文，而其余测试全是绿的：句子是从
+// 这里递出去的，页面只是把它画出来，谁也看不出它没被翻译过。
+test("the words the cards carry come from the table, in the editor's own language", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-words-"));
+  try {
+    const project = path.join(root, "project");
+    const bare = path.join(root, "bare");
+    const env = testEnv(path.join(root, "state"));
+    await mkdir(project, { recursive: true });
+    await mkdir(bare, { recursive: true });
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    await seedClaudePortable(project, [["session-words", [claudeLine("session-words", 0, "user", "Name every word the cards carry")]]]);
+    await importProjectSessions(project, "claude", { environment: env, skipCapture: true });
+    invalidateAgentStatusCache();
+
+    const english = await buildDashboardData(project, env, { cliVersion: "0" });
+    const first = english.agents.find((agent) => agent.id === "claude")!;
+    // 会话作用域与历史模式是 core 的词（`avenic status` 印的也是它们）：宿主这一层不许
+    // 另写一份 —— 那两份会各自漂移，而面板与 CLI 说的必须是同一件事。
+    assert.equal(first.sessions.label, scopeLabel("project"), "会话作用域要说 core 那一句");
+    assert.equal(first.history.label, historyLabel("shared"), "历史模式要说 core 那一句");
+    const englishOpencode = english.agents.find((agent) => agent.id === "opencode")!;
+    assert.equal(englishOpencode.detail, en("agent.opencode-note"), "自管的 agent 那句说明来自词表");
+    // 这台机器上装没装 CLI 是环境的事：三句话里哪一句都可能出现，但只能是词表里那三句
+    // 之一 —— 按它反查出键名，中文那一次就用同一个键去比对。
+    const statusKey = (["shell.ready", "agent.no-cli", "agent.not-configured"] as const).find((key) => en(key) === first.statusText);
+    assert.ok(statusKey, `状态那一句要来自词表，实际是 ${first.statusText}`);
+    assert.equal(first.configLink?.label, en("center.open-file"), "打开配置那一步来自词表");
+
+    // 同一次读取，编辑器是中文：宿主说出的每一句都得是中文那一半。
+    const updated = Date.parse(english.shared.rows[0].updated);
+    const zh = await buildDashboardData(project, env, {
+      cliVersion: "0",
+      language: "zh-cn",
+      now: updated + 5 * 60_000,
+      transcriptId: english.shared.rows[0].id,
+    });
+    const card = zh.agents.find((agent) => agent.id === "claude")!;
+    assert.equal(card.statusText, sentence("zh-cn", statusKey), `状态那一句要说中文，实际是 ${card.statusText}`);
+    assert.ok(CJK.test(card.configLink?.label ?? ""), `打开配置那一步要说中文，实际是 ${card.configLink?.label}`);
+    assert.ok(CJK.test(zh.agents.find((agent) => agent.id === "opencode")!.detail ?? ""), "自管的 agent 那句说明要说中文");
+    assert.equal(zh.shared.rows[0].relative, sentence("zh-cn", "time.minutes-ago", { count: 5 }), "“5 minutes ago”也是宿主说的话，跟着语言走");
+    assert.ok(CJK.test(zh.transcript?.sync.label ?? ""), `同步那一格要说中文，实际是 ${zh.transcript?.sync.label}`);
+    assert.equal(zh.project.configured, true);
+
+    // 没有项目、还没配置过：这两句理由同样是宿主说的。
+    const unopened = await buildDashboardData(null, env, { cliVersion: "0", language: "zh-cn" });
+    assert.ok(CJK.test(unopened.empty ?? ""), `没有项目时那句理由要说中文，实际是 ${unopened.empty}`);
+    assert.ok(CJK.test(unopened.agents[0].statusText), `没有项目时状态那一句要说中文，实际是 ${unopened.agents[0].statusText}`);
+    // 没有项目时那一行认证仍然是 core 的两个词，而不是这里另写的一句。
+    assert.equal(unopened.agents[0].fields[0].label, LABELS.authentication);
+    assert.equal(unopened.agents[0].fields[0].value, LABELS.notChosen);
+    const unconfigured = await buildDashboardData(bare, env, { cliVersion: "0", language: "zh-cn" });
+    assert.ok(CJK.test(unconfigured.empty ?? ""), `没配置过的项目那句理由要说中文，实际是 ${unconfigured.empty}`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
