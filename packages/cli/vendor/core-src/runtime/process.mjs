@@ -1,5 +1,5 @@
 import { spawn as spawnAsync, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
@@ -73,9 +73,24 @@ function invocation(executable, argumentsList, environment) {
 // 子进程站在哪个目录，就该从 PWD 读到哪个目录。shell 里 `cd` 同时移动两者，但调用方可以
 // 单独指定 cwd —— 启动路径交给 agent 的是「项目根」，而项目根是从用户所在目录向上找出来的，
 // 所以 `avenic` 在子目录里运行时两者本就不一致。OpenCode 把 PWD 当作它的项目：两者不一致
-// 时，一条被续接的投影会话答完之后不再退出（2x2 见 dist/logs/opencode-pwd-matrix.txt）。
+// 时，一条被续接的投影会话答完之后不再退出（两个 spawmer 都钉在 test/process-cmd.test.mjs，
+// 续接那一条在 test/opencode-continuation.test.mjs）。
+//
+// 目录本身还可能是链接（macOS 的 /var → /private/var），字面归一得到的路径与子进程报出的
+// 目录于是仍不是同一个。而「子进程报出的目录」两平台不是同一种写法：POSIX 的 getcwd() 给
+// 内核解析后的物理路径，Windows 的 GetCurrentDirectory 保留传进去的那一条。PWD 要跟的是
+// 各自的那一个，所以这里分平台取。
 function withDirectoryInStep(environment, cwd) {
-  return cwd ? { ...environment, PWD: path.resolve(cwd) } : environment;
+  if (!cwd) return environment;
+  let resolved = path.resolve(cwd);
+  if (process.platform !== "win32") {
+    try {
+      resolved = realpathSync(cwd);
+    } catch {
+      // 取不到物理路径的目录，就是调用方给的那一个。
+    }
+  }
+  return { ...environment, PWD: resolved };
 }
 
 // A long-lived child that speaks a protocol over pipes (the Codex app server).

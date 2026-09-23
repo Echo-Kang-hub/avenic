@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -12,8 +14,8 @@ const windows = process.platform === "win32";
 // 子进程站在哪个目录、它从 PWD 读到哪个目录，必须是同一个：shell 里 `cd` 会同时改两者，
 // 但这里的启动路径可以单独指定 cwd —— agent 拿到的是「项目根」，而项目根是从用户所在目录
 // 向上找出来的（`avenic` 在子目录里运行时两者本就不一致）。OpenCode 把 PWD 当作它的项目；
-// 两者不一致时，一条被续接的投影会话答完就不再退出（2x2 见
-// dist/logs/opencode-pwd-matrix.txt）。下面两条把这条规则钉在两个 spawmer 上。
+// 两者不一致时，一条被续接的投影会话答完就不再退出（续接那一条见
+// test/opencode-continuation.test.mjs 的子目录用例）。下面几条把这条规则钉在所有 spawmer 上。
 const whereAmI = "process.stdout.write(JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD }))";
 
 function runIn(cwd, pwd) {
@@ -139,6 +141,42 @@ test("a child started in a directory is told that directory, not the shell's", a
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(elsewhere, { recursive: true, force: true });
+  }
+});
+
+// 目录本身可能是链接：macOS 的 /var → /private/var、任何 junction（Windows 上
+// mklink /J 不需要提权，symlink 需要）。字面归一得到的路径与子进程看到的目录于是仍不是
+// 同一个——子进程那一侧是它真正的 cwd，而 OpenCode 正是拿 PWD 当它的项目。
+async function linkDirectory(link, target) {
+  if (windows) {
+    const made = spawnSync("cmd", ["/c", "mklink", "/J", link, target], { encoding: "utf8" });
+    assert.equal(made.status, 0, `could not create a junction: ${made.stderr || made.stdout}`);
+    return;
+  }
+  await symlink(target, link, "dir");
+}
+
+test("a child started through a linked directory is told the directory it really stands in", async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "avenic-link-"));
+  const real = path.join(base, "real");
+  const link = path.join(base, "link");
+  try {
+    await mkdir(real);
+    await linkDirectory(link, real);
+    const result = runIn(link, link);
+
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    const seen = JSON.parse(result.stdout);
+    // 没有这层链接，测试什么都没证明——两边的写法本来就一样。
+    assert.notEqual(realpathSync(link), link, "the fixture has to be a link for this to mean anything");
+    // 「子进程真正站的地方」两边不是同一种写法：POSIX 的 getcwd() 给内核解析后的物理
+    // 路径，Windows 的 GetCurrentDirectory 保留传给它的那条（junction 不解析）。PWD 要
+    // 跟的是各自的那一个。
+    if (!windows) assert.equal(seen.cwd, realpathSync(link));
+    assert.equal(seen.pwd, seen.cwd, "PWD has to be the directory the child actually stands in");
+  } finally {
+    await rm(link, { recursive: true, force: true });
+    await rm(base, { recursive: true, force: true });
   }
 });
 

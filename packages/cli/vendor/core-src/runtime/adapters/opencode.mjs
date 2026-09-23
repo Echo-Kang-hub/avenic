@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import path from "node:path";
 import { agentSessionsRoot, runtimePaths } from "../config.mjs";
 import { loadCursors, saveCursors } from "../cursors.mjs";
@@ -249,6 +249,24 @@ export async function discoverNativeSession(projectRoot, options = {}) {
 // second, cold; anything slower is a build that cannot be asked.
 const MINT_TIMEOUT_MS = 10_000;
 const MINT_POLL_MS = 200;
+// What one asking may take. The server is already answering on its port by the
+// time it is asked, so this is generous; it is also the floor the asking keeps
+// when the window is nearly spent.
+const MINT_ASK_TIMEOUT_MS = 2_000;
+// How long a stopped server is given to actually be gone. A signal that was
+// sent is not a promise that it was obeyed.
+const MINT_STOP_TIMEOUT_MS = 2_000;
+
+function untilExited(child, exited) {
+  if (exited) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer;
+    const done = () => { clearTimeout(timer); resolve(); };
+    timer = setTimeout(done, MINT_STOP_TIMEOUT_MS);
+    child.once?.("exit", done);
+    child.once?.("error", done);
+  });
+}
 
 function freeLoopbackPort() {
   return new Promise((resolve) => {
@@ -261,15 +279,31 @@ function freeLoopbackPort() {
   });
 }
 
+// Is the server answering on its port yet? Opening a socket asks it for
+// nothing and creates nothing, which is what makes this the half of the
+// question that is safe to repeat.
+function listening(port) {
+  return new Promise((resolve) => {
+    const socket = createConnection({ port, host: "127.0.0.1" });
+    const answer = (there) => { socket.destroy(); resolve(there); };
+    socket.once("connect", () => answer(true));
+    socket.once("error", () => answer(false));
+  });
+}
+
 // One asking of the server for a session. A session is named when it is made
 // and an import never renames one, so the name has to travel with the asking.
-async function askForSessionId(port, projectRoot, title) {
+// It is asked once and only once: the request is what creates the session, and
+// an aborted response does not cancel it, so every retry would leave another of
+// the user's sessions behind, empty. `timeoutMs` is the floor it keeps even at
+// the end of the window — a server that is answering at all answers.
+async function askForSessionId(port, projectRoot, title, timeoutMs) {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/session`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(title ? { directory: projectRoot, title } : { directory: projectRoot }),
-      signal: AbortSignal.timeout(2_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) return null;
     const body = await response.json();
@@ -306,12 +340,18 @@ async function mintSessionId(projectRoot, title, options = {}) {
   }
   let exited = false;
   child.once?.("exit", () => { exited = true; });
+  // A binary that cannot be started reports `error` and never exits. With
+  // nothing listening for it, the id question does not fail — it kills the
+  // caller, and the projection the derived name was waiting for with it.
+  child.once?.("error", () => { exited = true; });
   try {
     const deadline = Date.now() + MINT_TIMEOUT_MS;
     while (!exited && Date.now() < deadline) {
-      const id = await askForSessionId(port, projectRoot, title);
-      if (id) return id;
-      await new Promise((resolve) => setTimeout(resolve, MINT_POLL_MS));
+      if (!(await listening(port))) {
+        await new Promise((resolve) => setTimeout(resolve, MINT_POLL_MS));
+        continue;
+      }
+      return await askForSessionId(port, projectRoot, title, Math.max(MINT_ASK_TIMEOUT_MS, deadline - Date.now()));
     }
     return null;
   } finally {
@@ -319,6 +359,11 @@ async function mintSessionId(projectRoot, title, options = {}) {
       if (child.terminateTree) child.terminateTree();
       else child.kill?.();
     } catch { /* the question is over; a process already gone is not a failure */ }
+    // That server holds the same store `import` and `session list` write
+    // through, and stopping it is a bare signal with nothing to wait for:
+    // carrying on the instant it is sent turns a lock still held into a fatal
+    // projection error, at a rate that depends on the machine.
+    await untilExited(child, exited);
   }
 }
 
@@ -340,21 +385,38 @@ async function projectedName(projectRoot, canonicalSessionId) {
  * hear about how it got it. A projection being updated keeps the name it
  * already has, a session already projected keeps the name it was given, and
  * everything else is named by OpenCode — with a derived id as the last resort,
- * said out loud rather than quietly.
+ * said out loud rather than quietly. A derived id is not a name even when it is
+ * the one on record, so what is recorded is checked against it rather than
+ * trusted.
  */
 async function nameSession(projectRoot, canonical, options = {}) {
-  if (options.nativeSessionId) return { nativeSessionId: options.nativeSessionId, diagnostics: [] };
-  const known = await projectedName(projectRoot, canonical.id);
-  if (known) return { nativeSessionId: known, diagnostics: [] };
+  // A version of this code recorded the id it had derived in the mapping and in
+  // the payload, which are the same two places a name OpenCode gave is kept: on
+  // an upgraded machine neither of them says which it is, and the console
+  // refuses to run the session a derived id names. Recomputing it is what tells
+  // the two apart.
+  const derived = nativeId("ses", canonical.id);
+  const recorded = options.nativeSessionId ?? await projectedName(projectRoot, canonical.id);
+  if (recorded && recorded !== derived) return { nativeSessionId: recorded, diagnostics: [] };
   const minted = await mintSessionId(projectRoot, canonical.title, options);
-  if (minted) return { nativeSessionId: minted, diagnostics: [] };
-  return {
-    nativeSessionId: nativeId("ses", canonical.id),
-    diagnostics: [{
+  if (minted && !recorded) return { nativeSessionId: minted, diagnostics: [] };
+  const diagnostics = [];
+  // Replacing a placeholder is a repair, and a repair is worth saying out loud.
+  // When the asking failed instead, the id did not change and the message below
+  // is the whole of what the user needs.
+  if (recorded && minted) {
+    diagnostics.push({
+      code: "derived_session_id",
+      message: "The id recorded for this session was one Avenic derived, which the provider console refuses to run; OpenCode named the session again.",
+    });
+  }
+  if (!minted) {
+    diagnostics.push({
       code: "derived_session_id",
       message: "OpenCode could not be asked for a session id; the session is projected under an id derived from the shared session.",
-    }],
-  };
+    });
+  }
+  return { nativeSessionId: minted ?? derived, diagnostics };
 }
 
 // Project a canonical conversation through OpenCode's supported export/import
@@ -380,7 +442,11 @@ export async function writeCanonical(projectRoot, canonical, options = {}) {
   const payload = `${JSON.stringify(projected.data, null, 2)}\n`;
   const nativeRevision = hashContent(payload);
   const sessions = matchingSessions(projectRoot, options);
+  // "Nothing new to import" is only true of the session the mapping names: a
+  // session that was just named is in the list from the moment it is created
+  // and holds nothing yet, and the import is what puts the conversation in it.
   if (sessions.some((session) => session.id === nativeSessionId)
+    && options.mapping?.nativeSessionId === nativeSessionId
     && options.mapping?.canonicalRevision === options.canonicalRevision) {
     return { nativeSessionId, nativeRevision, diagnostics, imported: false };
   }

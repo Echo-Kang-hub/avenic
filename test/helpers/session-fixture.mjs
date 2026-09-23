@@ -2,11 +2,14 @@
 // history, a temp project, a valid runtime config and a fake agent binary, so
 // every launch, capture and recovery test exercises the production paths.
 import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { spawnExecutableSync } from "../../packages/core/src/runtime/process.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -343,8 +346,18 @@ if (command === "serve") {
       current.sessions.push({ id, title, created, updated: created, directory: asked.directory ?? process.cwd() });
       current.exports[id] = JSON.stringify({ id, messages: [] });
       save(current);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ id }));
+      // A session exists from the moment it is created, not from the moment the
+      // answer arrives: a server that is slow to say so has still made one. The
+      // client may be gone by then, so a failed write here is the client's
+      // abort and not the fixture's problem.
+      response.on("error", () => {});
+      const answer = () => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ id }));
+      };
+      const delay = Number(current.slowServeMs ?? 0);
+      if (delay > 0) setTimeout(answer, delay);
+      else answer();
     });
   });
   server.listen(Number(rest[rest.indexOf("--port") + 1]), "127.0.0.1");
@@ -460,9 +473,62 @@ export async function withOpenCodeProject(run, options = {}) {
       await writeState();
     },
     /** An OpenCode build whose server API is missing or will not start. */
-    async failServe() {
-      state.failServe = true;
+    async failServe(failed = true) {
+      state.failServe = failed;
       await writeState();
+    },
+    /** A server that takes its time answering the request that names a session
+     *  — having already created the session it is answering about. */
+    async slowMint(delayMs) {
+      state.slowServeMs = delayMs;
+      await writeState();
+    },
+
+    /**
+     * Stand in for the server a projection starts to name a session, and only
+     * for that one command: everything else goes through the real spawmer, so
+     * the fixture's own opencode still answers `session list` and `import` and
+     * the naming server is the only thing that misbehaves. The two endings a
+     * child can have that no exit event expresses — a server whose binary
+     * cannot be started at all, and one that takes its time dying — are exactly
+     * the two a projection has to survive, and neither can be asked of a real
+     * process on every platform. `entries` records the order things happened
+     * in, for the tests whose subject is that order.
+     */
+    mintStandIn(mode, entries = []) {
+      return {
+        entries,
+        spawn(executable, argumentsList, options) {
+          if (argumentsList[0] !== "serve") {
+            entries.push(`call: ${argumentsList.join(" ")}`);
+            return spawnExecutableSync(executable, argumentsList, { ...options, spawn: undefined });
+          }
+          entries.push("mint spawned");
+          const child = new EventEmitter();
+          if (mode === "error") {
+            // A process that never started has no exit to wait for, and no
+            // kill that could produce one.
+            child.kill = () => {};
+            process.nextTick(() => child.emit("error", new Error("spawn opencode ENOENT")));
+            return child;
+          }
+          const server = createServer((request, response) => {
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(JSON.stringify({ id: "ses_asked_1" }));
+          });
+          server.listen(Number(argumentsList[argumentsList.indexOf("--port") + 1]), "127.0.0.1");
+          child.kill = () => {
+            // A server that was asked takes a moment to let go of what it held.
+            entries.push("mint signalled");
+            setTimeout(() => {
+              server.close();
+              entries.push("mint exited");
+              child.emit("exit", 0);
+            }, 60);
+          };
+          return child;
+        },
+      };
     },
     /** The sessions OpenCode's own server created, with the names it was asked for. */
     async mintedSessions() {

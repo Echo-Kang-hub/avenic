@@ -132,6 +132,122 @@ test("an OpenCode build that cannot name a session still projects one", async ()
   });
 });
 
+test("a naming server whose binary cannot be started leaves the projection a name to derive", async () => {
+  // A binary that cannot be started reports `error`, never `exit`. With nothing
+  // listening for it that is not a failed question — it is the whole process
+  // dying, taking the projection and the name derived behind it down too.
+  await withOpenCodeProject(async ({ projectRoot, environment, mintStandIn }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+    const { spawn } = mintStandIn("error");
+
+    const result = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment, spawn });
+
+    assert.match(result.nativeSessionId, /^ses_[0-9a-f]{24}$/, "a server that cannot start is a question that could not be asked");
+    assert.ok(result.diagnostics.some((diagnostic) => diagnostic.code === "derived_session_id"), `expected the derived name to be reported, saw ${JSON.stringify(result.diagnostics)}`);
+    const projection = JSON.parse(await readFile(projectionFile(projectRoot, "shared"), "utf8"));
+    assert.equal(projection.info.id, result.nativeSessionId);
+  });
+});
+
+test("a machine where opencode cannot be started is told so, not killed by the question", async () => {
+  // No OpenCode at all — the shape a machine has when the binary is not there
+  // or will not run. The projection cannot get past asking, and it still has to
+  // fail as a projection: what must not happen is the unhandled `error` of a
+  // server nobody was listening to taking the whole caller down with it.
+  await withOpenCodeProject(async ({ projectRoot, root, environment }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+    const noBinaries = path.join(root, "no-binaries");
+    await mkdir(noBinaries, { recursive: true });
+
+    // Before the listener existed this never rejected: the process died here.
+    await assert.rejects(
+      projectCanonicalSession(projectRoot, "shared", "opencode", { environment: { ...environment, PATH: noBinaries, Path: noBinaries } }),
+      /Unable to launch opencode/,
+    );
+  });
+});
+
+test("an id an older version derived is not mistaken for the name OpenCode gave", async () => {
+  // A version of this code wrote the id it derived into the mapping and into
+  // the payload — the same two places a name OpenCode gave is kept — so on an
+  // upgraded machine neither of them says which it is. A derived id is
+  // recognisable by recomputing it, and those are exactly the sessions the
+  // provider console refuses: they have to be asked about again.
+  await withOpenCodeProject(async ({ projectRoot, environment, failServe, invocations }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+
+    await failServe();
+    const unnamed = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment });
+    assert.match(unnamed.nativeSessionId, /^ses_[0-9a-f]{24}$/);
+
+    await failServe(false);
+    const named = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment });
+
+    assert.notEqual(named.nativeSessionId, unnamed.nativeSessionId, "the id on record was derived, so it is not a name");
+    assert.equal(named.nativeSessionId, JSON.parse(await readFile(projectionFile(projectRoot, "shared"), "utf8")).info.id);
+    assert.ok(named.diagnostics.some((diagnostic) => diagnostic.code === "derived_session_id"), `the repair has to be said out loud, saw ${JSON.stringify(named.diagnostics)}`);
+    assert.equal((await invocations()).filter((line) => line.startsWith("serve ")).length, 2, "the session has to be asked for a name again");
+  });
+});
+
+test("a name OpenCode gave is kept by every later projection", async () => {
+  // The discriminator has to tell the two apart: an id OpenCode minted is
+  // never re-asked for, or every projection would manufacture a session.
+  await withOpenCodeProject(async ({ projectRoot, environment, invocations }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+
+    const first = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment });
+    const again = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment });
+
+    assert.equal(again.nativeSessionId, first.nativeSessionId);
+    assert.deepEqual(again.diagnostics, []);
+    assert.equal((await invocations()).filter((line) => line.startsWith("serve ")).length, 1, "a session OpenCode named is named once");
+  });
+});
+
+test("a server that answers slowly is asked once, not until the store fills with its sessions", async () => {
+  // The request is what creates the session, and an aborted response does not
+  // cancel it — so a projection that re-asks while the answer is missing leaves
+  // one empty session in the user's own store per attempt. Waiting for the
+  // server is the part that is safe to repeat: opening a socket creates
+  // nothing. So it is waited for, and then asked exactly once.
+  await withOpenCodeProject(async ({ projectRoot, environment, slowMint, mintedSessions }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+    await slowMint(2_500);
+
+    const result = await projectCanonicalSession(projectRoot, "shared", "opencode", { environment });
+
+    assert.match(result.nativeSessionId, /^ses_minted_/, "a server that answers late is still a server that answers");
+    assert.deepEqual((await mintedSessions()).map((session) => session.id), [result.nativeSessionId], "asking again would leave another session behind, and those are the user's");
+  });
+});
+
+test("the store is not touched again until the naming server is gone", async () => {
+  // The naming server holds the same store `import` and `session list` use, and
+  // on POSIX it is stopped with a bare SIGTERM: returning from the kill is not
+  // the same thing as the process having let go. Carrying on immediately turns
+  // a transient lock into a fatal projection error.
+  await withOpenCodeProject(async ({ projectRoot, environment, mintStandIn }) => {
+    await createCanonicalSession(projectRoot, { id: "shared", title: "Shared" });
+    await appendCanonicalEvents(projectRoot, "shared", [event("a", "user", "A")]);
+    const standIn = mintStandIn("slow-exit");
+
+    await projectCanonicalSession(projectRoot, "shared", "opencode", { environment, spawn: standIn.spawn });
+
+    const entries = standIn.entries;
+    const signalled = entries.indexOf("mint signalled");
+    const exited = entries.indexOf("mint exited");
+    const next = entries.findIndex((entry, index) => index > signalled && entry.startsWith("call:"));
+    assert.ok(signalled >= 0 && exited >= 0 && next > signalled, `the mint has to be stopped, saw ${JSON.stringify(entries)}`);
+    assert.ok(exited < next, `the next opencode command must start only after the naming server is gone, saw ${JSON.stringify(entries)}`);
+  });
+});
+
 test("an OpenCode projection runs on the model OpenCode resolved for this environment", async () => {
   await withOpenCodeProject(async ({ projectRoot, environment, setConfiguredModel }) => {
     await setConfiguredModel("opencode/nemotron-3.5-lightning-free");
@@ -251,7 +367,7 @@ test("a continuation started from a subdirectory runs OpenCode in the project, a
   // the project while the shell is somewhere below it. The agent has to be told
   // the directory it is really started in: OpenCode reads PWD as its project,
   // and with the two disagreeing a projected session answered and then never
-  // exited (the 2x2 in dist/logs/opencode-pwd-matrix.txt).
+  // exited (test/process-cmd.test.mjs pins the two spawmers that fix that).
   await withOpenCodeProject(async ({ projectRoot, runCli, runContexts }) => {
     await initializeAgent(projectRoot, "opencode", { sessionScope: "global" });
     await setHistoryMode(projectRoot, "shared");
