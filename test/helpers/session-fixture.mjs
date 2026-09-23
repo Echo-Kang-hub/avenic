@@ -831,7 +831,7 @@ export async function withClaudeProject(run, options = {}) {
 // so removing the tree does not reach it, and a fixture makes a fresh project
 // every run: without this, every launch test would leave one directory behind
 // on the machine for good.
-async function removeLaunchState(projectRoot) {
+export async function removeLaunchState(projectRoot) {
   for (const agentId of ["claude", "codex", "opencode"]) {
     const lease = sessionLeasePath(agentId, projectRoot);
     if (existsSync(lease)) await removeTree(lease);

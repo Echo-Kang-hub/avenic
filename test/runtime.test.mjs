@@ -27,6 +27,7 @@ import * as claudeSessions from "../packages/core/src/runtime/adapters/claude.mj
 import * as codexSessions from "../packages/core/src/runtime/adapters/codex.mjs";
 import * as opencodeSessions from "../packages/core/src/runtime/adapters/opencode.mjs";
 import { observeSharedNativeSessions } from "../packages/core/src/runtime/session-interop.mjs";
+import { removeLaunchState } from "./helpers/session-fixture.mjs";
 import { avenicPackageSpec, updateAvenic } from "../packages/cli/src/cli/self-update.mjs";
 import {
   PROJECT_ROOT_TOKEN,
@@ -92,6 +93,9 @@ async function withTempProject(run) {
     await run(projectRoot);
   } finally {
     await rm(projectRoot, { recursive: true, force: true });
+    // 启动组的 state 按项目身份命名，落在系统临时目录里 —— 不在这个 root 下面，
+    // 所以删掉项目目录够不着它。
+    await removeLaunchState(projectRoot);
   }
 }
 
