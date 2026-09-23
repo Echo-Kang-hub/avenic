@@ -5,9 +5,27 @@ import path from "node:path";
 import process from "node:process";
 import test from "node:test";
 
-import { quoteShellLine, spawnExecutableSync } from "../packages/core/src/index.mjs";
+import { quoteShellLine, spawnExecutable, spawnExecutableSync } from "../packages/core/src/index.mjs";
 
 const windows = process.platform === "win32";
+
+// 子进程站在哪个目录、它从 PWD 读到哪个目录，必须是同一个：shell 里 `cd` 会同时改两者，
+// 但这里的启动路径可以单独指定 cwd —— agent 拿到的是「项目根」，而项目根是从用户所在目录
+// 向上找出来的（`avenic` 在子目录里运行时两者本就不一致）。OpenCode 把 PWD 当作它的项目；
+// 两者不一致时，一条被续接的投影会话答完就不再退出（2x2 见
+// dist/logs/opencode-pwd-matrix.txt）。下面两条把这条规则钉在两个 spawmer 上。
+const whereAmI = "process.stdout.write(JSON.stringify({ cwd: process.cwd(), pwd: process.env.PWD }))";
+
+function runIn(cwd, pwd) {
+  return spawnExecutableSync(process.execPath, ["-e", whereAmI], {
+    cwd,
+    env: { ...process.env, PWD: pwd },
+    stdio: "pipe",
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
 
 // .cmd/.bat 经 cmd.exe 透传（见 runtime/process.mjs 的 invocation）：参数里的 & | ^ < > ( )
 // 会被 cmd 二次解析，必须整体加引号。下面用 `echo %*` 桩把真实到达批处理的参数回显出来。
@@ -108,5 +126,35 @@ test("POSIX executables receive arguments unmodified", { skip: windows }, async 
     assert.equal(result.stdout.trim(), "a&b|c^d(e)");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a child started in a directory is told that directory, not the shell's", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-cwd-"));
+  const elsewhere = await mkdtemp(path.join(os.tmpdir(), "avenic-pwd-"));
+  try {
+    const result = runIn(dir, elsewhere);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout), { cwd: dir, pwd: dir });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(elsewhere, { recursive: true, force: true });
+  }
+});
+
+test("the async spawmer tells its child the same thing", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-cwd-"));
+  const elsewhere = await mkdtemp(path.join(os.tmpdir(), "avenic-pwd-"));
+  try {
+    const result = await spawnExecutable(process.execPath, ["-e", whereAmI], {
+      cwd: dir,
+      env: { ...process.env, PWD: elsewhere },
+      windowsHide: true,
+    });
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
+    assert.deepEqual(JSON.parse(result.stdout), { cwd: dir, pwd: dir });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(elsewhere, { recursive: true, force: true });
   }
 });

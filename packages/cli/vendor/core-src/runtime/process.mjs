@@ -70,11 +70,19 @@ function invocation(executable, argumentsList, environment) {
   return { command: resolved, argumentsList };
 }
 
+// 子进程站在哪个目录，就该从 PWD 读到哪个目录。shell 里 `cd` 同时移动两者，但调用方可以
+// 单独指定 cwd —— 启动路径交给 agent 的是「项目根」，而项目根是从用户所在目录向上找出来的，
+// 所以 `avenic` 在子目录里运行时两者本就不一致。OpenCode 把 PWD 当作它的项目：两者不一致
+// 时，一条被续接的投影会话答完之后不再退出（2x2 见 dist/logs/opencode-pwd-matrix.txt）。
+function withDirectoryInStep(environment, cwd) {
+  return cwd ? { ...environment, PWD: path.resolve(cwd) } : environment;
+}
+
 // A long-lived child that speaks a protocol over pipes (the Codex app server).
 // The caller owns its lifetime; this only solves "how do I start this binary on
 // this platform", the same way the two spawmers below do.
 export function spawnExecutableChild(executable, argumentsList, options = {}) {
-  const environment = options.env ?? process.env;
+  const environment = withDirectoryInStep(options.env ?? process.env, options.cwd);
   const { spawn, ...spawnOptions } = options;
   if (spawn) {
     return spawn(executable, argumentsList, { ...spawnOptions, env: environment });
@@ -102,7 +110,7 @@ export function spawnExecutableChild(executable, argumentsList, options = {}) {
 }
 
 export function spawnExecutableSync(executable, argumentsList, options = {}) {
-  const environment = options.env ?? process.env;
+  const environment = withDirectoryInStep(options.env ?? process.env, options.cwd);
   const { spawn, ...spawnOptions } = options;
   if (spawn) {
     return spawn(executable, argumentsList, { ...spawnOptions, env: environment });
@@ -117,7 +125,7 @@ export function spawnExecutableSync(executable, argumentsList, options = {}) {
 // variant monopolises the thread for as long as the child runs, which for a
 // network operation is seconds of frozen window.
 export function spawnExecutable(executable, argumentsList, options = {}) {
-  const environment = options.env ?? process.env;
+  const environment = withDirectoryInStep(options.env ?? process.env, options.cwd);
   const { spawn, capture = true, ...spawnOptions } = options;
   return new Promise((resolve) => {
     const resolved = invocation(executable, argumentsList, environment);
