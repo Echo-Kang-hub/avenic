@@ -68,6 +68,33 @@ test("canonical event append is deterministic, idempotent, and preserves unknown
   });
 });
 
+// 同一场对话有三处可能同时追加：启动器的退出那一遍、耐久看门狗、编辑器宿主。追加是
+// 「读整份、改、写回」——没有门的话，后写回的那一份拿自己的旧快照盖上去，另一支笔
+// 刚写的事件整段消失；而游标会记住「那份 native 已导入过」，之后不会再读它一次。
+test("two writers appending at the same time both land, and the record agrees with the log", async () => {
+  await withStore(async (projectRoot) => {
+    for (let round = 0; round < 6; round += 1) {
+      const { id } = await createCanonicalSession(projectRoot, { source: "claude" });
+      const event = (side, index) => ({
+        id: `${side}:${index}`,
+        role: "user",
+        createdAt: `2026-09-24T00:00:0${index}.000Z`,
+        content: [{ type: "text", text: `${side} ${index}` }],
+      });
+      const [first, second] = await Promise.all([
+        appendCanonicalEvents(projectRoot, id, [event("a", 1), event("a", 2)]),
+        appendCanonicalEvents(projectRoot, id, [event("b", 3), event("b", 4)]),
+      ]);
+      assert.equal(first.added + second.added, 4, `round ${round}: both writers' events counted`);
+      const stored = await readCanonicalSession(projectRoot, id);
+      assert.deepEqual(stored.events.map((entry) => entry.id).sort(), ["a:1", "a:2", "b:3", "b:4"], `round ${round}: nothing lost`);
+      const record = JSON.parse(await readFile(path.join(projectRoot, ".agents", "sessions", "canonical", id, "session.json"), "utf8"));
+      assert.equal(record.eventCount, 4, `round ${round}: the record's count is the log's count`);
+      assert.equal(record.lastEventId, stored.events.at(-1).id, `round ${round}: and its end is the log's end`);
+    }
+  });
+});
+
 test("native mappings retain stable projection identity and revision hashes", async () => {
   await withStore(async (projectRoot) => {
     const { id } = await createCanonicalSession(projectRoot, { source: "opencode" });

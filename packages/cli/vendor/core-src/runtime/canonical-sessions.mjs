@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.mjs";
 import { runtimePaths } from "./config.mjs";
@@ -40,6 +40,42 @@ async function writeAtomic(file, value) {
 async function readJson(file, fallback) {
   if (!existsSync(file)) return fallback;
   return JSON.parse(await readFile(file, "utf8"));
+}
+
+// 一次只有一支笔。同一场对话有三处可能同时追加（启动器的退出那一遍、耐久看门狗、
+// 编辑器宿主），而每一次追加都是「读整份、改、写回」：没有门的话，后写回的那一份拿
+// 自己的旧快照盖上去，另一支笔刚写的事件整段消失 —— 而且游标记下「那份 native 已经
+// 导入过了」，之后再也不会读它一次。门是一枚目录：mkdir 在 POSIX 与 Windows 上都是
+// 原子的，建得成才算拿到。停得太久（被杀掉的进程）留下的门按时间戳接手；等到底了
+// 宁可放行也不挂着 —— 有界的长等待比没有尽头的等待轻。
+const APPEND_LOCK = "append.lock";
+const APPEND_LOCK_STALE_MS = 15_000;
+const APPEND_LOCK_WAIT_MS = 5_000;
+const APPEND_LOCK_POLL_MS = 25;
+
+async function withAppendLock(directory, id, run) {
+  if (!existsSync(path.join(directory, "session.json"))) throw new Error(`Unknown canonical session: ${id}`);
+  const lockPath = path.join(directory, APPEND_LOCK);
+  const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch {
+      // 门已有人守着 —— 或者是被杀死的那位留下的。
+    }
+    // 等的每一圈都受同一个期限约束：接手失败、读不动、删不掉，都只会再多等一圈，
+    // 不会变成原地打转 —— 一个失去边界的等待会烧掉整个进程。
+    if (attempt > 0 && Date.now() >= deadline) break;
+    const stale = await stat(lockPath).then((info) => Date.now() - info.mtimeMs > APPEND_LOCK_STALE_MS, () => false);
+    if (stale) await rm(lockPath, { recursive: true, force: true }).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, APPEND_LOCK_POLL_MS));
+  }
+  try {
+    return await run();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
 }
 
 function filterSecrets(value) {
@@ -191,42 +227,44 @@ export async function upgradeCanonicalSessionTitle(projectRoot, id, title, optio
 
 export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
   if (!Array.isArray(inputEvents)) throw new Error("Canonical events must be an array");
-  const stored = await readCanonicalSession(projectRoot, id);
-  const known = new Set(stored.events.map((event) => event.id));
-  const additions = [];
-  let duplicate = 0;
-  for (const raw of inputEvents) {
-    const event = normalizeEvent(raw);
-    if (known.has(event.id)) {
-      duplicate += 1;
-    } else {
-      known.add(event.id);
-      additions.push(event);
-    }
-  }
-  if (additions.length === 0) return { added: 0, duplicate };
   const directory = sessionDirectory(projectRoot, id);
-  const allEvents = [...stored.events, ...additions];
-  await writeAtomic(path.join(directory, "events.jsonl"), `${allEvents.map((event) => JSON.stringify(event)).join("\n")}\n`);
-  const state = deriveState(allEvents);
-  await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
-  const session = {
-    ...stored.session,
-    state,
-    updatedAt: now(),
-    revision: canonicalSessionRevision(allEvents),
-    // Written next to the events for the readers that only need to say how
-    // much history there is and where it ends. Sizing a canonical session by
-    // reading its event log is what made a status on a real project open tens
-    // of megabytes; the log is the only place these two numbers can be known
-    // exactly, and this is the write that just had them in hand.
-    eventCount: allEvents.length,
-    lastEventId: allEvents.at(-1)?.id ?? null,
-  };
-  await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
-  // The conversation grew: a watcher re-reads this one instead of the store.
-  await refreshStateStamp(projectRoot, { grew: additions.length });
-  return { added: additions.length, duplicate };
+  return withAppendLock(directory, id, async () => {
+    const stored = await readCanonicalSession(projectRoot, id);
+    const known = new Set(stored.events.map((event) => event.id));
+    const additions = [];
+    let duplicate = 0;
+    for (const raw of inputEvents) {
+      const event = normalizeEvent(raw);
+      if (known.has(event.id)) {
+        duplicate += 1;
+      } else {
+        known.add(event.id);
+        additions.push(event);
+      }
+    }
+    if (additions.length === 0) return { added: 0, duplicate };
+    const allEvents = [...stored.events, ...additions];
+    await writeAtomic(path.join(directory, "events.jsonl"), `${allEvents.map((event) => JSON.stringify(event)).join("\n")}\n`);
+    const state = deriveState(allEvents);
+    await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
+    const session = {
+      ...stored.session,
+      state,
+      updatedAt: now(),
+      revision: canonicalSessionRevision(allEvents),
+      // Written next to the events for the readers that only need to say how
+      // much history there is and where it ends. Sizing a canonical session by
+      // reading its event log is what made a status on a real project open tens
+      // of megabytes; the log is the only place these two numbers can be known
+      // exactly, and this is the write that just had them in hand.
+      eventCount: allEvents.length,
+      lastEventId: allEvents.at(-1)?.id ?? null,
+    };
+    await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
+    // The conversation grew: a watcher re-reads this one instead of the store.
+    await refreshStateStamp(projectRoot, { grew: additions.length });
+    return { added: additions.length, duplicate };
+  });
 }
 
 export async function syncNativeMapping(projectRoot, id, mapping) {
