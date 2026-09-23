@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -106,6 +106,22 @@ test("a file Avenic cannot read is never overwritten", async () => {
     await writeFile(file, "{ half a file\n");
     await assert.rejects(() => writeHookActions(project, "project", [desktop], { environment }), /not valid JSON/);
     assert.equal(await readFile(file, "utf8"), "{ half a file\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a file that is there but cannot be read is not written over either", async () => {
+  // 「还没写过」和「读不动」在这一段里是同一次 throw，而它们的下一步正好相反：前面那个
+  // 是空的，后面那个的内容是用户的。把读不动当成空的，这条路的下一步（把整份名单写掉）
+  // 就是把用户配过的通知删掉 —— 上面那条规矩管的是读不懂的 JSON，读不动的文件也一样。
+  const root = await sandbox();
+  try {
+    const { project, environment } = await machine(root);
+    const file = hookActionsPath(project);
+    await mkdir(file, { recursive: true }); // 那个位置上有一份读不出来的东西
+    await assert.rejects(() => writeHookActions(project, "project", [desktop], { environment }), /cannot be read/);
+    assert.equal((await stat(file)).isDirectory(), true, "它一个字节都没动");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

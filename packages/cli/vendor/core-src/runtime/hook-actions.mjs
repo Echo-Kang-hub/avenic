@@ -157,8 +157,12 @@ export async function writeHookActions(projectRoot, scope, actions, { environmen
   let before = "";
   try {
     before = readFileSync(file, "utf8");
-  } catch {
-    // 还没写过：那就是空的，不是错误。
+  } catch (error) {
+    // 还没写过的那一份是空的 —— 但「读不动」不是。这两件事在这一段里长得一样（同一次
+    // throw），下一步却正好相反：这条路的下一步是把整份名单写掉，而那个位置上读不动的
+    // 东西里可能就是用户配过的通知。上面那条规矩管的是读不懂的 JSON，读不动的文件是
+    // 同一件事，说的话也用同一句。
+    if (error?.code !== "ENOENT") throw new Error(`${file} cannot be read (${error?.code ?? error?.message}) — Avenic will not rewrite a file it cannot read`);
   }
   const parsed = parseJsonObject(before);
   const value = `${JSON.stringify({ ...parsed, actions: wanted }, null, 2)}\n`;
