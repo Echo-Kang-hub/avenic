@@ -153,7 +153,9 @@ async function interactiveProjectDraft(projectRoot, editing = false, prompts = {
       // runs there is nothing left to ask, and a key pressed now cannot decide
       // an answer that is already being written.
       const result = await applyProjectDraft(projectRoot, draft_);
-      for (const entry of result.released ?? []) reportRelease(entry);
+      // What the write did is printed by the caller, after the wizard settles:
+      // the settled frame erases from its first line to the bottom of the
+      // screen, so anything printed here would be wiped before it was read.
       return { result, summary: `Avenic project ${editing ? "updated" : "initialized"} · ${projectRoot}` };
     },
   });
@@ -208,6 +210,13 @@ async function dispatchProjectSetup(argumentsList, editing = false, options = {}
     // is no second summary to print.
     const applied = await interactiveProjectDraft(projectRoot, editing, prompts);
     if (!applied) return 0;
+    // After the settle, and only after it: what the answers did to the agent's
+    // own configuration file — the lines the Center merged in, and the file a
+    // replaced answer left behind — is read on the frame the user is looking at,
+    // not on the one that was just erased. The Center's writes come first
+    // because they were committed first.
+    for (const entry of applied.center ?? []) reportCenter(entry);
+    for (const entry of applied.released ?? []) reportRelease(entry);
     const { config, imported } = applied;
     if (imported.length) console.log(`Imported native histories from ${imported.length} agent(s) into the shared workspace.`);
     if (config.historyMode === "shared" && imported.length === 0) {
@@ -301,10 +310,11 @@ Options for init/change:
   --history shared|isolated         One shared history across agents, or separate histories
 Authentication is one answer per agent, and it is Account or API. Account
 configures no model: the agent signs in itself, and nothing about a provider is
-asked. API prepares the agent's own configuration file — Avenic creates it empty
-if it is missing and never writes into it, so the provider, endpoint, model and
-credential stay yours to fill in (the dashboard reads them back out). A project
-that has not answered is asked once at launch.
+asked. API names the agent's own configuration file — Avenic creates it empty if
+it is missing, and \`avenic change\` can fill in the provider, endpoint, model and
+credential for you, merging into everything else the file already holds. Saying
+Set up by hand leaves the file entirely yours (the dashboard reads either back
+out). A project that has not answered is asked once at launch.
 Shared history starts empty and is imported from whatever the agents already
 have; isolated histories are imported on request with \`avenic sessions sync\`.
 A shared project shares a history; a plain launch still opens a new
@@ -328,6 +338,7 @@ Per-agent commands (thin wrappers over the project settings):
 
 Status:
   avenic status [--json]              Project, history, agents and Skills in one view
+  avenic hook emit --agent <id>       Report one agent hook event (reads the payload as JSON on stdin)
 
 Skills:
   avenic skills                       Open the Skills menu (interactive on a terminal)
@@ -406,8 +417,9 @@ function agentAuthNotes(agent, card) {
 
 // The one line that says what an answer means on disk, so `init` and `auth`
 // never leave the user guessing which file the next launch will read. Account
-// configures no model — the agent signs in — and API is a file Avenic prepares
-// and never writes into, so the sentence differs by method and by scope.
+// configures no model — the agent signs in — and API names the file the agent
+// reads its provider, endpoint and model from, so the sentence differs by
+// method and by scope.
 function printMethodNote(agent, config) {
   // 自管认证的 agent 没有「还没回答」这一态：认证和 provider 都是它自己的，启动
   // 路径上也不存在这一问。说它「还没有认证方式、启动时会问一次」是把别人的句子
@@ -426,7 +438,7 @@ Account: ${agent.displayName} uses this machine's own sign-in. Avenic stores no 
     return;
   }
   console.log(`
-API: ${agent.displayName} reads its provider, endpoint and model from ${modelConfigRelative(agent.id, config.configScope)}, a file of its own that Avenic prepares and never writes into. Fill it in — by hand, or with whatever tool you already use — and the next launch reads it.`);
+API: ${agent.displayName} reads its provider, endpoint and model from ${modelConfigRelative(agent.id, config.configScope)} — its own file, in its own keys. \`avenic change\` fills it in for you, or fill it in by hand with whatever tool you already use; the next launch reads either.`);
 }
 
 /**
@@ -501,6 +513,35 @@ function releaseLines(entry) {
 function reportRelease(entry, io = console) {
   if (!entry) return;
   for (const line of releaseLines(entry)) io.log(line);
+}
+
+/**
+ * What the Center's write did, in the same shape a release reports in: one line
+ * naming the file, then every line that moved.
+ *
+ * It is a merge into a file that also holds the user's own permissions, hooks
+ * and variables, so "which lines" is the whole answer, and the lines are the
+ * ones the preview masked — a credential goes into the file and never onto the
+ * screen. A merge that changes nothing says so instead of printing an empty
+ * list: the user answered the questions, and silence would read as ignorance.
+ */
+function centerLines(entry) {
+  // 向导在同一屏上问的是「Claude Code provider」，所以这一行也叫它 Claude Code：
+  // 同一屏上同一个 agent 只该有一个名字。
+  const name = getAgent(entry.agentId).displayName;
+  if (!entry.written) return [`${name}: ${entry.relative} already matches — nothing written.`];
+  return [
+    `${name}: wrote ${entry.relative}`,
+    ...entry.diff.filter((line) => line.kind !== "same").map((line) => `  ${line.kind === "add" ? "+" : "-"} ${line.text}`),
+  ];
+}
+
+// A configuration the Center did not write — every answer was "Set up by hand",
+// or the agent's method is not API — is not a silent skip: it is a question
+// nobody asked, and there is nothing to report.
+function reportCenter(entry, io = console) {
+  if (!entry) return;
+  for (const line of centerLines(entry)) io.log(line);
 }
 
 async function dispatchAgent(agentId, argumentsList, options = {}) {
