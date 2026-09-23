@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeFileAtomic } from "../packages/core/src/runtime/atomic-file.mjs";
+import { createFileExclusive, writeFileAtomic } from "../packages/core/src/runtime/atomic-file.mjs";
 import { REQUIRED_RULES } from "../packages/core/src/runtime/gitignore.mjs";
 
 // A real Windows run of the cross-agent experiment died in the middle of a
@@ -159,6 +159,30 @@ test("the write replaces what was there and writes where it was asked to", async
 
     assert.equal(await readFile(file, "utf8"), "second\n", "the later write is the one on disk");
     assert.deepEqual(await readdir(path.dirname(file)), ["state.json"], "one file, not one per write");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a file that must not exist yet is created, and one that is already there is nobody's to replace", async () => {
+  const root = scratch();
+  try {
+    // 「不在就建一个空的」这句话里，检查与写入是两步，而两步之间那份文件可以是别人的
+    // （用户的编辑器、另一个 Avenic、编辑器自己）。`wx` 把两步合成一步：建不出来的时候
+    // 说得出为什么，而已经在那儿的那一份一个字节都没动。
+    const file = path.join(root, "nested", "settings.local.json");
+    const theirs = '{"permissions":{"allow":["Bash(ls:*)"]}}\n';
+    await writeFileTo(file, theirs);
+
+    assert.equal(await createFileExclusive(file, "{}\n", { mode: 0o600 }), false, "已经在那儿的那一份不是这一次建出来的");
+    assert.equal(await readFile(file, "utf8"), theirs, "它一个字节都没动");
+    assert.deepEqual(await readdir(path.dirname(file)), ["settings.local.json"], "没有半份文件，也没有临时文件在盘上");
+
+    // 真的不在时才建：建出来的就是问它的那一个内容，目录一路建过去（项目里第一次用时
+    // `.claude/` 也还不存在）。
+    const fresh = path.join(root, "nested", "deeper", "created.json");
+    assert.equal(await createFileExclusive(fresh, "{}\n"), true);
+    assert.equal(await readFile(fresh, "utf8"), "{}\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

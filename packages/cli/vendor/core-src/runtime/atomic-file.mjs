@@ -68,3 +68,26 @@ export async function writeFileAtomic(file, value, { mode, renameFile = rename, 
     }
   }
 }
+
+/**
+ * Create a file that is not there yet, and only then: `wx` asks the file system
+ * for it in one step, so a file that appeared between "is it there?" and "write
+ * it" is not overwritten — the answer is `false` and the file stays whoever's it
+ * already was. A check followed by a write is two steps, and whatever the check
+ * said was missing can be somebody's by the time the write runs; a write that
+ * cannot replace anything has no such moment, and a caller that learns `false`
+ * knows the file it was about to prepare is not the one it would be preparing.
+ *
+ * The mode is the caller's to name, because the files prepared this way hold
+ * credentials: the configuration Avenic prepares for an agent is owner-only.
+ */
+export async function createFileExclusive(file, value, { mode, mkdir: makeDir = mkdir, writeFile: write = writeFile } = {}) {
+  await makeDir(path.dirname(file), { recursive: true });
+  try {
+    await write(file, value, mode === undefined ? { encoding: "utf8", flag: "wx" } : { encoding: "utf8", flag: "wx", mode });
+    return true;
+  } catch (error) {
+    if (error?.code === "EEXIST") return false;
+    throw error;
+  }
+}

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { writeFileAtomic } from "./atomic-file.mjs";
+import { createFileExclusive, writeFileAtomic } from "./atomic-file.mjs";
 import { getAgent } from "./agents.mjs";
 import { AGENT_HOME_VARIABLE, CONFIG_FILE, CONFIG_FORMAT, NATIVE_HOME, accountHome } from "./agent-home.mjs";
 import { environmentHome } from "./environment.mjs";
@@ -124,13 +124,22 @@ export function modelConfigRelative(agentId, scope) {
  * Prepare the file the agent reads: create it — empty, in the agent's own
  * minimal valid shape — when it is missing, and touch nothing when it is there.
  * Returns what it did, so a caller can say whether this run created it.
+ *
+ * "When it is missing" is one atomic step, not a check followed by a write: the
+ * user's editor, another Avenic, or the editor itself can put that file there in
+ * between, and the file it put there is theirs. A write that cannot replace
+ * anything is what makes that safe, and `false` is how this call learns it: the
+ * ledger row — the only proof that would ever let Avenic delete the file — is
+ * written for the files Avenic created, so a file that appeared in that moment
+ * is neither overwritten nor claimed.
  */
 export async function ensureModelConfiguration(projectRoot, agentId, scope, options = {}) {
   const target = modelConfigTarget(projectRoot, agentId, scope, options);
   if (!target) throw new Error(`${getAgent(agentId).displayName} keeps its own provider configuration`);
-  if (existsSync(target.file)) return { relative: target.relative, file: target.file, created: false };
   const content = target.format === "json" ? "{}\n" : "";
-  await writeAtomic(target.file, content);
+  if (!(await createFileExclusive(target.file, content, { ...options, mode: 0o600 }))) {
+    return { relative: target.relative, file: target.file, created: false };
+  }
   const ledger = await readLedger(projectRoot);
   ledger.files[keyOf(agentId, scope)] = { file: target.relative, createdByAvenic: true, hash: hashOf(content) };
   await writeLedger(projectRoot, ledger);

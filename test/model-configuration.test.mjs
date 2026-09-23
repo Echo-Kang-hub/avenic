@@ -458,6 +458,30 @@ test("Claude's Project answer names the project file; Codex's names its own home
   assert.equal(modelConfigTarget(null, "codex", "global", { environment: {} }).relative, "~/.codex/config.toml");
 });
 
+// 「不在就建一个空的」这句话里，「不在」与「建」之间有一道真实的缝：用户的编辑器、另一个
+// Avenic、编辑器自己在那一瞬之间建了这个文件。缝里出现的那一份是别人写的，Avenic 一个
+// 字节都不许动它，也不许把它记成自己建的 —— 账本里那一行说的是「这个文件是 Avenic 建的」，
+// 而那一行是将来允许删除的唯一凭据。
+//
+// 这一针把那道缝变成确定的一步：注入的写入先让用户的那份文件落盘，再照真正的写入去写。
+// 真机上那道缝只有几毫秒宽，没有别的办法按需要踩中它。
+test("a file that appears while Avenic is preparing one is left exactly as it is", async () => {
+  await withProject(async (root) => {
+    const file = path.join(root, ".claude", "settings.local.json");
+    const theirs = '{"permissions":{"allow":["Bash(ls:*)"]}}\n';
+    const racing = async (target, value, config) => {
+      await writeFile(target, theirs, "utf8");
+      return writeFile(target, value, config);
+    };
+
+    const outcome = await ensureModelConfiguration(root, "claude", "project", { writeFile: racing });
+
+    assert.equal(outcome.created, false, "这一份不是 Avenic 建的：这一次什么都没建");
+    assert.equal(await readFile(file, "utf8"), theirs, "缝里出现的那一份一个字节都没动");
+    assert.equal(existsSync(path.join(root, ".agents", "local", "ownership.json")), false, "账本也不许把它记成 Avenic 的");
+  });
+});
+
 // ---- 向导打开时读到的事实：哪份文件在、是不是 Avenic 的、动过没有 ----
 
 test("the wizard's prefill describes only API answers, and says whether the file is still Avenic's", async () => {

@@ -408,16 +408,20 @@ test("applying writes the merge, keeps the user's keys, and gives the file back 
   assert.equal(again.changed, false);
 });
 
-test("every write into a user's configuration goes through the one that asks for 0o600", async () => {
+test("every write into a user's configuration goes through one that asks for 0o600", async () => {
   // 请求本身是跨平台的，所以这一半钉在源码上：Windows 看不见 POSIX 位，看得见的
-  // 只有「谁在写、以什么模式写」。写盘只能有一个出口，出口只能点名 0o600——
-  // 多一个出口，模式就多一处可以忘。
+  // 只有「谁在写、以什么模式写」。写盘只有两个出口 —— 建一份还没有的文件（`wx`，
+  // 建不了就说建不了），改一份已经在的（整体的原子替换）—— 两个都点名 0o600：
+  // 多一个出口，模式就多一处可以忘；少点一处名，那个文件就是同组其他人也读得到的。
   const source = await readFile(new URL("../packages/core/src/runtime/model-config.mjs", import.meta.url), "utf8");
   const helper = source.match(/async function writeAtomic[\s\S]*?\n}/);
   assert.ok(helper, "写盘要有一个唯一的出口，才能被钉住");
   assert.match(helper[0], /mode:\s*0o600/, "写一个装着 key 的文件，模式只能是 0o600");
   assert.equal((source.match(/\bwriteFile(Atomic)?\(/g) ?? []).length, 1, "只有那一个出口能碰磁盘");
-  assert.equal((source.match(/await writeAtomic\(/g) ?? []).length, 3, "创建、迁移与合并三条路径都从出口走");
+  assert.equal((source.match(/await writeAtomic\(/g) ?? []).length, 2, "迁移与合并从同一个出口走");
+  const created = source.match(/createFileExclusive\([\s\S]*?\n/);
+  assert.ok(created, "建一份还没有的文件是另一个出口：它只建，从不替换");
+  assert.match(created[0], /mode:\s*0o600/, "建的那一条也点名 0o600");
 });
 
 test("a Codex answer lands in Codex's own home for the project, never in Claude's file", async (t) => {
