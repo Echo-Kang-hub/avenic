@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { isControlEvent, spokenLocalCommand } from "./adapters/canonical.mjs";
+import { isControlEvent, isLocalCommandEnvelope, spokenLocalCommand } from "./adapters/canonical.mjs";
+import { turnKind } from "./projection.mjs";
 
 const HANDOFF_SCHEMA_VERSION = 1;
 // Keep rehydration prompts bounded even when a legacy project has thousands
@@ -9,7 +10,10 @@ const MAX_TRANSCRIPT_EVENTS = 12;
 const MAX_EVENT_TEXT = 1_200;
 
 function text(event) {
-  return spokenLocalCommand((event.content ?? []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim());
+  // The envelope is read off only where it is one (an older store held it as
+  // text); a turn that merely quotes the markup keeps every byte.
+  const raw = (event.content ?? []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim();
+  return isLocalCommandEnvelope(raw) ? spokenLocalCommand(raw) : raw;
 }
 
 function compact(value) {
@@ -20,7 +24,9 @@ export function deriveState(events) {
   // What the CLI wrote for itself is not a goal and not a task: a store an
   // older version wrote still holds those records (see adapters/canonical.mjs).
   const spoken = (events ?? []).filter((event) => !isControlEvent(event));
-  const users = spoken.filter((event) => event.role === "user").map(text).filter(Boolean);
+  // A turn whose only content is tool traffic is the agent's machinery, not the
+  // person's words — the same rule every other reader applies.
+  const users = spoken.filter((event) => turnKind(event) === "user").map(text).filter(Boolean);
   const assistants = spoken.filter((event) => event.role === "assistant").map(text).filter(Boolean);
   return {
     schemaVersion: HANDOFF_SCHEMA_VERSION,

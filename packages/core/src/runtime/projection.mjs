@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isControlEvent, spokenLocalCommand } from "./adapters/canonical.mjs";
+import { isControlEvent, isLocalCommandEnvelope, spokenLocalCommand } from "./adapters/canonical.mjs";
 
 // One canonical conversation can be answered by several agents. This module
 // turns canonical events into the *shape* each agent can actually receive, and
@@ -99,8 +99,10 @@ export function blockText(block) {
   if (!block || typeof block !== "object") return "";
   if (INTERNAL_BLOCKS.has(block.type)) return "";
   // A store an older version wrote still holds command envelopes as text; the
-  // person's own words are what comes out of them here, not the CLI's markup.
-  if (typeof block.text === "string") return spokenLocalCommand(block.text);
+  // person's own words are what comes out of them here, not the CLI's markup —
+  // and only out of them: text that merely quotes the markup (a pasted log, an
+  // answer citing it) is read exactly as it was stored.
+  if (typeof block.text === "string") return isLocalCommandEnvelope(block.text) ? spokenLocalCommand(block.text) : block.text;
   if (block.type === "tool_use") {
     const name = block.name ?? "tool";
     const input = summarizeInput(block.input);

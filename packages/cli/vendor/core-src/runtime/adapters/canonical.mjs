@@ -123,6 +123,15 @@ const BARE_LOCAL_COMMAND = /^\/(clear|compact|resume|login|logout|status|model|c
 const COMMAND_ARGS_ELEMENT = /<command-args>([\s\S]*?)<\/command-args>/g;
 const LOCAL_COMMAND_ELEMENTS = /<(local-command-caveat|local-command-stdout|command-name|command-message|command-args)>([\s\S]*?)<\/\1>/g;
 
+// 包装纸只在它真的是包装纸的地方摘：一段文字**以** CLI 的标记开头，是那一条
+// local-command 记录；标记出现在中间的（粘进来的日志、回答里引用的标记）是某个人
+// 真正写下的字，写的这一遍与读的每一遍都一个字节都不该动。
+const LOCAL_COMMAND_OPENING = new RegExp(`^\\s*(?:${LOCAL_COMMAND_MARKERS.join("|")})`);
+
+export function isLocalCommandEnvelope(text) {
+  return typeof text === "string" && LOCAL_COMMAND_OPENING.test(text);
+}
+
 /**
  * What the person said in a local-command record: the arguments they typed and
  * anything they wrote outside the envelope — empty when the record is the CLI
@@ -182,9 +191,11 @@ export function isControlEvent(event) {
 export function normalizedRecord({ role, content, control = false }) {
   if (control) return null;
   const blocks = canonicalBlocks(content)
-    // The envelope comes off here, once: what is stored is what the person
-    // said, and no reader has to know the CLI's markup to read it.
-    .map((block) => (block?.type === "text" && typeof block.text === "string" ? { ...block, text: spokenLocalCommand(block.text) } : block))
+    // The envelope comes off here, once — and only off a record that is the
+    // envelope: the user's own local-command line. Text that merely mentions
+    // the markup (a pasted session log, an answer quoting it) is somebody's
+    // words and comes back byte for byte.
+    .map((block) => (role === "user" && block?.type === "text" && isLocalCommandEnvelope(block.text) ? { ...block, text: spokenLocalCommand(block.text) } : block))
     .filter((block) => block.type !== "text" || block.text.trim() !== "");
   if (blocks.length === 0) return null;
   const toolOnly = !blocks.some((block) => block.type === "text" || block.type === "tool_use")

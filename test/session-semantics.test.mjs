@@ -108,6 +108,38 @@ test("CLI control records never render as the user's words", () => {
   assert.deepEqual([...new Set(turns.map((turn) => turn.speaker))], ["You", "Claude"]);
 });
 
+// 粘进来的日志、回答里引用的标记，都是某个人真正写下的字：写的这一遍与读的每一遍
+// 都必须原样放行。包装纸只在它真的是包装纸的地方摘 —— 从头开始的那一条。
+const PASTED_LOG = {
+  type: "user",
+  message: {
+    role: "user",
+    content: "this is what the log says:\n<command-name>/clear</command-name>\n<command-args>clear</command-args>\nand I want you to explain it",
+  },
+};
+const QUOTED_MARKUP = {
+  type: "assistant",
+  message: {
+    role: "assistant",
+    model: "claude-test",
+    content: [{ type: "text", text: "<command-name>/clear</command-name> is how the CLI records a local command" }],
+  },
+};
+
+test("text that quotes the CLI's markup is somebody's words, and every reader leaves it alone", () => {
+  const transcript = [claudeLine(0, PASTED_LOG), claudeLine(1, QUOTED_MARKUP), claudeLine(2, GOAL)].join("\n");
+  const events = getSessionAdapter("claude").toCanonical(transcript, { nativeSessionId: "claude-semantics" }).events;
+  const stored = events.map((event) => event.content.filter((block) => block.type === "text").map((block) => block.text).join("\n"));
+  assert.ok(stored.includes(PASTED_LOG.message.content), `the pasted text was rewritten at write: ${JSON.stringify(stored)}`);
+  assert.ok(stored.includes(QUOTED_MARKUP.message.content[0].text), "an answer that quotes the markup is the answer");
+  const turns = transcriptTurns(events);
+  assert.equal(turns.find((turn) => turn.kind === "user").text, PASTED_LOG.message.content, "the transcript shows what was said");
+  assert.equal(deriveState(events).goal, PASTED_LOG.message.content, "and the handoff hands it over whole");
+  // 真的包装纸照旧被摘掉：老仓里的一条 envelope 仍然只是 transport。
+  const legacy = [{ id: "e1", role: "user", createdAt: AT(0), content: [{ type: "text", text: "<command-name>/goal</command-name>\n<command-args>ship it</command-args>" }] }];
+  assert.equal(deriveState(legacy).goal, "ship it");
+});
+
 test("a record that carries nothing to say does not become an empty turn", () => {
   const events = canonicalEvents();
   for (const event of events) {
