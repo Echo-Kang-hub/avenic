@@ -446,9 +446,11 @@ export async function emitHook({ agentId, payload, projectRoot, environment = pr
   if (event === null) {
     return { accepted: false, event: null, fingerprint: null, skipped: "unknown-event", results: [] };
   }
-  const fingerprint = hookFingerprint(event);
   const now = toolkit.now();
   const state = readState(projectRoot);
+  // 答不出回合 id 的那种机制（OpenCode）由 Avenic 记下的这一轮起点顶上那一格：一轮的
+  // 时长读的就是同一个数字，而少了它，同一个会话里 45 秒内结束的两轮是同一个指纹。
+  const fingerprint = hookFingerprint(event, String(state.turns[turnKey(event)] ?? ""));
 
   if (event.event === "turn.started") {
     state.turns[turnKey(event)] = now;

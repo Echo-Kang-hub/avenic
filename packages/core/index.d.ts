@@ -687,8 +687,13 @@ export function normalizeHook(agentId: string, payload: unknown): {
   reason: string | null;
   detail: string | null;
 } | null;
-/** The identity of one happening, for the dedupe window — deliberately not when it happened. */
-export function hookFingerprint(event: { agent: string; event: string; sessionId?: string | null; turnId?: string | null; reason?: string | null }): string;
+/**
+ * The identity of one happening, for the dedupe window — deliberately not when
+ * it happened. `turnFallback` fills the turn for a mechanism that cannot name
+ * one (OpenCode): the turn's own recorded start, which is what the duration is
+ * measured from as well.
+ */
+export function hookFingerprint(event: { agent: string; event: string; sessionId?: string | null; turnId?: string | null; reason?: string | null }, turnFallback?: string): string;
 
 // ---- runtime: hook install & actions ----
 // The other end of the vocabulary: putting Avenic into each native mechanism,

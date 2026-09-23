@@ -285,6 +285,37 @@ test("the same happening twice inside the window is one notification, and two se
   }
 });
 
+test("two turns that end inside one window are two notifications, for the agent that names no turn", async () => {
+  // OpenCode 的插件只答得出 `sessionID` —— 没有回合 id。少了这一格，同一个会话里 45 秒内
+  // 结束的两轮就是同一个指纹：第二次「做完了」被当成重复悄悄吞掉，而它正是用户刚问完
+  // 那句话在等的那一声。这一格答得出来：Avenic 自己记着这一轮的起点 —— 一轮的时长用的
+  // 就是它，所以这不是多出来的依赖，是把已经在手上的那个事实填进指纹。
+  const box = harness({ actions: [{ id: "toast", kind: "desktop" }] });
+  const native = (type, extra = {}) => ({ type, sessionID: "ses_1", directory: "/tmp/not-a-real-project", ...extra });
+  const fire = (payload) => box.emit(payload, { agentId: "opencode" });
+  try {
+    await fire(native("message.updated", { info: { role: "user" } })); // 第一轮开始
+    box.io.clock += 25 * 1000;
+    const first = await fire(native("session.idle"));
+    assert.equal(first.skipped, null, "25 秒的一轮够长了");
+    assert.equal(box.calls.spawn.length, 1);
+
+    box.io.clock += 5 * 1000;
+    await fire(native("message.updated", { info: { role: "user" } })); // 第二轮开始
+    box.io.clock += 25 * 1000;
+    const second = await fire(native("session.idle"));
+    assert.equal(second.skipped, null, "第二轮是另一件事，不是第一轮的重复");
+    assert.equal(box.calls.spawn.length, 2);
+
+    // 同一轮的那声「做完了」被两个钩子报两次，仍然是同一个指纹：只响一次。
+    const duplicate = await fire(native("session.idle"));
+    assert.equal(duplicate.skipped, "deduped");
+    assert.equal(box.calls.spawn.length, 2);
+  } finally {
+    box.dispose();
+  }
+});
+
 test("a second hook reporting the same turn while the first is still being sent does not ring again", async () => {
   const box = harness({ actions: [{ id: "hook", kind: "webhook", url: "https://hooks.example.invalid/avenic" }] });
   let release;

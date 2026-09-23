@@ -216,7 +216,14 @@ export function normalizeHook(agentId, payload) {
  * same Stop seconds apart have to collapse into one notification. The session is
  * in the fingerprint so that two sessions ending within the same minute are two
  * notifications, not one.
+ *
+ * `turnFallback` 是给答不出回合 id 的那种机制的（OpenCode 的插件只拿得到
+ * `sessionID`）。少了这一格，同一个会话里 45 秒内结束的两轮就是同一个指纹 —— 第二次
+ * 「做完了」被当成重复悄悄吞掉，而它正是用户刚问完那句话在等的那一声。答得出的那一格
+ * 是 Avenic 自己记下的：这一轮的起点（一轮的时长读的就是同一个数字），所以这不是新
+ * 依赖。两次真正的同一件事仍然共用同一个起点；45 秒里又起了一轮、而第一个重复的汇报
+ * 在它之后才到，那一次会漏过去 —— 这是这套指纹里最窄的一道缝，写在这里。
  */
-export function hookFingerprint(event) {
-  return [event.agent, event.event, event.sessionId ?? "", event.turnId ?? "", event.reason ?? ""].join("|");
+export function hookFingerprint(event, turnFallback = "") {
+  return [event.agent, event.event, event.sessionId ?? "", event.turnId ?? turnFallback, event.reason ?? ""].join("|");
 }
