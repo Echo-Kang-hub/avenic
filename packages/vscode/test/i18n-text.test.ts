@@ -61,6 +61,18 @@ test("the template marks every label with a key, and every key exists", async ()
   for (const match of html.matchAll(/data-text="([^"]+)"[^>]*>([^<]*)</g)) {
     assert.equal(match[2].trim(), en(match[1] as TextKey), `${match[1]} 的静态英文与词表不一致`);
   }
+  // 无障碍名与提示语挂的是同一批键（data-aria / data-title）。它们不在元素的文字里，
+  // 所以上面那条看不见它们：拼错一个键，屏幕阅读器念出来的就是 "nav.sesions" ——
+  // 屏幕上什么都不缺，只有听的人知道不对。静态那一半同样得和词表一致。
+  const tagged = [...html.matchAll(/<[^>]*\bdata-(aria|title)="([^"]+)"[^>]*>/g)];
+  assert.ok(tagged.length >= 2, `无障碍名与提示语也得挂键，实际只有 ${tagged.length} 处`);
+  for (const [tag, kind, key] of tagged.map((match) => [match[0], match[1], match[2]])) {
+    assert.ok(key in TEXT, `view.html 的 data-${kind} 用了不存在的键 ${key}`);
+    const staticAttribute = kind === "aria" ? /aria-label="([^"]*)"/ : /(?<![\w-])title="([^"]*)"/;
+    const staticHalf = staticAttribute.exec(tag);
+    assert.ok(staticHalf !== null, `data-${kind}="${key}" 的元素少了静态那半边，首帧会没有名字`);
+    assert.equal(staticHalf[1], en(key as TextKey), `${key} 的静态 ${kind === "aria" ? "aria-label" : "title"} 与词表不一致`);
+  }
   // 词表由宿主注入，模板里只留一个槽。
   assert.match(html, /<script nonce="\{\{nonce\}\}">\{\{text\}\}<\/script>/);
 });
