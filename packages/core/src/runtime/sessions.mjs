@@ -729,8 +729,15 @@ const LAUNCH_MARKER_RETENTION_MS = 10 * 60 * 1000;
  * put native storage back — so their watches would only repeat it. Marking
  * them finished is how that is said with the marker a watch already reads: two
  * processes capturing the same tree at once cost far more than either alone,
- * and the second one's work is wasted anyway. Records too old for any watch to
- * still be owed an answer are the ones that get deleted.
+ * and the second one's work is wasted anyway.
+ *
+ * What may be deleted is a record that is both settled and old, and the order
+ * of the two questions is the whole of it. A record names the moment its launch
+ * *began*, while the watch that reads it lives as long as the launch did — an
+ * ordinary agent session runs longer than the window, so age cannot prove that
+ * nobody is still waiting. Liveness decides first (a launch that is running
+ * keeps its own records, closing marker and all), and only a record that is
+ * already done has nothing left to be read for.
  */
 async function adoptLaunchMarkers(stateDir) {
   const launchRoot = path.join(stateDir, "launch");
@@ -746,11 +753,17 @@ async function adoptLaunchMarkers(stateDir) {
     const record = path.join(launchRoot, member);
     const owner = Number.parseInt(pid, 10);
     const recorded = Number.parseInt(startedAt, 10);
-    if (!Number.isInteger(owner) || !Number.isInteger(recorded) || recorded < cutoff) {
+    if (!Number.isInteger(owner) || !Number.isInteger(recorded)) {
+      // 不是这套代码写下的名字：没有谁在等它，也没有谁读得懂它
       await rm(record, { recursive: true, force: true });
       continue;
     }
     if (processAlive(owner)) continue; // a launch of this group is still running
+    if (recorded < cutoff && existsSync(path.join(record, "done"))) {
+      // 落定过、又老过窗口：没人还在等它，下一个来了才轮到它被清掉
+      await rm(record, { recursive: true, force: true });
+      continue;
+    }
     await mkdir(record, { recursive: true });
     await writeFile(path.join(record, "done"), "", { encoding: "utf8" });
   }

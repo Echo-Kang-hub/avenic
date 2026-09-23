@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { getSessionAdapter } from "../packages/core/src/runtime/adapters/index.mjs";
 import { finishLaunch, joinLaunchGroup } from "../packages/core/src/runtime/session-interop.mjs";
-import { launchFinished, sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
+import { launchFinished, launchMarkerPath, markLaunchClosing, markLaunchFinished, sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
 import { withClaudeProject } from "./helpers/session-fixture.mjs";
 
 // Three hosts run the same launch: the CLI's foreground `avenic claude`, the
@@ -124,8 +124,11 @@ test("the launch that takes over an interrupted group finishes what the dead one
     const stateDir = sessionLeasePath("claude", projectRoot);
     const dead = `2147483647-${Date.now()}-0`;
     const aged = `2147483646-${Date.now() - 11 * 60 * 1000}-0`;
+    const settled = `2147483645-${Date.now() - 11 * 60 * 1000}-0`;
     await mkdir(path.join(stateDir, "launch", dead), { recursive: true });
     await mkdir(path.join(stateDir, "launch", aged), { recursive: true });
+    // 一份已经落定的旧记录：有人做过后事，没人还在等它，这才是垃圾。
+    markLaunchFinished("claude", projectRoot, settled);
     await adapter.snapshotNative(projectRoot, path.join(stateDir, "snapshot"), { environment });
     await mkdir(path.join(stateDir, "pids"), { recursive: true });
     await writeFile(path.join(stateDir, "pids", dead), "");
@@ -140,10 +143,18 @@ test("the launch that takes over an interrupted group finishes what the dead one
       true,
       "recovering the group is the finish the dead launch was owed, and its watch must not repeat it",
     );
+    // 旧的记录按开始时间算岁数，可「结束」才是看护结束的时候：一个跑了四十分钟才被杀
+    // 掉的 launch，它的看护还在等。删掉记录等于什么也没说 —— 看护读到的仍是「没做完」，
+    // 于是把已经有人做过的树再抓一遍。旧记录也要收到同一句话。
     assert.equal(
-      existsSync(path.join(stateDir, "launch", aged)),
+      launchFinished("claude", projectRoot, aged),
+      true,
+      "an aged record whose watch may still be waiting is told the work is done, not dropped in silence",
+    );
+    assert.equal(
+      existsSync(path.join(stateDir, "launch", settled)),
       false,
-      "a record no watch can still be waiting on is dropped rather than adopted",
+      "a record that is both settled and past the window is the one that gets dropped",
     );
     await finishLaunch(projectRoot, "claude", { environment, member: group.member });
   });
@@ -159,6 +170,27 @@ test("a launch record whose owner is still running is left alone", async () => {
     const group = await joinLaunchGroup(projectRoot, "claude", { environment });
 
     assert.equal(launchFinished("claude", projectRoot, running), false, "a watch for a live launch still has something to watch");
+    await finishLaunch(projectRoot, "claude", { environment, member: group.member });
+  });
+});
+
+// 保留期量的是「记录开始」到「现在」，而一个正常的 agent 会话本来就跑得比十分钟久。
+// 于是任何新启动都会把一个还在跑的 launch 的记录删掉 —— 连同它的 closing 标记。它的看
+// 护读不到 closing，就会在整个退出过程里继续周期性抓取，和退出那条路径抢同一份 native
+// 存储，正是这套标记存在的理由。
+test("a launch that has run past the retention window keeps its records while it runs", async () => {
+  await withClaudeProject(async ({ projectRoot, environment }) => {
+    const running = `${process.pid}-${Date.now() - 20 * 60 * 1000}-0`;
+    markLaunchClosing("claude", projectRoot, running);
+
+    const group = await joinLaunchGroup(projectRoot, "claude", { environment });
+
+    assert.equal(
+      existsSync(launchMarkerPath("claude", projectRoot, running, "closing")),
+      true,
+      "a launch that is still running keeps its own records, however long it has been running",
+    );
+    assert.equal(launchFinished("claude", projectRoot, running), false, "it still owes itself a finish");
     await finishLaunch(projectRoot, "claude", { environment, member: group.member });
   });
 });
