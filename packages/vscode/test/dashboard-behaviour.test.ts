@@ -1048,3 +1048,35 @@ test("switching provider stops the file's credential from counting as this form'
   switched.send({ type: "draft", draft: { provider: "custom", baseUrl: "https://gateway.fixture.invalid/anthropic", model: "fixture-gateway-model", credential: null, roles: {}, blocks: [] } });
   assert.equal(liveButton(switched, "Apply").disabled, false, "自己的网关上留空还是别动它");
 });
+
+// 名单是按供应商算的：文件名对不上，每一次请求都会失败。文件里那份名单说的是文件里那家
+// （载荷按文件读盘），刚取回来的那份说的是取它时那家（宿主把归属一起带回来）——表单现在在
+// 哪一家，就只摆哪一家的名字。把 DeepSeek 的模型名摆在一个马上要写成 Moonshot 的字段底下，
+// 不是「有点旧」，是在教用户填错。
+test("a model list belongs to the provider it was fetched for", async () => {
+  const { source, sections } = await page();
+  const base = await payload();
+  const center = renderDataMessage({ ...base, center: CENTER }, source, { seed: sidebar(sections) });
+  openSection(center, "center");
+  // 模型那一格是这一页唯一的 datalist，里面装的就是此刻敢摆出来的那些名字。
+  const listed = (): string[] => (center.content.querySelector("DATALIST")?.querySelectorAll("OPTION") ?? []).map((option) => option.value);
+  assert.deepEqual(listed(), ["deepseek-chat"], "表单还在文件里那一家：摆的就是文件里那一份名单");
+
+  // 点另一家的磁贴：宿主回来的是一张新表，而文件还是原来那家的。
+  center.send({ type: "draft", draft: { provider: "moonshot", baseUrl: "https://api.moonshot.ai/anthropic", model: "fixture-moonshot-model", credential: null, roles: {}, blocks: [] } });
+  assert.deepEqual(listed(), [], "换了一家，文件里那份名单就不是这一家的了");
+  assert.ok(allText(center).includes("No model list yet"), "没有名单时说「刷新一次去问供应商」，而不是留白");
+
+  // 刷新这一家：取回来的名单和它属于谁一起回到页面上。
+  center.send({
+    type: "data",
+    payload: { ...base, center: CENTER, centerResult: { kind: "catalog", state: "fetched", provider: "moonshot", models: ["fixture-moonshot-model", "fixture-moonshot-flash"] } },
+  });
+  assert.deepEqual(listed(), ["fixture-moonshot-model", "fixture-moonshot-flash"], "取回来的名单认着它自己的供应商走");
+  const answered = center.content.querySelectorAll(".center-result").map((node) => node.textContent).join("");
+  assert.ok(answered.includes("2 models"), "刷新那句话数的是这一家的名字");
+
+  // 回文件里那一家：摆的又该是文件里那一份，刚取回来的那一家不越界。
+  center.send({ type: "draft", draft: { provider: "deepseek", baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-chat", credential: null, roles: {}, blocks: [] } });
+  assert.deepEqual(listed(), ["deepseek-chat"], "回到文件里那一家，摆的还是文件里那一份");
+});

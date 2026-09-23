@@ -242,7 +242,11 @@ export type CenterDraft = {
 /** What the last thing the user asked the Center to do answered; the page shows it verbatim. */
 export type CenterResult =
   | { kind: "connection"; state: "connected" | "authentication-failed" | "model-unavailable" | "network-error" | "timeout" | "unreadable" | "http-error"; status: number | null }
-  | { kind: "catalog"; state: "fetched" | "failed"; count: number | null; note: string | null }
+  // 一份模型名单认得自己的供应商：刷新成的那一次把名单和它属于谁一起带回来，因为用户
+  // 可以在写进文件之前就先问新那一家——页面手里那张表单是那一家，而它读到的名单来自
+  // 文件里这一家，少了这个归属，它就只能把上一家的名字摆在一个要写成别家的字段底下。
+  | { kind: "catalog"; state: "fetched"; provider: string; models: string[]; note: string | null }
+  | { kind: "catalog"; state: "failed"; note: string | null }
   | { kind: "diff"; lines: { kind: "same" | "add" | "remove"; text: string }[]; written: boolean }
   | { kind: "error"; message: string };
 

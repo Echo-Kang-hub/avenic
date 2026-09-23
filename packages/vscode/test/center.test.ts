@@ -333,7 +333,7 @@ test("the model catalog is fetched only when it is asked for, and the cache neve
 
     const list = recordingFetch({ data: [{ id: "deepseek-v4-pro" }, { id: "deepseek-flash" }, { id: "deepseek-v4-pro" }] });
     const result = await refreshCenterModels(project, "claude", draftOf({ credential: TYPED }), { environment: env, fetchImpl: list.fetchImpl });
-    assert.deepEqual(result, { kind: "catalog", state: "fetched", count: 2, note: null });
+    assert.deepEqual(result, { kind: "catalog", state: "fetched", provider: "deepseek", models: ["deepseek-v4-pro", "deepseek-flash"], note: null });
     assert.equal(list.calls[0]?.url, "https://api.deepseek.com/models", "模型表在供应商自己给的地址上");
     assert.equal(list.calls[0]?.init.headers?.authorization, `Bearer ${TYPED}`);
     assert.equal(list.calls[0]?.url.includes(TYPED), false);
@@ -350,6 +350,34 @@ test("the model catalog is fetched only when it is asked for, and the cache neve
     assert.equal(unnamed.kind === "catalog" && unnamed.state, "fetched", "没有模型名也刷新得成");
   } finally {
     globalThis.fetch = realFetch;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// 用户可以在把新供应商写进文件之前就先问它的模型表（挑模型本来就在写之前）。那一问取回来的
+// 是**那一家**的名字，所以它落进那一家自己的缓存文件，答案也说出这份名单属于谁——页面手里
+// 的表单正是那一家，名单的归属不带回来，它就只能摆文件里那一家的名字。
+test("a list fetched for another provider is cached under it, and the answer says whose it is", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-center-catalog-other-"));
+  try {
+    const project = await deepseekProject(root);
+    const env = testEnv(path.join(root, "state"));
+    const list = recordingFetch({ data: [{ id: "kimi-k2" }, { id: "kimi-k2-turbo" }] });
+    const draft = draftOf({ provider: "moonshot", baseUrl: "https://api.moonshot.ai/anthropic", model: "", credential: TYPED });
+    const result = await refreshCenterModels(project, "claude", draft, { environment: env, fetchImpl: list.fetchImpl });
+
+    assert.deepEqual(result, { kind: "catalog", state: "fetched", provider: "moonshot", models: ["kimi-k2", "kimi-k2-turbo"], note: null });
+    assert.equal(list.calls[0]?.url, "https://api.moonshot.ai/v1/models", "问的是这一家文档里的那一页，不是文件里那一家");
+    assert.equal(list.calls[0]?.init.headers?.authorization, `Bearer ${TYPED}`);
+    assert.deepEqual(JSON.parse(await readFile(modelCatalogCachePath(project, "moonshot"), "utf8")).models, ["kimi-k2", "kimi-k2-turbo"]);
+    assert.equal(existsSync(modelCatalogCachePath(project, "deepseek")), false, "别家的名字不许落进这一家的缓存文件里");
+
+    // 文件一句话都没动：页面读的仍然是文件里那一家（以及它自己的那一份名单）。
+    const state = await centerState(project, "claude", env);
+    assert.equal(state.provider, "deepseek");
+    assert.deepEqual(state.models, ["deepseek-v4-pro", "deepseek-flash"]);
+    assert.equal(state.catalog.at, null, "另一家的缓存不是这一家刷过");
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -423,7 +451,7 @@ test("the payload carries the Center's state only on the Center's own section", 
 
     // 模型表那一行说的是「手里有多少」与「上一次问供应商的结果」：失败的原因不在盘上
     // （缓存只留成功的名单），所以它跟着面板记着的那份结果回到状态里。
-    const failed: CenterResult = { kind: "catalog", state: "failed", count: null, note: "The provider answered HTTP 500." };
+    const failed: CenterResult = { kind: "catalog", state: "failed", note: "The provider answered HTTP 500." };
     const noted = await buildDashboardData(project, env, { centerAgent: "claude", centerResult: failed });
     assert.equal(noted.center?.catalog.note, "The provider answered HTTP 500.", "上一次刷新的原话要回到页面上");
 

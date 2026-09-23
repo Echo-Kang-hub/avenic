@@ -92,7 +92,7 @@ export async function handleCenterAction(action: CenterAction, ui: CenterUi): Pr
         // 刷新会把模型表落到项目的缓存里 —— 一次写盘，所以它也在这条队列上。
         const result = await runMutation(ui.queue, () => progressIfSlow(sentence(language, "center.progress-models", { agent: name }), refreshCenterModels(root, action.agent, action.draft, options)), ui.refresh);
         panel?.centerOn(action.agent, result);
-        if (result.kind === "catalog" && result.state === "fetched") ui.activity.record(sentence(language, "center.activity-models", { agent: name, count: result.count ?? 0 }));
+        if (result.kind === "catalog" && result.state === "fetched") ui.activity.record(sentence(language, "center.activity-models", { agent: name, count: result.models.length }));
         return;
       }
       case "centerApply": {

@@ -55,6 +55,9 @@
     centerDraft: null,
     centerCredential: "",
     centerAdvanced: false,
+    // 刚为某一家取回来的模型名单，连着「它属于谁」。宿主刷新的那一刻它把这两样一起带回来，
+    // 而载荷重画不给这一页留话（下一次 data 就没有结果了），所以住在这里（见 centerSection）。
+    centerFetched: null,
     // 钩子那一页：看的是哪一档（项目里还是这台机器上），以及命令类那一档开没开。
     // 两个都是这一页自己的落点与档位——宿主那两档名单与它无关。
     hooksScope: "project",
@@ -1362,6 +1365,7 @@
     if (state.centerAgent === (payload?.agent ?? null)) return;
     state.centerAgent = payload?.agent ?? null;
     state.centerCredential = "";
+    state.centerFetched = null;
     if (payload === null) {
       state.centerDraft = null;
       return;
@@ -1420,7 +1424,7 @@
       // 刷新失败时说的是宿主带回来的那一句原话（超时、401、不是那个 API），没有才退到一句
       // 不编的「网络错误」。
       line.append(el("span", "center-result-text", good
-        ? TF("center.catalog-fetched", { count: result.count ?? 0 })
+        ? TF("center.catalog-fetched", { count: (result.models ?? []).length })
         : result.note ?? T("center.connection.network-error")));
     } else if (result.kind === "error") {
       line.classList.add("bad");
@@ -1489,7 +1493,11 @@
 
     const card = agents.find((agent) => agent.id === payload.agent);
     const providers = payload.providers ?? [];
-    const models = payload.models ?? [];
+    // 名单是按供应商算的：模型名填错了，之后每一次请求都会失败。载荷里那一份说的是文件
+    // 里那一家（宿主按文件读盘），刚取回来的那一份说的是取它时那一家——表单现在在哪一家，
+    // 就只摆哪一家的名字。别家的名字摆在一个马上要写成别家的字段底下，不是「有点旧」。
+    const fetched = state.centerFetched !== null && state.centerFetched.provider === draft.provider ? state.centerFetched.models : null;
+    const models = draft.provider === payload.provider ? payload.models ?? [] : fetched ?? [];
     if (providers.length === 0) {
       // 有的 agent 自己管自己的供应商配置（OpenCode 装在自己的插件注册表里）：Avenic 这里
       // 没有可合并的东西。这时候画一张填不进去的表单才是骗人。
@@ -2150,6 +2158,10 @@
       state.data = message.payload;
       state.error = null;
       if (message.section) state.section = message.section;
+      // 一次刷新取回来的名单跟着它自己的供应商留下来：这个载荷之后就不再带着上一次的结果，
+      // 而用户还要在那张表单上照着这份名单挑一个名字（见 centerSection）。
+      const catalog = message.payload?.centerResult;
+      if (catalog?.kind === "catalog" && catalog.state === "fetched") state.centerFetched = { provider: catalog.provider, models: catalog.models ?? [] };
       // 正在读的那一段又长了一轮：接在它后面，而不是把整页重画一遍——重画会把读到的
       // 位置、左边那一列的选择、还有输入框里打到一半的字一起抹掉。
       if (!appendNewTurns(previous)) render();

@@ -360,15 +360,19 @@ function failureNote(reason: CatalogFailure, status: number | null, language: st
 
 /**
  * Ask the provider for its model list, once, because a user asked for it. The
- * list is cached where this page can read it again without asking; the key
- * travels in a header and reaches neither the cache nor the result nor a log.
+ * list is cached where this page can read it again without asking, under the
+ * provider it came from — and the answer names that provider, because the form
+ * the user is filling may be naming another one: a model name belongs to the
+ * provider it was listed by, and a page that shows one under the other teaches
+ * the user to fill in a name that fails every request. The key travels in a
+ * header and reaches neither the cache nor the result nor a log.
  */
 export async function refreshCenterModels(projectRoot: string, agentId: AgentId, draft: CenterDraft, options: CenterOptions = {}): Promise<CenterResult> {
   const { preset, side } = resolve(agentId, draft);
   const language = languageOf(options);
   const catalog = preset.catalog;
   if (catalog === null) {
-    return { kind: "catalog", state: "failed", count: null, note: sentence(language, "center.no-catalog-endpoint", { provider: preset.displayName }) };
+    return { kind: "catalog", state: "failed", note: sentence(language, "center.no-catalog-endpoint", { provider: preset.displayName }) };
   }
   const environment = options.environment ?? process.env;
   const key = agentId === "codex" ? text(side.envKey === undefined ? "" : environment[side.envKey]) : draft.credential ?? "";
@@ -376,7 +380,6 @@ export async function refreshCenterModels(projectRoot: string, agentId: AgentId,
     return {
       kind: "catalog",
       state: "failed",
-      count: null,
       note: agentId === "codex"
         ? sentence(language, "center.no-key-env", { variable: side.envKey ?? "", provider: preset.displayName })
         : sentence(language, "center.no-key-file-fetch"),
@@ -393,7 +396,7 @@ export async function refreshCenterModels(projectRoot: string, agentId: AgentId,
     timeoutMs: options.timeoutMs,
     fetchImpl: options.fetchImpl,
   });
-  if (!outcome.ok) return { kind: "catalog", state: "failed", count: null, note: failureNote(outcome.reason, outcome.status, language) };
+  if (!outcome.ok) return { kind: "catalog", state: "failed", note: failureNote(outcome.reason, outcome.status, language) };
   await writeModelCatalogCache(projectRoot, preset.id, { baseUrl, models: outcome.models });
-  return { kind: "catalog", state: "fetched", count: outcome.models.length, note: null };
+  return { kind: "catalog", state: "fetched", provider: preset.id, models: outcome.models, note: null };
 }
