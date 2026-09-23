@@ -84,7 +84,9 @@ function report(io, plan, { verb, changed, dryRun }) {
     return 0;
   }
   io.log(`${changed ? (verb === "install" ? "Installed" : "Removed") : (verb === "install" ? "Already installed" : "Nothing to remove")}: ${plan.displayName} hooks for ${scope} — ${plan.file}`);
-  if (changed && verb === "install" && plan.caveat !== "") io.log(plan.caveat);
+  // 装了不等于会响：这句话跟着每一次安装说，包括「已经装着了」的那一次 —— 来装第二遍的人
+  // 多半正是来问「为什么没通知」的。
+  if (verb === "install" && plan.caveat !== "") io.log(plan.caveat);
   return 0;
 }
 

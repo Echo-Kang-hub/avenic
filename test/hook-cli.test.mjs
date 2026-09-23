@@ -214,6 +214,26 @@ test("a test still runs when the first hop's answer cannot be read", async () =>
   }
 });
 
+test("a repeat install still says the thing that makes an install silent", async () => {
+  // 「已经装着了」不是「一切正常」：Codex 写下去的钩子在审阅之前不响。第二次安装的人多半
+  // 正是来问「为什么没通知」的那一个 —— 这句话在这一条路上更不能省。
+  const run = await machine({ versions: { codex: "0.154.0" } });
+  try {
+    const first = capturing();
+    assert.equal(await dispatchHookCommand(["install", "--agent", "codex", "--scope", "project"], run.context(first)), 0, first.errors.join("\n"));
+    assert.match(first.lines.join("\n"), /^Installed: /m);
+    assert.match(first.lines.join("\n"), /untrusted/im);
+
+    const second = capturing();
+    assert.equal(await dispatchHookCommand(["install", "--agent", "codex", "--scope", "project"], run.context(second)), 0, second.errors.join("\n"));
+    const text = second.lines.join("\n");
+    assert.match(text, /^Already installed: /m);
+    assert.match(text, /untrusted/im, "第二次也要说得出「装了也还是不会响」");
+  } finally {
+    await run.done();
+  }
+});
+
 test("status answers for one agent, for all three, and in JSON", async () => {
   const run = await machine({ versions: { claude: "2.1.274", codex: "0.154.0", opencode: "1.18.30" } });
   try {
