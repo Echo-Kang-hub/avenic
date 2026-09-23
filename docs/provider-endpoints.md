@@ -21,6 +21,13 @@ one preset per agent), never as a second settings format of its own.
 | SiliconFlow | `https://api.siliconflow.com/` (intl) · `https://api.siliconflow.cn/` (CN) | `https://api.siliconflow.com/v1/models`, Bearer | bare origin, no `/anthropic` segment |
 | LiteLLM (self-hosted) | the proxy root, no `/v1` | `<root>/v1/models` | The root is the user's, so the only list here is a path joined to it |
 
+**One endpoint per preset.** Where a vendor publishes two, the table above lists
+both and the preset table carries one: Zhipu GLM, MiniMax and SiliconFlow are the
+international endpoints (`api.z.ai`, `api.minimax.io`, `api.siliconflow.com`) and
+Qwen is the CN one (`dashscope.aliyuncs.com`). The other region's endpoint is a
+gateway the user names, so it is entered through the form's own door (`custom`) —
+whose base URL is theirs and whose key is therefore never swapped on their behalf.
+
 **A model list is a full URL.** Joining a base URL to a path is how a working
 provider becomes a 404: Moonshot's and MiniMax's lists hang off the host, not off
 the Anthropic-format base, and `https://api.deepseek.com/anthropic/models` and
