@@ -430,7 +430,7 @@ export async function withOpenCodeProject(run, options = {}) {
   // the installed CLI actually prints.
   const writeState = async () => writeFile(stateFile, `${JSON.stringify({
     ...state,
-    sessions: [...sessions.entries()].map(([id, session]) => ({ id, directory: projectRoot, created: session.created, updated: session.updated })),
+    sessions: [...sessions.entries()].map(([id, session]) => ({ id, directory: session.directory ?? projectRoot, created: session.created, updated: session.updated })),
     exports: Object.fromEntries([...sessions].map(([id, session]) => [id, session.exported])),
   }, null, 2)}\n`);
   await writeState();
@@ -457,6 +457,12 @@ export async function withOpenCodeProject(run, options = {}) {
     },
     async removeSession(id) {
       sessions.delete(id);
+      await writeState();
+    },
+    /** OpenCode now reports the session under another directory: it is still in
+     *  the user's store, just not in this workspace's list. */
+    async moveSession(id, directory) {
+      sessions.get(id).directory = directory;
       await writeState();
     },
     /** An OpenCode build that does not report a session revision at all. */

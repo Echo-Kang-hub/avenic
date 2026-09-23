@@ -212,11 +212,19 @@ function projectionFile(projectRoot, canonicalSessionId) {
   return path.join(runtimePaths(projectRoot).localRoot, "opencode", "canonical", `${canonicalSessionId}.json`);
 }
 
-function matchingSessions(projectRoot, options) {
+// Everything the user's OpenCode knows about, anywhere. The directory a session
+// reports is how a workspace picks out its own, but it is not a record of what
+// still exists: that is this list, and the two questions have to be asked
+// separately.
+function listSessions(projectRoot, options) {
   const output = run(["session", "list", "--format", "json"], projectRoot, options);
   const sessions = output.trim() ? JSON.parse(output) : [];
   if (!Array.isArray(sessions)) throw new Error("OpenCode session list did not return an array");
-  return sessions.filter((session) => samePath(session.directory, projectRoot));
+  return sessions;
+}
+
+function matchingSessions(projectRoot, options) {
+  return listSessions(projectRoot, options).filter((session) => samePath(session.directory, projectRoot));
 }
 
 // The model a projected session will run on. Avenic does not choose it: the
@@ -533,7 +541,11 @@ function sessionRevision(session) {
 export async function capture(projectRoot, options = {}) {
   const ownsCursors = options.cursors === undefined;
   const cursors = options.cursors ?? loadCursors(projectRoot, options.environment);
-  const sessions = matchingSessions(projectRoot, options);
+  // Which sessions are this workspace's, and which sessions still exist, are
+  // two different questions with two different answers: a session that moved
+  // elsewhere answers no to the first and yes to the second.
+  const known = listSessions(projectRoot, options);
+  const sessions = known.filter((session) => samePath(session.directory, projectRoot));
   if (sessions.length === 0) {
     return { count: 0, changed: false, diagnostics: [{ kind: "missing-root", message: "Found no OpenCode sessions matching this workspace." }] };
   }
@@ -549,10 +561,16 @@ export async function capture(projectRoot, options = {}) {
     null,
     cursors,
     agentId,
-    // OpenCode's store is the user's own and Avenic never snapshots or reverts
-    // it, so a session missing from the list was deleted there: the project's
-    // copy goes with it rather than being imported back on the next launch.
-    { remove: true },
+    {
+      // OpenCode's store is the user's own and Avenic never snapshots or
+      // reverts it, so a session missing from the list was deleted there: the
+      // project's copy goes with it rather than being imported back on the
+      // next launch. Missing from *this workspace's* list says nothing — that
+      // is a session the user moved, and its copy stays until the user is the
+      // one who removed it.
+      remove: true,
+      retain: new Set(known.map((session) => `${session.id}.json`)),
+    },
   );
   if (ownsCursors) await saveCursors(projectRoot, cursors, options.environment);
   return { count: sessions.length, changed: result.added + result.updated + result.removed > 0, diagnostics: [] };

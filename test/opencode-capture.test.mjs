@@ -64,6 +64,30 @@ test("an OpenCode session that disappears leaves the portable directory", async 
   });
 });
 
+// 目录栏是 OpenCode 说的，而它会变：用户换了工作目录、把会话在别处打开过。capture
+// 用这一栏挑「哪些是这个项目的」，删除却照着同一份筛过的名单执行 —— 于是一份只是搬了
+// 家、好端端还在用户库里的会话，它的项目副本被当成「用户删掉了」清走。下一次启动，
+// 这份对话又从用户的库里被导入回来，正是删除这条规则要防的事。
+test("an OpenCode session that only left this directory keeps the project's copy", async () => {
+  await withOpenCodeProject(async ({ projectRoot, environment, portableRoot, createSession, moveSession, root }) => {
+    await createSession("ses_one");
+    await createSession("ses_two");
+    const adapter = getSessionAdapter("opencode");
+    await adapter.capture(projectRoot, { environment });
+
+    await moveSession("ses_one", path.join(root, "elsewhere"));
+    const result = await adapter.capture(projectRoot, { environment });
+
+    assert.equal(result.count, 1, "搬走的会话不再属于这个项目，也就不会被导出");
+    assert.match(await readFile(path.join(portableRoot, "ses_two.json"), "utf8"), /user turn 0/);
+    assert.match(
+      await readFile(path.join(portableRoot, "ses_one.json"), "utf8"),
+      /user turn 0/,
+      "它还在用户的库里，项目副本就不能按「已删除」处理",
+    );
+  });
+});
+
 test("an OpenCode export without a session revision is read every time", async () => {
   // Not every OpenCode build reports `time.updated`. When it is missing the
   // capture cannot claim nothing moved, so it must fall back to reading the

@@ -126,7 +126,11 @@ export async function syncDirectory(entries, destinationRoot, transform, cursors
   let removed = 0;
   if (options.remove === true) {
     for (const relative of await listFiles(destinationRoot)) {
-      if (seen.has(relative)) continue;
+      // `seen` is what this pass synced; `retain` is what the caller knows still
+      // exists at the source without being part of this pass. Only what is in
+      // neither is gone — a copy whose source merely stopped being this
+      // workspace's is not a copy whose source was deleted.
+      if (seen.has(relative) || options.retain?.has(relative)) continue;
       await rm(path.join(destinationRoot, relative), { force: true });
       await removeEmptyDirectories(path.dirname(path.join(destinationRoot, relative)), destinationRoot);
       delete files[relative];
