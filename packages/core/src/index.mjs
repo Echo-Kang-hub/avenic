@@ -149,7 +149,7 @@ export {
   projectionItems,
   renderBriefing,
 } from "./runtime/projection.mjs";
-export { readTranscript, transcriptModel, transcriptSummary, transcriptTurns, turnPreview } from "./runtime/transcript.mjs";
+export { mappingState, readTranscript, transcriptModel, transcriptSummary, transcriptTurns, turnPreview } from "./runtime/transcript.mjs";
 export { agentCard, agentCardRows, collectStatus } from "./status.mjs";
 
 export { fail } from "./util/fail.mjs";

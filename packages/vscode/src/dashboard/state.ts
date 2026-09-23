@@ -5,6 +5,7 @@ import {
   agentLabel,
   formatSessionDiagnostics,
   listCanonicalSessionRecords,
+  mappingState,
   readCanonicalSession,
   readCanonicalSessionRecord,
   runtimePaths,
@@ -167,15 +168,6 @@ function shortId(id: string): string {
   return (separator === -1 ? id : id.slice(separator + 1)).slice(0, 8);
 }
 
-// 一条投影跟不跟得上 canonical 历史。判据与 core 的 transcript.mjs 里那一份逐字
-// 相同（先看有没有投影，再看它指向的最后一条事件是不是这条会话的最后一条）：那一份
-// 要读整段事件日志才算得出来，而一列会话的角标不该为了一个词去读几十兆对话。
-function mappingState(mapping: NativeSessionMapping | undefined, lastEventId: string | null): SessionSync["state"] {
-  if (typeof mapping?.nativeSessionId !== "string") return "none";
-  if (!mapping.lastCanonicalEventId) return "stale";
-  return mapping.lastCanonicalEventId === lastEventId ? "current" : "stale";
-}
-
 function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: boolean, now: number, sync: SessionSync): SessionRow {
   const updated = typeof record.updatedAt === "string" ? record.updatedAt : null;
   return {
@@ -206,7 +198,8 @@ async function participation(
   try {
     const { mappings } = await readCanonicalSessionRecord(projectRoot, id);
     const projections = mappings.projections ?? {};
-    const agents = AGENT_IDS.filter((agent) => typeof projections[agent]?.nativeSessionId === "string");
+    // 参与者与角标问的是同一句话：这一格的映射是不是指着一个真的原生会话。
+    const agents = AGENT_IDS.filter((agent) => mappingState(projections[agent], lastEventId) !== "none");
     return {
       agents,
       projections,
@@ -223,6 +216,8 @@ async function participation(
 }
 
 // 一条会话可能同时投给两个 agent：只要有一个的拷贝落后了，这一行就该说出来。
+// 「一个映射算不算跟得上」不在这里判断 —— 那是 core 的 mappingState，投影器和这一行
+// 角标问的是同一个问题，答的也必须是同一个词。
 function syncAcross(mappings: Array<NativeSessionMapping | undefined>, lastEventId: string | null): SessionSync["state"] {
   const states = mappings.map((mapping) => mappingState(mapping, lastEventId)).filter((state) => state !== "none");
   if (states.length === 0) return "none";

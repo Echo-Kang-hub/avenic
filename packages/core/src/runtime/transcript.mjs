@@ -103,7 +103,12 @@ export function transcriptTurns(events, { limit = 0 } = {}) {
   return limit > 0 ? turns.slice(-limit) : turns;
 }
 
-function mappingState(mapping, lastEventId) {
+/**
+ * Is a projection behind the conversation? "none" (nothing projected — an empty
+ * native id is no session either), "stale", or "current". The badge on a session
+ * row and the projector that continues one ask this same question, here.
+ */
+export function mappingState(mapping, lastEventId) {
   if (!mapping?.nativeSessionId) return "none";
   if (!mapping.lastCanonicalEventId) return "stale";
   return mapping.lastCanonicalEventId === lastEventId ? "current" : "stale";

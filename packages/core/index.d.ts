@@ -706,6 +706,8 @@ export interface TranscriptSummary {
 }
 export function transcriptTurns(events: CanonicalEvent[], options?: { limit?: number }): TranscriptTurn[];
 export function transcriptSummary(session: Record<string, unknown>, events: CanonicalEvent[], record?: Record<string, unknown>): TranscriptSummary;
+/** Is a projection behind the conversation? Shared by the session list and the projector. */
+export function mappingState(mapping: NativeSessionMapping | null | undefined, lastEventId: string | null): "none" | "stale" | "current";
 export function readTranscript(projectRoot: string, id: string, options?: { record?: unknown; limit?: number }): Promise<{ summary: TranscriptSummary; turns: TranscriptTurn[]; session: Record<string, unknown>; events: CanonicalEvent[] }>;
 /** The one data shape behind `avenic sessions show <id> --json` and the VS Code Sessions page. */
 export interface TranscriptModel {

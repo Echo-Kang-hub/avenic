@@ -9,6 +9,7 @@ import {
   appendCanonicalEvents,
   completeCanonicalContinuation,
   createCanonicalSession,
+  mappingState,
   readTranscript,
   transcriptSummary,
   transcriptTurns,
@@ -117,6 +118,19 @@ test("a mapping's cursor state is described, not guessed", async () => {
     assert.equal(codex.state, "current", "the mapped session was brought up to the last canonical event");
     assert.equal(summary.projections.some((projection) => projection.agentId === "claude"), false);
   });
+});
+
+test("a mapping with no native id is no projection — an empty id is not a session", () => {
+  // One predicate, asked by both hosts: the panel's badge and the viewer's summary
+  // must not answer differently about the same mapping. The dashboard asked
+  // `typeof nativeSessionId === "string"` and called `""` a projection; nothing can
+  // resume an empty id, so the word for it is "none".
+  assert.equal(mappingState(undefined, "e1"), "none");
+  assert.equal(mappingState({}, "e1"), "none");
+  assert.equal(mappingState({ nativeSessionId: "" }, "e1"), "none");
+  assert.equal(mappingState({ nativeSessionId: "n1" }, "e1"), "stale", "a projection that names no cursor is stale");
+  assert.equal(mappingState({ nativeSessionId: "n1", lastCanonicalEventId: "e1" }, "e1"), "current");
+  assert.equal(mappingState({ nativeSessionId: "n1", lastCanonicalEventId: "e0" }, "e1"), "stale");
 });
 
 test("summary alone does not require reading turns twice", () => {
