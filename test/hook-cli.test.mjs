@@ -180,6 +180,37 @@ test("a path that already holds somebody else's plugin is refused, and nothing i
   }
 });
 
+test("an event that is not a list of groups is refused, and the file is left as the user wrote it", async () => {
+  // Claude 的文件是并进去的，而并的前提是那一格是一张组表。手写成一个对象的那一格读不懂，
+  // 装下去的第一步却是把它顶掉 —— 所以这一页说装不了，人话在 note 里（B-1 的那一条走的是
+  // 同一个出口）。卸那一头不问这个：那一格里没有我们的东西，而要把钩子拿掉的人不该被一个
+  // 自己改坏了的格子挡住。
+  const run = await machine({ versions: { claude: "2.1.274" } });
+  try {
+    const file = path.join(run.project, ".claude", "settings.local.json");
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = `${JSON.stringify({ hooks: { Stop: { matcher: ".*", hooks: [{ type: "command", command: "echo mine" }] } } }, null, 2)}\n`;
+    await writeFile(file, mine);
+
+    const install = capturing();
+    assert.equal(await dispatchHookCommand(["install", "--agent", "claude", "--scope", "project"], run.context(install)), 1);
+    assert.match(install.errors.join("\n"), /hooks\.Stop in that file is not a list of groups/);
+    assert.equal(await readFile(file, "utf8"), mine, "读不懂的那一格一个字节都没动");
+
+    const status = capturing();
+    assert.equal(await dispatchHookCommand(["status", "--agent", "claude", "--scope", "project"], run.context(status)), 0);
+    assert.match(status.lines.join("\n"), /^Claude Code  unsupported  /m);
+    assert.match(status.lines.join("\n"), /is not a list of groups/, "行上的那句话也要在");
+
+    const remove = capturing();
+    assert.equal(await dispatchHookCommand(["uninstall", "--agent", "claude", "--scope", "project"], run.context(remove)), 0, remove.errors.join("\n"));
+    assert.match(remove.lines.join("\n"), /^Nothing to remove: /m);
+    assert.equal(await readFile(file, "utf8"), mine);
+  } finally {
+    await run.done();
+  }
+});
+
 test("a machine with no agent on PATH says so instead of installing anyway", async () => {
   const run = await machine();
   try {

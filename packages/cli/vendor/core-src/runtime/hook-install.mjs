@@ -119,12 +119,19 @@ function claudeEdit(agentId, capability, before, { remove }) {
   const merged = structuredClone(parsed);
   const hooks = isObject(merged.hooks) ? merged.hooks : {};
   for (const entry of reportable(capability)) {
-    const groups = Array.isArray(hooks[entry.native]) ? hooks[entry.native] : [];
-    // 一个组里可能既有 Avenic 的处理器又有用户自己的：只摘我们那一个，组里剩下的
-    // 原样留下，空掉的组才消失。
-    const kept = groups
-      .map((group) => ({ ...group, hooks: (Array.isArray(group.hooks) ? group.hooks : []).filter((handler) => !isOurs(handler?.command)) }))
-      .filter((group) => group.hooks.length > 0);
+    const value = hooks[entry.native];
+    // 那一格不是一张组表（手写成了一个对象、一个字符串）：里面不会有我们的东西，也没有
+    // 可以并进去的地方 —— 装下去就是把它顶掉，卸下来就是把它删掉，而两件事都是把用户
+    // 写下的那一格改掉。原样留着；装那一头由 fileSupport 说清楚（`plan.supported`）。
+    if (value !== undefined && !Array.isArray(value)) continue;
+    // 一个组里可能既有 Avenic 的处理器又有用户自己的：只摘我们那一个，组里剩下的原样
+    // 留下，空掉的组才消失。认不出形状的组（没有 hooks 那一栏的、根本不是对象的）也原样
+    // 留下 —— 认不出来就没有资格删，而它多半是用户写的。
+    const kept = (Array.isArray(value) ? value : []).flatMap((group) => {
+      if (!isObject(group) || !Array.isArray(group.hooks)) return [group];
+      const rest = group.hooks.filter((handler) => !isOurs(handler?.command));
+      return rest.length === 0 ? [] : [{ ...group, hooks: rest }];
+    });
     if (remove) {
       if (kept.length === 0) delete hooks[entry.native];
       else hooks[entry.native] = kept;
@@ -371,17 +378,39 @@ export async function hookStatus(agentId, options = {}) {
 /**
  * 那个位置上要是已经有一份文件，答案会不会变。
  *
- * OpenCode 是唯一「这个路径整个归 Avenic」的机制 —— 它不像另外两种是并进用户的文件里
- * （那些文件里属于 Avenic 的只有一块，用户在别处写什么都不妨碍）。所以「这里已经有一份
- * 别人的插件」是它特有的状态，而这种状态下写下去不是合并，是把用户的插件删掉：答案就是
- * 装不了，并且一定要说得出口 —— 一颗按下去什么都不发生的按钮，比装不上更难懂。
+ * 问的是同一件事：写下去会不会变成「把用户的东西换掉」。OpenCode 是唯一「这个路径整个
+ * 归 Avenic」的机制 —— 它不像另外两种是并进用户的文件里（那些文件里属于 Avenic 的只有
+ * 一块，用户在别处写什么都不妨碍），所以「这里已经有一份别人的插件」是它特有的状态：写
+ * 下去不是合并，是把用户的插件删掉。Claude 那边是并进去的，但并的前提是那一格是一张组
+ * 表：`hooks.Stop` 是个对象时，合并的第一步就是把它替换掉 —— 同一个答案。
+ *
+ * 答案就是装不了，并且一定要说得出口 —— 一颗按下去什么都不发生的按钮，比装不上更难懂。
  */
 function fileSupport(agentId, capability, support, before) {
-  if (!foreignPlugin(agentId, before)) return { supported: support.supported, note: support.note };
-  return {
-    supported: false,
-    note: `Unsupported by ${capability.displayName}: a file that is not Avenic's is already at this path — move it aside, then try again`,
-  };
+  const refusal = foreignPlugin(agentId, before)
+    ? "a file that is not Avenic's is already at this path"
+    : unmergeableKey(agentId, before);
+  if (refusal === null) return { supported: support.supported, note: support.note };
+  return { supported: false, note: `Unsupported by ${capability.displayName}: ${refusal} — move it aside, then try again` };
+}
+
+/**
+ * 用户文件里那个并进去就会顶掉东西的格子，或者没有。
+ *
+ * 读不懂的 JSON 不在这里答：那是 `readText`/`claudeEdit` 那一层说「cannot be read」的
+ * 事，而这里问的是一份读得懂的文件里有没有一个合并不了的形状。
+ */
+function unmergeableKey(agentId, before) {
+  if (agentId !== "claude") return null;
+  let parsed;
+  try {
+    parsed = parseJsonObject(before);
+  } catch {
+    return null;
+  }
+  if (!isObject(parsed.hooks)) return null;
+  const found = Object.entries(parsed.hooks).find(([, groups]) => !Array.isArray(groups));
+  return found === undefined ? null : `hooks.${found[0]} in that file is not a list of groups`;
 }
 
 /**

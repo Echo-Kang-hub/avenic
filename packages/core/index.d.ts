@@ -766,7 +766,7 @@ export interface HookPlan {
   file: string;
   version: string | null;
   supported: boolean;
-  /** Why not, when unsupported. */
+  /** Why not, when unsupported: the installed version cannot carry them, or the file holds something Avenic will not merge with. */
   note: string | null;
   /** A condition the mechanism imposes that no screen can see from here (Codex's trust review). Empty when there is none. */
   caveat: string;

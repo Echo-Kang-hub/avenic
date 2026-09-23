@@ -107,6 +107,66 @@ test("the user's own settings survive an install and come back on uninstall", as
   }
 });
 
+test("a hook group Avenic cannot classify is kept, not dropped", async () => {
+  // 一个组的形状不止一种：有 matcher 没有 hooks 的、甚至根本不是对象的元素。Avenic 认得出
+  // 的只有「组里的某个处理器是不是自己的命令」——认不出来的东西就没有资格删。上一版把它们
+  // 连组一起抹掉了（不是对象的那个还被展开成了 `{"0":"a",…}`），而那一行是用户写下的。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = {
+      hooks: {
+        Stop: [
+          { hooks: [{ type: "command", command: "echo mine" }] },
+          { matcher: "a group with no hooks list of its own" },
+          "a line somebody typed",
+        ],
+      },
+    };
+    await writeFile(file, `${JSON.stringify(mine, null, 2)}\n`);
+    const before = await run.text(file);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    await installHooks(await hookPlan("claude", options));
+    const settings = await readJson(file);
+    assert.deepEqual(settings.hooks.Stop.slice(0, 3), mine.hooks.Stop, "读不懂的组也是用户写的：装的时候一条都不能少");
+    assert.ok(settings.hooks.Stop.at(-1).hooks.some((handler) => ours(handler.command)), "Avenic 自己那一组接在最后");
+
+    const removal = await uninstallHooks(await hookPlan("claude", options));
+    assert.equal(removal.changed, true);
+    assert.equal(await run.text(file), before, "卸载之后文件回到原来的字节");
+  } finally {
+    await run.done();
+  }
+});
+
+test("an event that is not a list of groups is refused instead of replaced", async () => {
+  // 整条事件不是一张组表（手写成一个对象是最常见的那一种）：那一格里没有 Avenic 的东西，
+  // 而装进去会把它整个顶掉、卸下来会把它整个删掉 —— 两条路都是把用户的文件改掉，而它读
+  // 不懂那一格。所以装这一头说清楚然后什么都不写；卸那一头根本不碰它。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = { hooks: { Stop: { matcher: ".*", hooks: [{ type: "command", command: "echo mine" }] } } };
+    await writeFile(file, `${JSON.stringify(mine, null, 2)}\n`);
+    const before = await run.text(file);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    const plan = await hookPlan("claude", options);
+    assert.equal(plan.supported, false, "那一格不是一张组表：装这件事在这里做不了，就不能说得像能做");
+    assert.match(plan.note, /hooks\.Stop/);
+    assert.equal(await run.text(file), before, "计划是只读的，一个字节都没动");
+
+    const removal = await uninstallHooks(plan);
+    assert.equal(removal.changed, false, "那一格里没有我们的东西，就没有可卸的");
+    assert.equal(await run.text(file), before, "读不懂的那一格也要原样留着");
+  } finally {
+    await run.done();
+  }
+});
+
 test("installing hooks into a file that holds a credential does not republish it", async () => {
   // 同一个文件里可能同时住着用户的密钥和 Avenic 的钩子：项目配置就是 Claude 读凭证
   // 的地方。整文件写入是「写临时文件再改名」，改名换掉的是 inode —— 临时文件的权限
