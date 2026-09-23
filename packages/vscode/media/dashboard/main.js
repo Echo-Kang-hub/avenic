@@ -1794,7 +1794,10 @@
     top.append(el("span", "hook-name", row.displayName));
     // 版本在这一行上是必须的：「不支持」那一句说的正是它（Unsupported by Codex 1.0.0）。
     if (row.version) top.append(badge(row.version, "muted"));
-    top.append(badge(row.installed ? T("hooks.installed") : T("hooks.not-installed"), row.installed ? "green" : "muted"));
+    // 文件读不出来时不画「Not installed」：那是一句我们不知道的话。品牌色，因为这不是
+    // 一个装没装的状态，是一个要人去看一眼的状态。
+    if (row.error) top.append(badge(T("hooks.unreadable"), "brand"));
+    else top.append(badge(row.installed ? T("hooks.installed") : T("hooks.not-installed"), row.installed ? "green" : "muted"));
     main.append(top);
     const file = el("div", "hook-file");
     file.append(icon("file-code"));
@@ -1803,12 +1806,17 @@
     main.append(file);
     // 「不支持」是 core 的原话（它按编辑器语言说），它就在这一行上，不让人去别处找。
     if (row.supportNote) main.append(el("p", "hook-note", row.supportNote));
+    // 读不动的原因也原话放上来：这句话里有文件名和 errno，而它是这一行唯一能给的下一步。
+    if (row.error) main.append(el("p", "hook-note", row.error));
     // 机制自己带的条件（Codex 的钩子要审阅过才会响）：装了也可能是静音的，那就不算装好。
     if (row.caveat) main.append(el("p", "hook-note", row.caveat));
     line.append(main);
 
     const actions = el("div", "row-actions");
-    if (row.installed) {
+    if (row.error) {
+      // 装、卸、预览都要读这个文件，点下去只会得到一次错误弹窗 —— 读不动的行上就一颗
+      // 都不给，它的答案已经全在上面那句话里了。
+    } else if (row.installed) {
       // 卸不需要「这个版本支持」：文件里有 Avenic 的东西就该拿得掉。
       if (row.supportNote === null) actions.append(button({ label: T("hooks.view-config"), icon: "file-code", size: "sm", onClick: () => post({ type: "action", action: "hookPlan", agent: row.agent, scope }) }));
       actions.append(button({ label: T("hooks.uninstall"), icon: "trash", size: "sm", onClick: () => post({ type: "action", action: "hookUninstall", agent: row.agent, scope }) }));

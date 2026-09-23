@@ -67,6 +67,14 @@ separate. The read itself is bounded twice: a payload larger than 256 KB is
 refused, and a payload that has not finished arriving within 10 s ends the
 process with one sentence instead of hanging the turn.
 
+Reading hook state is bounded the same way it is answered. A file that exists
+but cannot be read — a directory where the settings file should be, a lock, a
+permission — is *that agent's* answer: `avenic hook status` says so on its one
+row and the other two rows answer as usual, and the dashboard's same row says
+the same thing instead of the page going blank. Install and preview are the
+opposite: a plan built on a file whose current contents are unknown is not a
+plan, so those still refuse on the spot.
+
 The other half is the install, and it is the same CLI (`avenic hook install |
 uninstall | status`, with `--dry-run` showing the diff before anything is
 written). It writes into the file each mechanism above names — project scope for

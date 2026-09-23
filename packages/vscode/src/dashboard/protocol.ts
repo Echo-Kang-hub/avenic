@@ -242,7 +242,10 @@ export type HookAgentRow = {
   /** 「不支持」那一句（按编辑器语言说）；支持时是 null。 */
   supportNote: string | null;
   file: string;
-  installed: boolean;
+  /** 文件读得动才谈得上有答案：读不动时是 null，为什么写在 error 里。 */
+  installed: boolean | null;
+  /** 文件读不出来时 core 给的那句话（含文件与 errno）；读得出来时是 null。 */
+  error: string | null;
   /** 机制自己带的一个条件（Codex 的钩子要用户审阅过才会响）；空串就是没有。 */
   caveat: string;
 };

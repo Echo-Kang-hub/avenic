@@ -63,7 +63,10 @@ export interface HookAgentFacts {
   supportNote: string | null;
   /** The file the mechanism lives in, for this scope. */
   file: string;
-  installed: boolean;
+  /** 文件读得动才谈得上有答案：读不动时是 null，为什么写在 error 里。 */
+  installed: boolean | null;
+  /** 这个 agent 的文件读不出来时 core 给的那句话；读得出来时是 null。 */
+  error: string | null;
   /** A condition no screen can see from here (Codex's trust review); "" when there is none. */
   caveat: string;
 }
@@ -166,6 +169,7 @@ export async function agentHooks(projectRoot: string, agentId: AgentId, scope: H
     supportNote: supportSentence(capability.displayName, installation.version, support ?? { supported: status.supported, note: status.note }, languageOf(options)),
     file: status.file,
     installed: status.installed,
+    error: status.error ?? null,
     caveat: status.caveat,
   };
 }

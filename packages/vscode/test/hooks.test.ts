@@ -89,6 +89,30 @@ test("the three rows are read off the machine, and the version is the one detect
   }
 });
 
+test("a file nobody can read costs its own row and nothing else", async () => {
+  // 这一页三行来自三次读盘。同名目录（读起来是 EISDIR）是「文件在、读不动」那一类中最
+  // 常见的一种。一个读不动的文件只说明**这一个** agent 装没装不知道 —— 另外两行照答，
+  // 页面照画，只不过那一行说得出为什么。这一段必须和 CLI 的 status 同源：两边读的是
+  // core 同一个 hookStatus。
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-hooks-unreadable-"));
+  try {
+    const env = await project(root);
+    const dir = path.join(root, "project");
+    await mkdir(path.join(dir, ".claude", "settings.local.json"), { recursive: true });
+    const facts = await hooksFacts(dir, "project", options(env));
+    assert.deepEqual(facts.agents.map((row) => row.agent), [...AGENT_IDS], "三个答案一个都不能少");
+    const claude = facts.agents.find((row) => row.agent === "claude");
+    assert.equal(claude?.installed, null, "读不出来就说不知道，不许说成没装");
+    assert.match(claude?.error ?? "", /cannot be read/);
+    assert.match(claude?.error ?? "", /settings\.local\.json/);
+    const codex = facts.agents.find((row) => row.agent === "codex");
+    assert.equal(codex?.installed, false, "另一个 agent 的答案不受牵连");
+    assert.equal(codex?.error, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("installing writes the agent's own file, keeps what the user had, and uninstalling gives it back", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-hooks-install-"));
   try {

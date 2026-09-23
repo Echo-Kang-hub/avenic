@@ -761,8 +761,12 @@ export interface HookPlan {
   contents: string;
 }
 export function hookPlan(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<HookPlan>;
-/** Whether this scope currently holds Avenic's hooks, without building a write plan. */
-export function hookStatus(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<{ agent: string; scope: "project" | "global"; file: string; installed: boolean; supported: boolean; note: string | null; caveat: string }>;
+/**
+ * Whether this scope currently holds Avenic's hooks, without building a write
+ * plan. `installed` is null — with the reason in `error` — when the file exists
+ * but cannot be read: that is this agent's answer, not a failure of the call.
+ */
+export function hookStatus(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<{ agent: string; scope: "project" | "global"; file: string; installed: boolean | null; supported: boolean; note: string | null; caveat: string; error?: string }>;
 /** Merge Avenic's entry into the file's current state — never the snapshot the plan carried. */
 export function installHooks(plan: HookPlan): Promise<{ changed: boolean; file: string; skipped?: string | null }>;
 /** Remove Avenic's entry, and only Avenic's: a file Avenic did not write is never truncated. */

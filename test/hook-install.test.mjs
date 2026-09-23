@@ -436,6 +436,34 @@ test("the preview a user approves never carries a secret", async () => {
   }
 });
 
+test("a file Avenic cannot read is one agent's answer, and a plan still refuses", async () => {
+  // 状态是只读的：读不出一个 agent 的文件是**那个 agent 的答案**（装没装：不知道），不是
+  // 另外两行的死因 —— CLI 的三行与 VS Code 的那一页从同一次 hookStatus 拿答案，一个
+  // EACCES/EISDIR 不该把三个答案一起带走。写入计划不走这条路：读不出现状的**计划**不算
+  // 计划，在那儿读不动仍然当场抛错。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(file, { recursive: true }); // 同名目录：存在，但读不出来
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    await assert.rejects(() => hookPlan("claude", options), /cannot be read/, "写与预览读不动就该失败");
+
+    const status = await hookStatus("claude", options);
+    assert.equal(status.installed, null, "读不出来就说不知道，不许说成没装");
+    assert.equal(status.file, file);
+    assert.match(status.error, /cannot be read/);
+    assert.ok(status.error.includes(file), `那句话要说清是哪个文件：${status.error}`);
+    assert.equal(status.supported, true, "文件读不动不影响版本判断");
+
+    const sibling = await hookStatus("codex", options);
+    assert.equal(sibling.installed, false, "另一个 agent 的答案不受牵连");
+    assert.equal(sibling.error, undefined);
+  } finally {
+    await run.done();
+  }
+});
+
 test("every scope and agent names the file it will write", async () => {
   const run = await scratch();
   try {

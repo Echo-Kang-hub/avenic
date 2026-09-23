@@ -850,6 +850,26 @@ test("every agent row offers exactly what this scope can do, and says what Aveni
   assert.deepEqual(unsupported.querySelectorAll("button"), [], "不支持的行没有可点的东西");
 });
 
+test("a row whose file cannot be read says so, and offers nothing that would die on it", async () => {
+  // 读不动的文件（同名目录、权限、被锁住）在 CLI 那边是「那一行说读不出来，另外两行照答」。
+  // 这一页是同一份事实的另一个读者：那一行必须说得出为什么，而且一颗按钮都不给 —— 装、
+  // 卸、预览都要读这个文件，在这里点下去只会变成一次错误弹窗；而画着「Not installed」
+  // 加一颗「Install」就是在说一件我们不知道的事。
+  const broken = "/p/.claude/settings.local.json cannot be read (EISDIR) — Avenic will not rewrite a file it cannot read";
+  const rendered = await hooksPage({ hooks: { ...HOOKS, agents: [{ ...HOOKS.agents[0], installed: null, error: broken }, ...HOOKS.agents.slice(1)] } });
+
+  const unreadable = hookRow(rendered, "Claude Code");
+  assert.ok(unreadable.textContent.includes("Unreadable"), "读不出来就说读不出来，不许画成没装");
+  assert.ok(unreadable.textContent.includes("cannot be read (EISDIR)"), "这一行说清是哪个文件、为什么");
+  assert.deepEqual(unreadable.querySelectorAll("button"), [], "读不动的行上没有可点的东西");
+
+  // 另外两行照常：一个读不动的文件与它们无关，也不让这一页少画一行。
+  const codex = hookRow(rendered, "Codex");
+  assert.ok(codex.textContent.includes("Not installed"));
+  fire(rowButton(codex, "Install"));
+  assert.deepEqual(lastPosted(rendered, "action"), { type: "action", action: "hookInstall", agent: "codex", scope: "project" });
+});
+
 test("the command kind stays shut until Advanced, and the page reads core's threshold instead of its own", async () => {
   const rendered = await hooksPage();
 

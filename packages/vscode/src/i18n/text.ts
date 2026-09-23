@@ -320,6 +320,7 @@ export const TEXT = {
   "hooks.mechanism": { en: "Mechanism", zh: "机制" },
   "hooks.installed": { en: "Installed", zh: "已安装" },
   "hooks.not-installed": { en: "Not installed", zh: "未安装" },
+  "hooks.unreadable": { en: "Unreadable", zh: "读不出来" },
   "hooks.install": { en: "Install", zh: "安装" },
   "hooks.uninstall": { en: "Uninstall", zh: "卸载" },
   "hooks.view-config": { en: "View Generated Config", zh: "查看将写入的配置" },

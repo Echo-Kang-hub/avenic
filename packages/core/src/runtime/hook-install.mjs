@@ -240,28 +240,43 @@ export function opencodePlugin(agentId) {
  * that they are right.
  */
 export async function hookPlan(agentId, { scope, projectRoot, environment = process.env, version = null } = {}) {
-  const capability = hookCapability(agentId);
-  if (capability === null) throw new Error(`Unknown agent: ${agentId}`);
-  if (scope !== "project" && scope !== "global") throw new Error(`Unknown hook scope: ${scope}`);
-  const file = targetFile(agentId, scope, projectRoot, environment);
-  const support = hookSupport(agentId, version);
-  const before = await readText(file);
+  const request = planRequest(agentId, { scope, projectRoot, environment, version });
+  const before = await readText(request.file);
   const edit = editFor(agentId, before, { remove: false });
-  const installed = agentId === "opencode" ? opencodeOurs(before) : agentId === "claude" ? claudeInstalled(before) : codexInstalled(before);
   return {
     agent: agentId,
-    displayName: capability.displayName,
-    scope,
-    mechanism: capability.mechanism,
-    file,
-    version,
-    supported: support.supported,
-    note: support.note,
-    caveat: caveatFor(agentId, capability, scope),
-    installed,
+    displayName: request.capability.displayName,
+    scope: request.scope,
+    mechanism: request.capability.mechanism,
+    file: request.file,
+    version: request.version,
+    supported: request.support.supported,
+    note: request.support.note,
+    caveat: caveatFor(agentId, request.capability, request.scope),
+    installed: installedIn(agentId, before),
     before,
     contents: edit.text,
   };
+}
+
+/**
+ * One agent, one scope: which file, whether the version can carry the hooks,
+ * what the mechanism itself has to say. Both readers below start here, so the
+ * two answers can never disagree about *where* they are looking — and the two
+ * programmer errors (an agent or scope that does not exist) stay theirs.
+ */
+function planRequest(agentId, { scope, projectRoot, environment, version }) {
+  const capability = hookCapability(agentId);
+  if (capability === null) throw new Error(`Unknown agent: ${agentId}`);
+  if (scope !== "project" && scope !== "global") throw new Error(`Unknown hook scope: ${scope}`);
+  return { capability, scope, file: targetFile(agentId, scope, projectRoot, environment), support: hookSupport(agentId, version), version };
+}
+
+/** Whether the file's current bytes hold Avenic's entry (each mechanism spies its own mark). */
+function installedIn(agentId, before) {
+  if (agentId === "opencode") return opencodeOurs(before);
+  if (agentId === "claude") return claudeInstalled(before);
+  return codexInstalled(before);
 }
 
 /** Whether any event array in a Claude settings file holds an entry of Avenic's. */
@@ -301,11 +316,31 @@ export function caveatFor(agentId, capability, scope) {
 
 /**
  * Whether this scope currently has Avenic's hooks, without building a plan for
- * a write — the question a dashboard asks on every refresh.
+ * a write — the question the CLI's three rows and the dashboard's three rows
+ * both ask, so it is answered once, here.
+ *
+ * A file Avenic cannot read is **that agent's answer**: `installed` is null and
+ * `error` is the sentence saying why. It is not the death of the other two
+ * rows — a status view that dies whole loses three answers to one bad file,
+ * and the dashboard's page has nowhere to catch that. A **plan** still refuses:
+ * a write built on a file whose current contents are unknown is not a plan, so
+ * install and preview keep throwing through `hookPlan` above.
  */
 export async function hookStatus(agentId, options = {}) {
-  const plan = await hookPlan(agentId, options);
-  return { agent: plan.agent, scope: plan.scope, file: plan.file, installed: plan.installed, supported: plan.supported, note: plan.note, caveat: plan.caveat };
+  const request = planRequest(agentId, options); // 两种「不认识的输入」照抛：那是编程错误
+  const answer = {
+    agent: agentId,
+    scope: request.scope,
+    file: request.file,
+    supported: request.support.supported,
+    note: request.support.note,
+    caveat: caveatFor(agentId, request.capability, request.scope),
+  };
+  try {
+    return { ...answer, installed: installedIn(agentId, await readText(request.file)) };
+  } catch (error) {
+    return { ...answer, installed: null, error: error?.message ?? String(error) };
+  }
 }
 
 /** The one edit for one agent: which mechanism this file is, and what it becomes. */

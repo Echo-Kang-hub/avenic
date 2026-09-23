@@ -60,6 +60,13 @@ async function planFor(agentId, scope, context) {
   return hookPlan(agentId, { scope, projectRoot, environment, version: installation.version });
 }
 
+/** 同一档作用域、同一台机器：读数的那一半，剩下的由 core 的 hookStatus 答。 */
+async function statusFor(agentId, scope, context) {
+  const { environment, projectRoot } = context;
+  const installation = await detectAgentInstallationAsync(agentId, { environment });
+  return hookStatus(agentId, { scope, projectRoot, environment, version: installation.version });
+}
+
 /** The preview: what would be added and what would go, with the secrets masked. */
 function diffLines(plan) {
   return configurationDiff(plan.before, plan.contents).map((line) => {
@@ -115,14 +122,21 @@ async function statusVerb(argumentsList, context) {
   const agents = target.agentId === null ? ["claude", "codex", "opencode"] : [target.agentId];
   const rows = [];
   for (const agentId of agents) {
-    // 一个读不动的文件是**一个** agent 的答案，不是另外两个的：整条 status 挂掉会让用户
-    // 一次失去三个答案。这一行说出读不动的那个，另外两行照常回答。
-    try {
-      const plan = await planFor(agentId, target.scope, context);
-      rows.push({ agent: plan.agent, displayName: plan.displayName, scope: plan.scope, file: plan.file, installed: plan.installed, supported: plan.supported, note: plan.note, caveat: plan.caveat });
-    } catch (error) {
-      rows.push({ agent: agentId, displayName: hookCapability(agentId).displayName, scope: target.scope, file: null, installed: null, supported: null, note: null, caveat: "", error: error?.message ?? String(error) });
-    }
+    // 读不动的文件是**一个** agent 的答案：core 的 hookStatus 把它答成 installed: null
+    // 加一句话，这一层只负责让它占住三行里属于自己的那一行。行是逐字段排的 —— --json
+    // 是给别的程序读的接口，core 多出一个字段不该悄悄混进它的形状里。
+    const status = await statusFor(agentId, target.scope, context);
+    rows.push({
+      agent: status.agent,
+      displayName: hookCapability(agentId).displayName,
+      scope: status.scope,
+      file: status.file,
+      installed: status.installed,
+      supported: status.supported,
+      note: status.note,
+      caveat: status.caveat,
+      ...(status.error === undefined ? {} : { error: status.error }),
+    });
   }
   if (asJson) {
     io.log(JSON.stringify({ scope: target.scope, agents: rows }));
