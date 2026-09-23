@@ -278,6 +278,37 @@ test("the same happening twice inside the window is one notification, and two se
   }
 });
 
+test("a second hook reporting the same turn while the first is still being sent does not ring again", async () => {
+  const box = harness({ actions: [{ id: "hook", kind: "webhook", url: "https://hooks.example.invalid/avenic" }] });
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slow = {
+    ...box.io,
+    async fetch(url, options) {
+      box.calls.fetch.push({ url, options });
+      await gate;
+      return { ok: true, status: 204 };
+    },
+  };
+  try {
+    // Claude 的 Stop 可以由不止一个钩子报出来，两个进程前后脚起来是常态。第二个进程
+    // 是在第一个还没等到对方回答的时候读那张表的 —— 窗口必须在动作跑起来之前就被
+    // 占住，否则「同一件事只响一次」在最常见的那个重复场景里一次都不成立。
+    const first = emitHook({ agentId: "claude", payload: CLAUDE_STOP, projectRoot: box.root, environment: box.environment, io: slow });
+    while (box.calls.fetch.length === 0) await new Promise((resolve) => setImmediate(resolve));
+    const second = await box.emit(CLAUDE_STOP);
+    assert.equal(second.accepted, true);
+    assert.equal(second.skipped, "deduped", "第一个还在响的时候，第二个不能也响");
+    assert.deepEqual(second.results, []);
+    release();
+    const done = await bounded(first, "第一个 emit 没有回来");
+    assert.equal(done.results[0].state, "sent");
+  } finally {
+    release();
+    box.dispose();
+  }
+});
+
 test("a failed turn and a call for attention are reported at once, with no floor to wait for", async () => {
   const box = harness({ actions: [{ id: "toast", kind: "desktop" }] });
   try {

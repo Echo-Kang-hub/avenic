@@ -53,7 +53,10 @@ const CODEX_END = `# ${OWNED_MARKER} end`;
  * has exactly one entry of ours to replace.
  */
 const commandFor = (agentId) => `avenic hook emit --agent ${agentId}`;
-const OURS = /(?:^|[\\/ ])avenic(?:\.cmd|\.exe)?\s+hook\s+emit\b/;
+// `avenic` 不在 agent 的 PATH 上时，把完整路径引起来是常规写法（`"C:\npm\avenic.cmd"`），
+// 而引号是入口的一部分、不是命令的一部分 —— 不认它，install 会装出第二份、钩子每件事
+// 响两次，uninstall 又会说「已移除」却把它留在文件里。
+const OURS = /(?:^|[\\/ "])avenic(?:\.cmd|\.exe)?"?\s+hook\s+emit\b/;
 const isOurs = (command) => typeof command === "string" && OURS.test(command);
 
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -71,11 +74,23 @@ function targetFile(agentId, scope, projectRoot, environment) {
   return path.join(root, "opencode", "plugins", OPENCODE_PLUGIN_FILE);
 }
 
+/**
+ * The file's text, or nothing when there is no file.
+ *
+ * Only "there is no file" may look like an empty document. A permission
+ * failure, a lock, or a path that is not a readable file means there *is*
+ * something there Avenic must not touch — and an install built on top of the
+ * empty string this used to pretend it read would replace the user's own
+ * settings with Avenic's block (the rename succeeds because it needs write on
+ * the target, not read). The refusal is a sentence, because it is what the CLI
+ * prints and what the user has to act on.
+ */
 async function readText(file) {
   try {
     return await readFile(file, "utf8");
-  } catch {
-    return "";
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw new Error(`${file} cannot be read (${error?.code ?? error?.message}) — Avenic will not rewrite a file it cannot read`);
   }
 }
 

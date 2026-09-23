@@ -98,6 +98,17 @@ test("Codex has no failure hook, and the matrix says so instead of pretending", 
   assert.deepEqual({ event: stop.event, sessionId: stop.sessionId, turnId: stop.turnId, cwd: stop.cwd }, { event: "turn.completed", sessionId: "s-1", turnId: "t-1", cwd: "D:/tmp/not-a-real-project" });
 });
 
+test("OpenCode's message.updated only starts a turn for the user's own message", () => {
+  // 插件把两种角色都送上来：助手流的每一次更新也叫 message.updated。都算成一轮的开始，
+  // 那一轮的时刻就会被助手最后一条增量不断重写，20 秒的下限拿它去量，真正该报的完成
+  // 会被当成「太短」—— 一条通知都不会来，而 `hook test` 还是绿的。
+  const payload = { sessionID: "ses_1", directory: "D:/tmp/not-a-real-project", type: "message.updated", info: { id: "msg_1", role: "assistant" } };
+  assert.equal(normalizeHook("opencode", payload), null, "助手的消息不是一轮的开始");
+  const user = normalizeHook("opencode", { ...payload, info: { id: "msg_2", role: "user" } });
+  assert.equal(user.event, "turn.started");
+  assert.equal(user.sessionId, "ses_1");
+});
+
 test("OpenCode spells it sessionID, and an event that does not exist in this version maps to nothing", () => {
   const asked = normalizeHook("opencode", { sessionID: "ses_1", directory: "D:/tmp/not-a-real-project", type: "permission.asked", permission: { title: "run a command" } });
   assert.equal(asked.event, "attention.required");

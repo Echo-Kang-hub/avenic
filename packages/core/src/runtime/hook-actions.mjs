@@ -440,27 +440,28 @@ export async function emitHook({ agentId, payload, projectRoot, environment = pr
     await saveState(projectRoot, state, now);
     return { accepted: true, event, fingerprint, skipped: null, results: [] };
   }
-  // 去重查在最前面：两套钩子报同一件事是常态，而「同一个指纹在窗口内只响一次」是
-  // 唯一一条比「这一轮值不值得报」更优先的规矩。
-  const seenAt = state.dedupe[fingerprint];
-  if (typeof seenAt === "number" && now - seenAt < HOOK_POLICY.dedupeSeconds * 1000) {
-    return { accepted: true, event, fingerprint, skipped: "deduped", results: [] };
-  }
   if (!REPORTED_EVENTS.has(event.event)) {
     return { accepted: true, event, fingerprint, skipped: null, results: [] };
   }
-
   const durationMs = event.event === "turn.completed" ? measuredDuration(state, event, now) : null;
   if (durationMs !== null && durationMs < HOOK_POLICY.completedMinSeconds * 1000) {
     // 太短的一轮什么都没发出去，所以它不占窗口：同一个指纹后面真的够长了，还是要报。
     return { accepted: true, event, fingerprint, skipped: "too-short", results: [] };
   }
+  // 两套钩子报同一件事是常态，「同一个指纹在窗口内只响一次」是这里的规矩 —— 而窗口要在
+  // 动作之前就认领。动作是一整条链子（网络、子进程），等它回来再记账，两个钩子进程在这
+  // 几百毫秒里各自读到「没记过」的状态，同一件事就响两次。先记账再动手，重复的那一个
+  // 在第一步就被挡住；剩下的是读与写之间不到一毫秒的缝，窄到不值得再为它养一份锁文件。
+  const seenAt = state.dedupe[fingerprint];
+  if (typeof seenAt === "number" && now - seenAt < HOOK_POLICY.dedupeSeconds * 1000) {
+    return { accepted: true, event, fingerprint, skipped: "deduped", results: [] };
+  }
+  state.dedupe[fingerprint] = now;
+  await saveState(projectRoot, state, now);
 
   const results = [];
   for (const action of readHookActions(projectRoot, environment)) {
     results.push(await runAction(action, event, durationMs, toolkit, environment, now));
   }
-  state.dedupe[fingerprint] = now;
-  await saveState(projectRoot, state, now);
   return { accepted: true, event, fingerprint, skipped: null, results };
 }

@@ -114,7 +114,7 @@ export const HOOK_CAPABILITIES = {
       "session.started": rel("session.created", "reliable"),
       // 用户那条消息就是这一轮的开始，但插件的事件表里没有「用户提问」这一条 —— 所以这
       // 一行是推断出来的，说清楚它没有被观测过。
-      "turn.started": rel("message.updated", "conditional", { note: "a user-role message starts the turn; not observed firing" }),
+      "turn.started": rel("message.updated", "conditional", { note: "a user-role message starts the turn; not observed firing", role: "user" }),
       "turn.completed": rel("session.idle", "reliable"),
       "turn.failed": rel("session.error", "reliable"),
       "attention.required": rel("permission.asked", "reliable", { reason: "type", note: "1.18.30 has no permission.updated" }),
@@ -186,6 +186,11 @@ export function normalizeHook(agentId, payload) {
   // 是「某一类错误」。表里列了哪几种才算这件事的，就只有那几种算 —— 一个没见过的类型
   // 猜成 attention，就是在用户没让人回来的时候把人叫回来。
   if (entry.reasons !== undefined && (reason === null || !entry.reasons.includes(reason))) return null;
+  // 有的原生事件对两种角色都发（OpenCode 的 message.updated 就是：助手流的每一次增量
+  // 也叫这个名字）。表里连着角色一起写下来，就只有那个角色算数 —— 全都算的话，一轮的
+  // 时刻被助手自己的增量不断重写，20 秒的下限永远量不够，该来的通知一条都不来。
+  // 角色读不出来时也不放行：猜错的代价是把助手的话记成用户的开始。
+  if (entry.role !== undefined && payload.info?.role !== entry.role) return null;
   return {
     agent: agentId,
     event,

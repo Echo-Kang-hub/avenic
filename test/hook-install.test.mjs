@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -277,6 +277,53 @@ test("the OpenCode plugin flattens the event to the fields the matrix reads", as
     const text = plan.contents;
     assert.match(text, /export const AvenicHooks = async \(\{ directory \}\) => \(\{$/m, "插件要拿得到自己的 directory 入参");
     assert.match(text, /report\(\{ directory, \.\.\.event\.properties, type: event\.type \}\)/, "载荷要摊平成矩阵读的那个形状");
+  } finally {
+    await run.done();
+  }
+});
+
+test("a configuration that exists but cannot be read is refused, not overwritten", async () => {
+  const run = await scratch();
+  try {
+    // 读不出来 ≠ 不存在。把读不到的路径当成空文件，装下去就是把用户自己的设置
+    // （权限、他自己写的钩子、环境变量）换成 Avenic 的一块 —— 而重命名成功只需要
+    // 目标可写、不需要目标可读，所以这一步不是写入层能替用户挡住的。这里用同名
+    // 目录制造「有这个路径、但读不成文本」：任何非「文件不在」的失败答案都一样。
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(file, { recursive: true });
+    await assert.rejects(
+      () => hookPlan("claude", { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" }),
+      /cannot be read/,
+    );
+    assert.equal((await stat(file)).isDirectory(), true, "读不到的路径必须原样留着");
+  } finally {
+    await run.done();
+  }
+});
+
+test("an entry the user moved behind a quoted path is still Avenic's own", async () => {
+  const run = await scratch();
+  try {
+    // Windows 上 `avenic` 不在 agent 的 PATH 上时，把完整路径引起来是常规写法。
+    // 认不出它：status 说没装、install 装出第二份（每件事响两次）、uninstall 说
+    // 「已移除」却把它留在文件里。
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    const quoted = '"C:\\npm\\avenic.cmd" hook emit --agent claude';
+    await writeFile(file, `${JSON.stringify({ permissions: { allow: ["Bash(ls:*)"] }, hooks: { Stop: [{ hooks: [{ type: "command", command: quoted }] }] } }, null, 2)}\n`);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    assert.equal((await hookPlan("claude", options)).installed, true, "带引号的入口也是 Avenic 的");
+    await installHooks(await hookPlan("claude", options));
+    const settings = await readJson(file);
+    assert.equal(settings.hooks.Stop.flatMap((group) => group.hooks).filter((handler) => ours(handler.command)).length, 1, "不能装出第二份");
+    const again = await installHooks(await hookPlan("claude", options));
+    assert.equal(again.changed, false, "第二次安装什么也没改");
+
+    await uninstallHooks(await hookPlan("claude", options));
+    const left = await readJson(file);
+    assert.deepEqual(left.permissions, { allow: ["Bash(ls:*)"] }, "用户自己的设置要留着");
+    assert.equal(JSON.stringify(left).includes("avenic"), false, "卸载之后一个入口都不剩");
   } finally {
     await run.done();
   }
