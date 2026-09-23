@@ -1,6 +1,7 @@
 import { watch as fsWatchNative } from "node:fs";
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { stateStampFile } from "@avenic/core";
 
 // 项目的变化发生在面板之外：另一个终端的 `avenic claude` 退出了，一次启动结束了，
 // 一场对话长了。core 把这三件事写进同一个小 stamp（`.agents/local/state.json`），
@@ -34,7 +35,7 @@ type Watch = NonNullable<StateWatchOptions["fsWatch"]>;
  * 上从此不再有事件。
  */
 function layers(projectRoot: string) {
-  const file = path.join(projectRoot, ".agents", "local", "state.json");
+  const file = stateStampFile(projectRoot);
   return { file, directories: [path.dirname(file), path.dirname(path.dirname(file)), projectRoot] };
 }
 

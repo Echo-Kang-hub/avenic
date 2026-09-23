@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
-import { isWebviewMessage, type ActivityRow, type AgentId, type DashboardAction, type DashboardSection, type RunState } from "./protocol.ts";
+import { isWebviewMessage, type ActivityRow, type AgentId, type DashboardAction, type DashboardSection, type RunState, type StatusMessage } from "./protocol.ts";
 import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
 import { buildDashboardData } from "./state.ts";
 
@@ -96,7 +96,8 @@ export class DashboardPanel {
    */
   status(runs: Record<AgentId, RunState>): void {
     if (this.disposed) return;
-    this.post({ type: "status", runs });
+    const message: StatusMessage = { type: "status", runs };
+    this.post(message);
   }
 
   /** 打开一条会话：读它的对话内容随下一次推送一起过去，初帧永远不读事件日志。

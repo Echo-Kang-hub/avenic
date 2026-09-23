@@ -525,12 +525,6 @@ button {
  * 18x18 (image x900..917 y923..940) against the other heads' 28x30. */
 .card-head.inline-sub .section-icon .icon { font-size: 20px; transform: none; }
 
-.section-titles { display: flex; flex-direction: column; min-width: 0; }
-
-.section-title { font-size: 15px; font-weight: 700; color: var(--av-text); }
-
-.section-sub { font-size: 12px; color: var(--av-text-muted); }
-
 .section-head .spacer { flex: 1; }
 
 .section-head + .section-body { border-top: 1px solid var(--av-border-soft); }
@@ -819,8 +813,6 @@ button {
 
 .card-body { padding: 0 16px 11px 11px; }
 
-.row-list { display: flex; flex-direction: column; }
-
 /* The list is a box, not a stack of full-bleed rows: the reference insets it 15px
  * from both card edges and draws its own border and radius around the rows.
  *
@@ -943,10 +935,6 @@ button {
 .card.skills .card-head { padding: 9px 14px; }
 
 .card.skills .card-foot { padding: 12px 24px; }
-
-.foot-link { display: inline-flex; align-items: center; gap: 6px; color: var(--av-brand-text); font-size: 12.5px; }
-
-.foot-link:hover { text-decoration: underline; }
 
 /* A tab strip lines up with the list box under it, not with the card's edge:
  * the reference insets both by the same 15px and starts its first tab exactly
@@ -1127,8 +1115,6 @@ button {
 .transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 
 .turn { display: flex; flex-direction: column; gap: 4px; }
-
-.turn-role { font-size: 11.5px; color: var(--av-text-muted); text-transform: none; }
 
 .turn-text { font-size: 12.5px; color: var(--av-text-body); white-space: pre-wrap; }
 
@@ -1347,10 +1333,6 @@ button {
 .skeleton { display: flex; flex-direction: column; gap: 12px; }
 
 .skeleton-block { height: 88px; border-radius: var(--av-radius); background: var(--av-surface); border: 1px solid var(--av-border-soft); }
-
-.skeleton-row { height: 14px; border-radius: 4px; background: var(--av-surface-hi); }
-
-.skeleton-row.short { width: 40%; }
 
 /* --------------------------------------------------------- narrow modes -- */
 

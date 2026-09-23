@@ -235,24 +235,23 @@
   // 状态胶囊：跑着的时候有字，没跑的时候什么都没有（连空节点也不留——一棵总是
   // 存在的空 span 会在 gap 里留下半个间隙）。
   function runPill(agentId, run) {
-    const label = RUN_LABELS[run];
-    const pill = el("span", label ? "run-pill run-" + run : "run-pill");
+    const pill = el("span", "run-pill");
     pill.setAttribute("data-run-for", agentId);
-    if (label) pill.textContent = label;
+    setRun(pill, run);
     return pill;
   }
 
   // 行上那枚说得更少：它说的是「参与这条会话的 agent 里有人正在跑」，是谁在下一个
   // 徽章上。没在跑时它也留着（空的，CSS 藏起来）——后面来的状态要有个东西可改。
   function rowRunPill(agents, running) {
-    const pill = el("span", running ? "run-pill run-running" : "run-pill");
+    const pill = el("span", "run-pill");
     pill.setAttribute("data-run-agents", (agents ?? []).join(" "));
-    if (running) pill.textContent = RUN_LABELS.running;
+    setRun(pill, running ? "running" : "idle");
     return pill;
   }
 
   // 胶囊上的字只有那两句（跑着、没跑完），别的状态什么都不说——空的那一枚由
-  // CSS 的 :empty 藏起来。
+  // CSS 的 :empty 藏起来。画第一遍和收到推送时改的都是这一个函数。
   function setRun(pill, run) {
     pill.className = RUN_LABELS[run] ? "run-pill run-" + run : "run-pill";
     pill.textContent = RUN_LABELS[run] ?? "";
@@ -1119,18 +1118,14 @@
     const block = el("article", "turn");
     const head = el("div", "turn-head");
     // 说话的人是 core 定下的称呼：键盘前的人只有一个名字（You），别的是发话的那个
-    // agent。存在盘上的 role（user/assistant）是给程序看的词，不写在这一页上。
-    head.append(el("span", "turn-speaker", speakerOf(turn)));
+    // agent。存在盘上的 role（user/assistant）是给程序看的词，不写在这一页上——这一页
+    // 也不自己算一遍：`speaker` 就是那个答案。
+    head.append(el("span", "turn-speaker", turn.speaker));
     if (turn.model) head.append(el("span", "turn-model", turn.model));
     block.append(head);
     if (turn.text) block.append(el("div", "turn-text", turn.text));
     for (const tool of turn.tools ?? []) block.append(toolRow(tool));
     return block;
-  }
-
-  function speakerOf(turn) {
-    if (turn.kind === "user") return "You";
-    return turn.speaker || shortLabelOf(turn.agent) || "Agent";
   }
 
   // 工具不是自己说话的人：它属于让它跑起来的那个 agent，所以它是那一轮下面的一行，
