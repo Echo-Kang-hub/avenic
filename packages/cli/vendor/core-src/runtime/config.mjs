@@ -413,12 +413,13 @@ async function purgeAgentHomes(localRoot, options) {
   if (!kept) await rm(localRoot, { recursive: true, force: true });
 }
 
-// 清完之后名单还在不在，用同一条读数回答两条返回路径：`--purge` 说过要清数据，
+// 清完之后留下来的那一份在哪，用同一条读数回答两条返回路径：`--purge` 说过要清数据，
 // 那它就得说得出自己没清掉哪一份——一句「Preserved」而文件其实没了，比不说更坏。
-function keptActions(state, projectRoot, purged) {
-  const file = path.join(state.paths.localRoot, KEPT_LOCAL_FILE);
-  return purged && existsSync(file) ? path.relative(projectRoot, file).split(path.sep).join("/") : null;
+function keptReport(projectRoot, file, kept) {
+  return kept && existsSync(file) ? path.relative(projectRoot, file).split(path.sep).join("/") : null;
 }
+
+const keptActions = (state, projectRoot, purged) => keptReport(projectRoot, path.join(state.paths.localRoot, KEPT_LOCAL_FILE), purged);
 
 export async function deinitializeAgent(projectRoot, agentId, options = {}) {
   const agent = getAgent(agentId);
@@ -439,9 +440,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       agent,
       changed: purged,
       purged,
-      keptCredential: options.purge && existsSync(path.join(homeDirectory, CREDENTIAL_FILE[agentId]))
-        ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/")
-        : null,
+      keptCredential: keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), Boolean(options.purge)),
       keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
       remaining: Object.keys(state.runtime.agents ?? {}).length,
     };
@@ -489,7 +488,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     changed: true,
     purged: Boolean(options.purge),
     remaining,
-    keptCredential: kept ? path.relative(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId])).split(path.sep).join("/") : null,
+    keptCredential: keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), kept),
     keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
   };
 }
