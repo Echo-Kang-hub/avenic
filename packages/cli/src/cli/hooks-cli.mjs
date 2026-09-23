@@ -168,13 +168,17 @@ async function emitVerb(argumentsList, context) {
  * for the install machinery's import graph.
  */
 async function installationLines(agentId, projectRoot, environment) {
-  const [{ hookPlan }, { detectAgentInstallationAsync }] = await Promise.all([import("#core/runtime/hook-install.mjs"), import("#core/runtime/versions.mjs")]);
+  const [{ hookStatus }, { detectAgentInstallationAsync }] = await Promise.all([import("#core/runtime/hook-install.mjs"), import("#core/runtime/versions.mjs")]);
   const installation = await detectAgentInstallationAsync(agentId, { environment });
-  const plan = await hookPlan(agentId, { scope: "project", projectRoot, environment, version: installation.version });
-  if (!plan.supported) return [`Hooks: ${plan.note}`];
-  if (!plan.installed) return [`Hooks: not installed for this project — run: avenic hook install --agent ${agentId} --scope project`];
-  const lines = [`Hooks: installed — ${plan.file}`];
-  if (plan.caveat !== "") lines.push(`${plan.displayName}: ${plan.caveat}`);
+  // 读数走 hookStatus 而不是 hookPlan：readText 拒绝读一个不是可读文件的目标（那是用户
+  // 的东西，Avenic 不许碰），而那条拒绝在 hookPlan 里是一句抛出去的异常——一个第一跳的
+  // 未知不该拦下这一发（`avenic hook status` 走的是同一条读数）。
+  const status = await hookStatus(agentId, { scope: "project", projectRoot, environment, version: installation.version });
+  if (!status.supported) return [`Hooks: ${status.note}`];
+  if (status.installed === null) return [`Hooks: unknown — ${status.error}`];
+  if (!status.installed) return [`Hooks: not installed for this project — run: avenic hook install --agent ${agentId} --scope project`];
+  const lines = [`Hooks: installed — ${status.file}`];
+  if (status.caveat !== "") lines.push(`${hookCapability(agentId).displayName}: ${status.caveat}`);
   return lines;
 }
 

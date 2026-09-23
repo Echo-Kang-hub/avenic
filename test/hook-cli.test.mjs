@@ -196,6 +196,24 @@ test("an agent that cannot carry hooks still gets its chain tested, and Codex's 
   }
 });
 
+test("a test still runs when the first hop's answer cannot be read", async () => {
+  // 读不动 agent 的文件（目录顶了名字、权限不对）说的只是「装没装不知道」，不是
+  // 「测试失败」。这一发测的是动作那一条链，拦下来用户就再没有办法验证自己的通知——
+  // 而这正是他想知道的。读数的那一半用 core 的 hookStatus（status 那一页走的是同一条）。
+  const run = await machine({ versions: { claude: "2.1.274" } });
+  try {
+    await mkdir(path.join(run.project, ".claude", "settings.local.json"), { recursive: true });
+    const io = capturing();
+    assert.equal(await dispatchHookCommand(["test", "--agent", "claude"], run.context(io)), 0, io.errors.join("\n"));
+    const text = io.lines.join("\n");
+    assert.match(text, /synthetic turn\.completed/, "第一跳答不上来也不拦这一发");
+    assert.match(text, /^Hooks: .*cannot be read/m, "读不出来是一个事实，照直说");
+    assert.ok(!text.includes("not installed"), "读不出来不等于没装");
+  } finally {
+    await run.done();
+  }
+});
+
 test("status answers for one agent, for all three, and in JSON", async () => {
   const run = await machine({ versions: { claude: "2.1.274", codex: "0.154.0", opencode: "1.18.30" } });
   try {
