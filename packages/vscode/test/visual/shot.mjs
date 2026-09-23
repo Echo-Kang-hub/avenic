@@ -667,10 +667,20 @@ function buildPage(payload, fixture) {
               const alpha = fg[3] ?? 1;
               const blended = [0, 1, 2].map((i) => fg[i] * alpha + bg[i] * (1 - alpha));
               const la = luminance(blended); const lb = luminance(bg);
+              // The class chain — this node and its class-bearing ancestors — so a
+              // caller can allow-list a whole control family rather than one
+              // string. The chain is what makes that promise keepable: a leaf with
+              // a class of its own ("label", inside the shell's primary button)
+              // used to hide the family it belongs to, and a gate that allows
+              // btn-primary by name silently stopped recognising its own
+              // allowance the day the span gained a class.
+              const chain = [];
+              for (let current = node; current !== null && chain.length < 4; current = current.parentElement) {
+                const own = typeof current.className === "string" ? current.className.trim() : "";
+                if (own !== "" && !chain.includes(own)) chain.push(own);
+              }
               return {
-                // The class, or the parent chain down to a class, so a caller can
-                // allow-list a whole control family rather than one string.
-                cls: node.className || (node.closest("[class]")?.className || node.tagName),
+                cls: chain.join(" ") || node.tagName,
                 size: parseFloat(style.fontSize),
                 text: (node.textContent ?? "").trim().slice(0, 20),
                 ratio: +((Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)).toFixed(2),

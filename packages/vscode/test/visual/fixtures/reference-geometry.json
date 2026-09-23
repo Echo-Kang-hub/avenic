@@ -69,10 +69,10 @@
       "note": "The card's foot button ('Open Config File ↗'). Borders found by scanning row y447 (left border 284..286, right 444..446) and column x440 (top 437, bottom 464): a 163x28 box." },
     { "name": "text.skill.desc.1", "selector": ".skill-desc", "text": true, "ref": { "x0": 412, "y0": 867, "y1": 878 }, "tol": 6,
       "note": "The description run starts 2px after the name run's box ends (318..410), i.e. the name column is a fixed width, not a gap." },
-    { "name": "skills.marks.1", "selector": ".skill-marks", "ref": { "x0": 657, "x1": 731, "y0": 864, "y1": 883 }, "tol": 4,
-      "note": "The three agent marks on the first skill row: ink 657..731 with the middle one (Codex) white and the outer two tinted." },
-    { "name": "skills.pill.1", "selector": ".skill-line .badge", "ref": { "x0": 751, "x1": 817, "y0": 861, "y1": 884 }, "tol": 4,
-      "note": "The 'Enabled' pill's own box (border to border), found on row y872: left border 751, right 817, with the state dot at 765 and the mint label after it." }
+    { "name": "skills.marks.1", "selector": ".skill-marks", "ref": { "x0": 689, "x1": 763, "y0": 864, "y1": 883 }, "tol": 4,
+      "note": "The three agent marks on the first skill row: ink 689..763 with the middle one (Codex) white and the outer two tinted. Re-anchored 2026-09-24: the reference's row ends in a trailing ⋯ (its 25px box plus the row's 6px gap is what the reference's own left edge of 657 includes), and this build removed that ⋯ as a dead control — it reopened the Skills page rather than acting on this row. The trailing group therefore sits 31.7px right of the reference's pixels, and what this anchor pins is the group's own width (75 in both) and its inset from the row's right edge, which the reference settles at ~8px after the ⋯ box." },
+    { "name": "skills.pill.1", "selector": ".skill-line .badge", "ref": { "x0": 786, "x1": 849, "y0": 861, "y1": 884 }, "tol": 4,
+      "note": "The 'Enabled' pill's own box (border to border), found on row y872: 786..849, with the pill 22px right of the marks group. Re-anchored 2026-09-24 with skills.marks.1 for the same removal of the trailing ⋯: the reference's 751..817 also included the space that box reserved, and the pill's own width (64 against the reference's 67) is unchanged." }
   ],
 
   "structure": [
@@ -80,10 +80,10 @@
       "note": "The reference's leftmost column is the dashboard's own sidebar (image x45..247), not VS Code's activity bar: without it every other measurement describes a layout that is not on screen." },
     { "name": "sidebar.width", "key": "sidebar.width", "expect": 202, "tol": 3,
       "note": "The reference's sidebar band is image x45..246 inclusive — 202px of webview once the 45px activity bar is subtracted — and the stylesheet's own token is 203. ±3 accepts the token and the band's own ±1 measurement error and still refuses any change that moves the panel by 4px or more." },
-    { "name": "sidebar.nav.items", "key": "sidebar.nav.items", "expect": 6,
-      "note": "The reference draws six destinations (the active band at y89 and text.nav.6's run at y310 are the first and the last): Overview, Configure, Agents, Sessions, Skills, Quick Actions." },
-    { "name": "sidebar.nav.sections", "key": "sidebar.nav.sections", "expect": "overview,configure,agents,sessions,skills,quick",
-      "note": "Six items in the reference's order. The order is part of the structure: the section list is a reading order, and the same six in another order is a different sidebar." },
+    { "name": "sidebar.nav.items", "key": "sidebar.nav.items", "expect": 8,
+      "note": "Eight destinations. The reference draws six (the active band at y89 and text.nav.6's run at y310 are the first and the last) — Overview, Configure, Agents, Sessions, Skills, Quick Actions — and this build's own round added two real pages the reference could not show: Model Config (the Model Configuration Center) and Hooks & Notifications. The count is still gated because it is the thing a lost or duplicated destination moves: 6 is now as wrong as 9." },
+    { "name": "sidebar.nav.sections", "key": "sidebar.nav.sections", "expect": "overview,configure,agents,center,hooks,sessions,skills,quick",
+      "note": "Eight items in the product's order: the reference's six with the two new pages placed where they belong — Model Config after Agents (it edits those agents' configuration) and Hooks & Notifications after it (what those agents report). The order is part of the structure: the list is a reading order, and the same eight in another order is a different sidebar." },
     { "name": "sidebar.active.count", "key": "sidebar.active.count", "expect": 1,
       "note": "One destination is the one being shown. Two highlighted entries (or none) tell the reader two different things about where they are." },
     { "name": "sidebar.active.section", "key": "sidebar.active.section", "expect": "overview",
