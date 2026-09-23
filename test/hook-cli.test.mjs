@@ -221,17 +221,23 @@ test("an agent that cannot carry hooks still gets its chain tested, and Codex's 
     // 这条命令测的是动作那一条链，与哪个 agent 无关：装不上钩子的 agent 也要让用户把
     // 自己的通知验成。第一跳（这个版本不支持）就印在旁边 —— 说了事实，但不用它去拦这一发。
     // 场景里放一个真的动作，它会留下一个文件。
+    //
+    // 命令那一栏是一条**命令行**，这里连着真的跑一遍：程序、引号里的参数都由平台自己的
+    // shell 解释。那句带空格的参数是这句话的证据 —— 没有 shell，它整串是一个程序名；
+    // 拼错了引号，它会被切成两个参数。
     const marker = path.join(run.root, "the-action-ran");
+    const script = path.join(run.root, "leaves-a-trace.mjs");
+    await writeFile(script, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, process.argv[2] ?? "");\n`);
     await mkdir(path.dirname(path.join(run.root, "state", "hook-actions.json")), { recursive: true });
     await writeFile(path.join(run.root, "state", "hook-actions.json"), JSON.stringify({
-      actions: [{ id: "leaves-a-trace", kind: "command", command: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "x")`] }],
+      actions: [{ id: "leaves-a-trace", kind: "command", command: `"${process.execPath}" "${script}" "two words"` }],
     }, null, 2));
 
     const unsupported = capturing();
     assert.equal(await dispatchHookCommand(["test", "--agent", "claude"], run.context(unsupported)), 0, unsupported.errors.join("\n"));
     const unsupportedText = unsupported.lines.join("\n");
     assert.match(unsupportedText, /^Hooks: Unsupported by Claude Code 2\.0\.0$/m, "第一跳是什么，这一行就说什么");
-    assert.equal(await run.exists(marker), true, "测试测的是动作那一条链：装不上钩子也验得成自己的通知");
+    assert.equal(await readFile(marker, "utf8"), "two words", "测试测的是动作那一条链：装不上钩子也验得成自己的通知，引号里的参数是一个参数");
 
     assert.equal(await dispatchHookCommand(["install", "--agent", "codex", "--scope", "project"], run.context(capturing())), 0);
     const codex = capturing();
@@ -239,7 +245,7 @@ test("an agent that cannot carry hooks still gets its chain tested, and Codex's 
     const text = codex.lines.join("\n");
     assert.match(text, /^Hooks: installed — /m);
     assert.match(text, /^Codex: .*untrusted/im, "装了不等于会响：这句话要跟着答案一起出现");
-    assert.equal(await run.exists(marker), true, "支持这个 agent，测试该真的走一遍");
+    assert.equal(await readFile(marker, "utf8"), "two words", "支持这个 agent，测试该真的走一遍");
   } finally {
     await run.done();
   }

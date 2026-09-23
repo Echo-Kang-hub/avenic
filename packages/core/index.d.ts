@@ -719,9 +719,8 @@ export interface HookAction {
   tokenEnv?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
-  /** command: the program and its arguments. The event arrives on stdin; the shell's credentials do not. */
+  /** command: one command line, run by the platform's own shell (so its quotes and arguments mean what they say, and a `.cmd` starts). The event arrives on stdin; the shell's credentials do not. */
   command?: string;
-  args?: string[];
 }
 /** One action's attempt at one event. A refusal is a result, never a thrown hook. */
 export interface HookActionResult {

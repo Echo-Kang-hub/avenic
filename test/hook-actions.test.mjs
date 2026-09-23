@@ -584,15 +584,48 @@ test("the state file is written whole, is pruned to the window, and holds no pay
   }
 });
 
+test("a command action is a command line: the shell is what gives its words their meaning", async () => {
+  // 向导收下的是一条命令行（提示语就是「要跑的命令」，行上只报程序名 —— 参数是用户自己的
+  // 东西），而 spawn 默认把整串当成一个程序名：`my-notifier --turn "Build done"` 在那里
+  // 是 ENOENT，Windows 上一个 .cmd（npx 装出来的工具全长这样）连启动都做不到（EINVAL）。
+  // 「命令行」这三个字由平台自己的 shell 来解释，用户写下的引号与参数才是那个意思。
+  const line = 'my-notifier --turn "Build done"';
+  const box = harness({ platform: "win32", actions: [{ id: "notify", kind: "command", command: line }] });
+  try {
+    const result = await box.emit(CLAUDE_STOP);
+    assert.equal(result.results[0].state, "sent");
+    const spawned = box.calls.spawn[0];
+    assert.equal(spawned.command, line, "整条命令行原样交出去");
+    assert.deepEqual(spawned.args, [], "参数写在命令行里，不在这里");
+    assert.equal(spawned.options.shell, true, "没有 shell，整串就是一个程序名");
+  } finally {
+    box.dispose();
+  }
+});
+
+test("a command action with nothing to run says so instead of reporting a delivery", async () => {
+  // 手写的文件里可以只有 id 与 kind。空的一条命令行交给 shell，shell 以 0 退出 —— 于是
+  // 「已经送出去了」是一句假话，而用户配过的那条通知一条都不会到。webhook 那一栏有同样的
+  // 规矩（没有地址就说没有地址），这里说的是同一件事。
+  const box = harness({ actions: [{ id: "blank", kind: "command", command: "   " }, { id: "missing", kind: "command" }] });
+  try {
+    const result = await box.emit(CLAUDE_STOP);
+    assert.deepEqual(result.results.map((item) => item.state), ["failed", "failed"]);
+    for (const item of result.results) assert.match(item.detail, /no command configured/);
+    assert.equal(box.calls.spawn.length, 0, "没有东西可跑，就一个进程都不开");
+  } finally {
+    box.dispose();
+  }
+});
+
 test("a command action gets the event on stdin and none of the shell's credentials", async () => {
-  const box = harness({ actions: [{ id: "notify", kind: "command", command: "my-notifier", args: ["--turn"] }] });
+  const box = harness({ actions: [{ id: "notify", kind: "command", command: 'my-notifier --turn "Build done"' }] });
   try {
     const environment = { ...box.environment, ANTHROPIC_AUTH_TOKEN: SECRET, OPENAI_API_KEY: "sk-test-not-a-real-key-2", GH_TOKEN: "ghp_not-real", KEEP_ME: "yes" };
     const result = await emitHook({ agentId: "claude", payload: CLAUDE_STOP, projectRoot: box.root, environment, io: box.io });
     assert.equal(result.results[0].state, "sent");
     const spawned = box.calls.spawn[0];
-    assert.equal(spawned.command, "my-notifier");
-    assert.deepEqual(spawned.args, ["--turn"], "参数是一条一条的，不是拼出来的命令行");
+    assert.equal(spawned.command, 'my-notifier --turn "Build done"');
     assert.deepEqual(JSON.parse(spawned.child.writes.join("")), {
       agent: "claude",
       event: "turn.completed",
@@ -632,7 +665,7 @@ test("a command that stops reading its input is a failed result, not the end of 
   // 窗口已经认领过这件事了 —— 那一条通知就此消失，且没有任何地方说过它消失过。
   const box = harness({
     actions: [
-      { id: "quits", kind: "command", command: "my-notifier", args: ["--once"] },
+      { id: "quits", kind: "command", command: "my-notifier --once" },
       { id: "after", kind: "webhook", url: "https://after.example.invalid/avenic" },
     ],
     child: () => fakeChild({ input: "closed" }),

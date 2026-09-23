@@ -382,7 +382,12 @@ async function runDesktop(action, id, event, durationMs, toolkit) {
 
 function runCommand(action, id, event, durationMs, toolkit, environment, now, remainingMs) {
   const timeoutMs = Math.min(timeoutOf(action), remainingMs);
-  const args = Array.isArray(action.args) ? action.args.map(String) : [];
+  // 这一栏是一条命令行，不是程序名：用户写下的引号、参数与 .cmd（Windows 上 npx 装出来的
+  // 工具全长这样）都由平台自己的 shell 解释 —— 没有它，`my-notifier --turn "Build done"`
+  // 整串是一个程序名（ENOENT），而一个 .cmd 连启动都做不到（EINVAL）。跑的是用户自己写下
+  // 并确认过的那一行；事件走 stdin，绝不拼进去，所以这里没有别人能改的东西。
+  const line = typeof action.command === "string" ? action.command.trim() : "";
+  if (line === "") return Promise.resolve({ id, kind: "command", state: "failed", detail: "no command configured" });
   return new Promise((resolve) => {
     let child;
     let timer;
@@ -394,7 +399,7 @@ function runCommand(action, id, event, durationMs, toolkit, environment, now, re
       resolve({ id, kind: "command", state, detail });
     };
     try {
-      child = toolkit.spawn(action.command, args, { stdio: ["pipe", "ignore", "ignore"], env: commandEnvironment(environment), windowsHide: true });
+      child = toolkit.spawn(line, [], { stdio: ["pipe", "ignore", "ignore"], env: commandEnvironment(environment), windowsHide: true, shell: true });
     } catch (error) {
       settle("failed", String(error?.message ?? error));
       return;
