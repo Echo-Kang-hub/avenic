@@ -661,7 +661,17 @@ export async function refreshStateStamp(projectRoot, options = {}) {
     revision: (previous?.revision ?? 0) + 1,
     updatedAt: new Date().toISOString(),
     launches: await launchStates(projectRoot),
-    sessions: { count: await canonicalCount(projectRoot), active },
+    sessions: {
+      count: await canonicalCount(projectRoot),
+      active,
+      // A conversation gaining a line is a change like any other, and the one
+      // the dashboard's session view waits for: `count` and `launches` both
+      // hold still while the user watches words arrive. The caller that just
+      // appended the events is the one that knows how many; every other
+      // refresh carries the number forward rather than erasing it. Like the
+      // top-level revision it is a signal, not a tally — only that it moved.
+      revision: (previous?.sessions?.revision ?? 0) + (options.grew ?? 0),
+    },
   };
   // The revision and the clock always move; what decides whether this is a
   // change at all is everything else. A stamp rewritten with the same content

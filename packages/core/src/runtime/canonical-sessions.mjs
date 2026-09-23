@@ -225,7 +225,7 @@ export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
   };
   await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
   // The conversation grew: a watcher re-reads this one instead of the store.
-  await refreshStateStamp(projectRoot);
+  await refreshStateStamp(projectRoot, { grew: additions.length });
   return { added: additions.length, duplicate };
 }
 

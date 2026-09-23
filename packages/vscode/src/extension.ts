@@ -112,7 +112,7 @@ function startShell(context: vscode.ExtensionContext, launcher: LauncherView, ac
   // 换项目换的是要看守的目录，不是「要看守」这件事本身：这条订阅只登记一次，
   // dispose 停的是当下那一个 watcher。
   context.subscriptions.push({ dispose: () => follow?.stop() });
-  const seen: ReconcileSeen = { count: null, active: null, launches: "" };
+  const seen: ReconcileSeen = { count: null, active: null, revision: null, launches: "" };
   const followState = () => {
     const current = root();
     if (current === followed) return;
@@ -121,6 +121,7 @@ function startShell(context: vscode.ExtensionContext, launcher: LauncherView, ac
     followed = current;
     seen.count = null;
     seen.active = null;
+    seen.revision = null;
     seen.launches = "";
     if (current === null) return;
     follow = watchProjectState({
@@ -143,6 +144,7 @@ function startShell(context: vscode.ExtensionContext, launcher: LauncherView, ac
     const outcome = reconcileOutcome(seen, {
       count: stamp.sessions?.count ?? 0,
       active: stamp.sessions?.active ?? null,
+      revision: stamp.sessions?.revision ?? 0,
       runsKey: JSON.stringify(runs),
     });
     if (outcome.runsMoved) {

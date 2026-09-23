@@ -846,12 +846,17 @@ export interface StateStamp {
   revision: number;
   updatedAt: string;
   launches: Record<string, "idle" | "running" | "interrupted">;
-  sessions: { count: number; active: string | null };
+  sessions: {
+    count: number;
+    active: string | null;
+    /** Conversation content growing — the one change count and launches both miss. */
+    revision: number;
+  };
 }
 export function stateStampFile(projectRoot: string): string;
 export function readStateStamp(projectRoot: string): Promise<StateStamp | null>;
 /** Re-derive the stamp from the truth and write it only when something moved. */
-export function refreshStateStamp(projectRoot: string, options?: { active?: string | null }): Promise<StateStamp>;
+export function refreshStateStamp(projectRoot: string, options?: { active?: string | null; grew?: number }): Promise<StateStamp>;
 export const STATE_STAMP_SCHEMA_VERSION: number;
 export function processAlive(pid: number): boolean;
 // The part of an environment a detached launch helper keeps: the variables that

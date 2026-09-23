@@ -4,6 +4,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { appendCanonicalEvents } from "../packages/core/src/runtime/canonical-sessions.mjs";
 import { finishLaunch, joinLaunchGroup } from "../packages/core/src/runtime/session-interop.mjs";
 import { launchGroupState, sessionLeasePath } from "../packages/core/src/runtime/sessions.mjs";
 import { readStateStamp, refreshStateStamp } from "../packages/core/src/runtime/sessions.mjs";
@@ -44,6 +45,40 @@ test("an import says a conversation arrived without the reader scanning for it",
     assert.equal(stamp.sessions.count, sessionIds.length, "every fixture conversation is in the project now");
     assert.match(stamp.sessions.active, /^claude-/, "the active conversation is named in the stamp");
     assert.equal(stamp.launches.claude, "idle");
+  });
+});
+
+// 一场会话长长了，既不是新会话也不是启停：count 不动、launches 不动，而用户正盯着
+// 那一页看消息进来。所以增长本身要有一个数字走进 stamp——写的人（appendCanonicalEvents）
+// 刚刚知道这件事，读的人（仪表盘）靠它决定要不要重读那一页。
+test("a conversation growing is a change the stamp carries out to the whole machine", async () => {
+  await withClaudeProject(async ({ projectRoot, environment, sessionIds }) => {
+    const group = await joinLaunchGroup(projectRoot, "claude", { environment });
+    await finishLaunch(projectRoot, "claude", { environment, member: group.member });
+    const before = await readStateStamp(projectRoot);
+    const target = before.sessions.active ?? sessionIds[0];
+    const line = {
+      id: "claude:fixture:appended-1",
+      role: "user",
+      createdAt: new Date().toISOString(),
+      content: [{ type: "text", text: "one more line" }],
+    };
+
+    const added = await appendCanonicalEvents(projectRoot, target, [line]);
+    assert.equal(added.added, 1);
+    const after = await readStateStamp(projectRoot);
+    assert.ok(after.sessions.revision > before.sessions.revision, "增长在盘上动了那一格（监视器看见的就是这个文件）");
+    assert.equal(after.sessions.count, before.sessions.count, "没有新会话，只是旧会话里多了话");
+
+    // 面板每一趟醒来都会问一次（refreshStateStamp 没有新增长）：这一问不能把增长擦掉，
+    // 否则监视器看到的那次改写会在面板读之前被抹平。
+    await refreshStateStamp(projectRoot);
+    assert.equal((await readStateStamp(projectRoot)).sessions.revision, after.sessions.revision, "一次平常的刷新把增长带过去");
+
+    // 重复导入同一批事件不算增长：stamp 只该在真的有新东西时动。
+    const again = await appendCanonicalEvents(projectRoot, target, [line]);
+    assert.equal(again.added, 0);
+    assert.equal((await readStateStamp(projectRoot)).sessions.revision, after.sessions.revision);
   });
 });
 

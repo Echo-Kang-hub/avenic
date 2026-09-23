@@ -8,12 +8,15 @@
 export interface ReconcileSeen {
   count: number | null;
   active: string | null;
+  /** 对话内容的增长：count 与 active 都站着不动的那一类变化（见 core 的 stamp）。 */
+  revision: number | null;
   launches: string;
 }
 
 export interface ReconcileStamp {
   count: number;
   active: string | null;
+  revision: number;
   runsKey: string;
 }
 
@@ -25,10 +28,11 @@ export interface ReconcileOutcome {
 }
 
 export function reconcileOutcome(seen: ReconcileSeen, stamp: ReconcileStamp): ReconcileOutcome {
-  const sessionsMoved = seen.count !== stamp.count || seen.active !== stamp.active;
+  const sessionsMoved = seen.count !== stamp.count || seen.active !== stamp.active || seen.revision !== stamp.revision;
   const runsMoved = seen.launches !== stamp.runsKey;
   seen.count = stamp.count;
   seen.active = stamp.active;
+  seen.revision = stamp.revision;
   seen.launches = stamp.runsKey;
   // 两件事一起变的时候只重画一次：那一页本来就带着新的状态。
   if (sessionsMoved) return { panel: "refresh", runsMoved };
