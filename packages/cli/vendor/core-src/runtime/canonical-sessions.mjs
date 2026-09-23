@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.mjs";
 import { runtimePaths } from "./config.mjs";
+import { isSecretName } from "./model-write.mjs";
 import { refreshStateStamp } from "./sessions.mjs";
 
 import { deriveState } from "./handoff.mjs";
@@ -12,7 +13,6 @@ import { collapseWhitespace, isAutoTitle, mappedNativeSessionIds, resolveSession
 
 const CANONICAL_SESSION_SCHEMA_VERSION = 1;
 const SAFE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-const SECRET_KEY = /(?:api[_-]?key|authorization|auth(?:entication)?|cookie|credential|password|secret|token)/i;
 
 function now() {
   return new Date().toISOString();
@@ -78,11 +78,15 @@ async function withAppendLock(directory, id, run) {
   }
 }
 
+// What a credential key is, is one rule for the whole core (model-write owns it,
+// with the reasoning): a name decides, at the end of the name, in whole words.
+// A store nobody may lose cannot afford the other rule — the searching one that
+// reads `author` or `input_tokens` as secrets deletes a user's field.
 function filterSecrets(value) {
   if (Array.isArray(value)) return value.map(filterSecrets);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value)
-    .filter(([key]) => !SECRET_KEY.test(key))
+    .filter(([key]) => !isSecretName(key))
     .map(([key, nested]) => [key, filterSecrets(nested)]));
 }
 

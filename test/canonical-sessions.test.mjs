@@ -68,6 +68,26 @@ test("canonical event append is deterministic, idempotent, and preserves unknown
   });
 });
 
+// 「像凭证」和「是凭证」不是一件事。名字里出现 secret/token/auth 就算秘密的规则会把
+// 用户的字段一起丢掉：`author` 挂着作者，`tokens` 是用量计数（OpenCode 每条消息都
+// 带），`input_tokens` 是每一次请求的账。整词末尾对不上，就不是秘密。
+test("a stored event drops a credential by name and keeps a name that only resembles one", async () => {
+  await withStore(async (projectRoot) => {
+    const { id } = await createCanonicalSession(projectRoot, { source: "opencode" });
+    const value = "fixture-not-a-real-secret";
+    await appendCanonicalEvents(projectRoot, id, [{
+      id: "opencode:message-1",
+      role: "assistant",
+      createdAt: "2026-09-24T00:00:00.000Z",
+      content: [{ type: "tool_use", name: "search", input: { author: "A fixture author", tokens: { input: 12 }, apiKey: value } }],
+      extensions: { opencode: { message: { tokens: { input: 12, output: 34 }, credentials: value, cookie: value } } },
+    }]);
+    const stored = (await readCanonicalSession(projectRoot, id)).events[0];
+    assert.deepEqual(stored.content[0].input, { author: "A fixture author", tokens: { input: 12 } }, "长得像凭证的名字是用户的数据");
+    assert.deepEqual(stored.extensions.opencode.message, { tokens: { input: 12, output: 34 } }, "用量计数留住，凭证容器丢掉");
+  });
+});
+
 // 同一场对话有三处可能同时追加：启动器的退出那一遍、耐久看门狗、编辑器宿主。追加是
 // 「读整份、改、写回」——没有门的话，后写回的那一份拿自己的旧快照盖上去，另一支笔
 // 刚写的事件整段消失；而游标会记住「那份 native 已导入过」，之后不会再读它一次。

@@ -39,8 +39,18 @@ const tomlString = (value, label) => `"${singleLine(value, label).replaceAll("\\
  * however it likes. `KEY` on its own is deliberately not a secret word:
  * `env_key` names the variable a credential lives in, and hiding that would
  * hide the one thing the user needs to see.
+ *
+ * The word has to be the whole end of the name, and it has to be the word that
+ * names a credential: `author`, `secretary`, `authentic` and `tokenizer` are
+ * somebody's fields, not secrets. `TOKEN` is the one word kept singular — every
+ * native record carries `usage.input_tokens`, OpenCode files each message's
+ * `tokens`, and those are a count rather than a credential, while a token that
+ * is used as one is always qualified (`AUTH_TOKEN`, `accessToken`,
+ * `REFRESH_TOKENS`). The same rule has to serve the canonical store, which
+ * drops the keys it names from a conversation nobody may lose — an over-broad
+ * word there does not hide a value, it deletes one.
  */
-const SECRET_NAME = /(?:APIKEY|AUTHTOKEN|ACCESSTOKEN|SECRETKEY|PRIVATEKEY|CLIENTSECRET|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|TOKEN)$/;
+const SECRET_NAME = /(?:APIKEYS?|AUTHTOKENS?|ACCESSTOKENS?|REFRESHTOKENS?|IDTOKENS?|SECRETKEYS?|PRIVATEKEYS?|CLIENTSECRETS?|SECRETS?|PASSWORDS?|PASSWD|CREDENTIALS?|AUTHORIZATIONS?|TOKEN|COOKIES?)$/;
 export const isSecretName = (name) => SECRET_NAME.test(String(name).toUpperCase().replace(/[^A-Z0-9]+/g, ""));
 /**
  * A *value* that is a credential no matter what name it sits under — an API
