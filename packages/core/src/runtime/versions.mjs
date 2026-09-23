@@ -20,8 +20,16 @@ export async function detectAgentInstallationAsync(agentId, options = {}) {
 }
 
 // The version the agent's own executable reports, or null when it cannot run.
+//
+// This question is bounded the same way the registry's is. Every caller is a
+// surface a person is waiting on — the VS Code footer, `avenic status`, the
+// version read before installing hooks — and none of them can decide anything
+// while an executable that never answers holds the question open.
 export async function installedCliVersion(executable, options = {}) {
-  const result = await spawnExecutable(executable, ["--version"], { env: options.environment ?? process.env });
+  const result = await spawnExecutable(executable, ["--version"], {
+    env: options.environment ?? process.env,
+    timeout: options.timeoutMs ?? 15_000,
+  });
   return result.status === 0 ? parseCliVersion(result.stdout) : null;
 }
 

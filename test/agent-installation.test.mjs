@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { agentNpmPackage, classifyAgentExecutable, compareCliVersions, detectAgentInstallation, parseCliVersion } from "../packages/core/src/index.mjs";
+import { agentNpmPackage, classifyAgentExecutable, compareCliVersions, detectAgentInstallation, installedCliVersion, parseCliVersion } from "../packages/core/src/index.mjs";
 
 function probe(options) {
   const files = new Set(options.files ?? []);
@@ -153,4 +155,35 @@ test("detectAgentInstallation uses each agent's package metadata instead of a Co
   });
   assert.equal(opencode.installMethod, "npm-global");
   assert.equal(opencode.updateStrategy.command, "npm install --global opencode-ai@latest");
+});
+
+// 本机装的是哪个版本，是问那个可执行文件自己得来的（`<cli> --version`）——而这一问必须
+// 有个头。registry 那一问有（latestPublishedVersion 的 15 秒），本机这一问此前没有：
+// 一个卡住不回话的 CLI 于是把问它的人一起卡住。等它的不止一处，而且都是用户在等的那些
+// 界面：VS Code 底部那一行（答案不到，版本号永远不出现，而且那次探测一直在飞，之后每次
+// 刷新都还在等同一个它）、`avenic status` 那一页、以及装钩子前读 agent 版本的那一步。
+//
+// 这台"机器"上的 CLI 会在四秒后回答：够慢，所以「等下去」与「给出答案」是两件看得见的
+// 事——（真的）超时就该在这一问上说 null，而不是替用户等它。
+test("asking a local CLI for its version gives up instead of hanging", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "avenic-slow-cli-"));
+  try {
+    // 等待由解释器自己做：这台机器上 PATH 只有这个目录，连 sleep/ping 都找不到。
+    const sleep = `"${process.execPath}" -e "setTimeout(function(){process.exit(0)},4000)"`;
+    if (process.platform === "win32") {
+      await writeFile(path.join(dir, "avenic.cmd"), `@echo off\r\n${sleep}\r\necho 9.9.9\r\n`);
+    } else {
+      const file = path.join(dir, "avenic");
+      await writeFile(file, `#!/bin/sh\n${sleep}\necho 9.9.9\n`);
+      await chmod(file, 0o755);
+    }
+    const environment = { ...process.env, PATH: dir, Path: dir };
+    const outcome = await Promise.race([
+      installedCliVersion("avenic", { environment, timeoutMs: 400 }),
+      new Promise((resolve) => { setTimeout(() => resolve("still running"), 3000); }),
+    ]);
+    assert.equal(outcome, null, `一个四秒不回话的 CLI 把这一问留在了等待里（${outcome}）：问版本的地方都必须有个头`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

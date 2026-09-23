@@ -93,6 +93,22 @@ function withDirectoryInStep(environment, cwd) {
   return { ...environment, PWD: resolved };
 }
 
+// On Windows a `.cmd`/`.bat` shim means the real process is a grandchild: killing
+// the shell leaves it behind, and a stray app server keeps its write lock on the
+// threads it had open. `taskkill /t` takes the whole tree; everywhere else the
+// child is the program.
+function terminateTree(child, shell) {
+  if (process.platform === "win32" && shell) {
+    try {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+      return;
+    } catch {
+      // 没有 taskkill（或它拒绝了）时退回杀这一层 —— 杀得到多少是多少。
+    }
+  }
+  child.kill();
+}
+
 // A long-lived child that speaks a protocol over pipes (the Codex app server).
 // The caller owns its lifetime; this only solves "how do I start this binary on
 // this platform", the same way the two spawmers below do.
@@ -109,17 +125,8 @@ export function spawnExecutableChild(executable, argumentsList, options = {}) {
     env: environment,
     windowsHide: true,
   });
-  // On Windows a `.cmd` shim means the real process is a grandchild: killing the
-  // shell leaves it behind, and a stray app server keeps its write lock on the
-  // threads it had open.
   if (process.platform === "win32" && resolved.shell) {
-    child.terminateTree = () => {
-      try {
-        spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-      } catch {
-        child.kill();
-      }
-    };
+    child.terminateTree = () => terminateTree(child, resolved.shell);
   }
   return child;
 }
@@ -141,7 +148,7 @@ export function spawnExecutableSync(executable, argumentsList, options = {}) {
 // network operation is seconds of frozen window.
 export function spawnExecutable(executable, argumentsList, options = {}) {
   const environment = withDirectoryInStep(options.env ?? process.env, options.cwd);
-  const { spawn, capture = true, ...spawnOptions } = options;
+  const { spawn, capture = true, timeout, ...spawnOptions } = options;
   return new Promise((resolve) => {
     const resolved = invocation(executable, argumentsList, environment);
     const child = spawnAsync(resolved.command, resolved.argumentsList, {
@@ -158,7 +165,23 @@ export function spawnExecutable(executable, argumentsList, options = {}) {
     let stderr = "";
     child.stdout?.on("data", (chunk) => { stdout += chunk; });
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", (error) => resolve({ status: null, stdout, stderr, error }));
-    child.on("close", (status) => resolve({ status, stdout, stderr, error: null }));
+    // 到点由这里自己算，不用 Node 的 `timeout`：那个到点只杀直接子进程，而 `.cmd`/`.bat`
+    // shim 的真正程序是孙子，它握着上面那两条管道——'close' 于是要等到它自己愿意退出。
+    // 一次 400 毫秒的等待在 Windows 上实测 60 秒才回来（进程还在，管道就没关）：等待
+    // 名义上有了头，实际上没有。所以到点就杀整棵树，并当场把这一次回答成「没有回答」
+    // ——调用方看到的与「命令被信号打断」是同一种结果。
+    let timer = null;
+    if (timeout !== undefined) {
+      timer = setTimeout(() => {
+        terminateTree(child, resolved.shell ?? false);
+        resolve({ status: null, stdout, stderr, error: null });
+      }, timeout);
+    }
+    const settle = (result) => {
+      if (timer !== null) clearTimeout(timer);
+      resolve(result);
+    };
+    child.on("error", (error) => settle({ status: null, stdout, stderr, error }));
+    child.on("close", (status) => settle({ status, stdout, stderr, error: null }));
   });
 }
