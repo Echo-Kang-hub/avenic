@@ -379,32 +379,49 @@ async function purgeHomeKeepingCredential(homeDirectory, credentialName) {
 // （release 路径正因为同一条理由拒绝删它）。所以默认只清 Avenic 的痕迹、留下登录
 // 文件；连它一起删要用户第二次明说（purgeCredentials）。
 async function purgeAgentHome(homeDirectory, agentId, options) {
-  if (!options.purgeCredentials) return purgeHomeKeepingCredential(homeDirectory, CREDENTIAL_FILE[agentId]);
-  await rm(homeDirectory, { recursive: true, force: true });
-  return false;
+  if (options.purgeCredentials) {
+    await rm(homeDirectory, { recursive: true, force: true });
+    return false;
+  }
+  const credential = CREDENTIAL_FILE[agentId];
+  // 没有登录文件的 agent（OpenCode 管自己的认证）没有「留下的那一份」：它的 home
+  // 里是项目数据本身（项目副本的导入名单、共享历史的投影），不是可以重来的登录。
+  // 「留下登录、清掉其余」这条规则对它无从谈起，于是整个 home 留下。
+  if (credential === undefined) return existsSync(homeDirectory);
+  return purgeHomeKeepingCredential(homeDirectory, credential);
 }
 
-// 直接躺在 `.agents/local/` 下的这个文件不属于任何 agent 的 home：它是用户的通知
-// 名单，里面是他自己贴进去的令牌（OpenClaw 的那一个删了就再也收不到通知，而且他没
-// 有地方找回）。所以它与登录文件同一条规则——默认留下，第二次明说才删。其余的直接
-// 文件（state stamp、去重窗口）都是导出来的，下一次运行自己写回来。
+// 直接躺在 `.agents/local/` 下的这三个文件不属于任何 agent 的 home：名单是用户的
+// 令牌（OpenClaw 的那一个删了就再也收不到通知，而且他没有地方找回），与登录文件同
+// 一条规则——默认留下，第二次明说（purgeCredentials）才删；runtime.local.json 是他
+// 自己的答案，ownership.json 是证明 Avenic 建过哪些文件的账本（删掉它，那些文件就
+// 再没人证明得了），这两份不含任何凭据，两层都留下。其余的直接文件（state stamp、
+// 去重窗口）都是导出来的，下一次运行自己写回来。
 const KEPT_LOCAL_FILE = "hook-actions.json";
+const KEPT_ANSWER_FILES = new Set(["runtime.local.json", "ownership.json"]);
 
 // 整个 `.agents/local` 的清理守同一条规则：每个 agent 的 home 只留下它自己的登录
-// 文件（或整目录删掉），直接放在这里的文件只留下名单，一个文件都没留下才把目录本身
-// 删掉。目录项只按目录处理：一个指向别处的链接不该被读穿。
+// 文件（第二次明说才连它一起删），直接放在这里的文件按上面那几份处理，认不出来的
+// 目录留下 —— 比如 OpenCode 的项目 home（导入名单与共享历史的投影），它既不是配置
+// 也不是登录，任何一层 purge 都不是冲它来的。一个文件都没留下才把目录本身删掉。
+// 目录项只按目录处理：一个指向别处的链接不该被读穿。
 async function purgeAgentHomes(localRoot, options) {
   if (!existsSync(localRoot)) return;
-  if (options.purgeCredentials) {
-    await rm(localRoot, { recursive: true, force: true });
-    return;
-  }
   let kept = false;
   for (const entry of await readdir(localRoot, { withFileTypes: true })) {
     const target = path.join(localRoot, entry.name);
     if (entry.isDirectory()) {
-      kept = await purgeHomeKeepingCredential(target, CREDENTIAL_FILE[entry.name]) || kept;
-    } else if (entry.name === KEPT_LOCAL_FILE) {
+      const credential = CREDENTIAL_FILE[entry.name];
+      if (credential === undefined) {
+        kept = true;
+      } else if (options.purgeCredentials) {
+        await rm(target, { recursive: true, force: true });
+      } else {
+        kept = await purgeHomeKeepingCredential(target, credential) || kept;
+      }
+    } else if (KEPT_ANSWER_FILES.has(entry.name)) {
+      kept = true;
+    } else if (entry.name === KEPT_LOCAL_FILE && !options.purgeCredentials) {
       kept = true;
     } else {
       await rm(target, { recursive: true, force: true });
@@ -430,9 +447,13 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     const purged = Boolean(options.purge && (existsSync(sessionDirectory) || existsSync(homeDirectory)));
     if (options.purge) {
       await rm(sessionDirectory, { recursive: true, force: true });
-      // 每个 home 守同一条规则：留下登录文件、清掉其余；一个都没留下才删 localRoot。
-      await purgeAgentHomes(state.paths.localRoot, options);
+      // 被 deinit 的是这一个 agent，清的就是它自己的 home；`.agents/local/` 下别人的
+      // 东西（别的 agent 的答案、账本、用户自己的答案、OpenCode 的项目 home）不属于
+      // 这一次 deinit，原样不动。没有别的 agent 了才顺带把目录里的杂物一起收掉 ——
+      // 什么都没剩，目录本身才走。
+      await purgeAgentHome(homeDirectory, agentId, options);
       if (Object.keys(state.runtime.agents ?? {}).length === 0) {
+        await purgeAgentHomes(state.paths.localRoot, options);
         await removeRuntimeGitignore(projectRoot, { sessions: true });
       }
     }
@@ -440,7 +461,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       agent,
       changed: purged,
       purged,
-      keptCredential: keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), Boolean(options.purge)),
+      keptCredential: CREDENTIAL_FILE[agentId] === undefined ? null : keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), Boolean(options.purge)),
       keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
       remaining: Object.keys(state.runtime.agents ?? {}).length,
     };

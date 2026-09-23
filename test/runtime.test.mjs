@@ -22,6 +22,8 @@ import {
   sessionsGitIgnored,
 } from "../packages/core/src/runtime/gitignore.mjs";
 import { hookActionsPath } from "../packages/core/src/runtime/hook-actions.mjs";
+import { applyModelConfiguration, readModelConfiguration } from "../packages/core/src/runtime/model-config.mjs";
+import { codexTemplate } from "../packages/core/src/runtime/providers.mjs";
 import { agentExecutableAvailable, applyProjectConfiguration, listCanonicalSessions, spawnExecutableSync, stateRoot } from "../packages/core/src/index.mjs";
 import { locateProjectRoot } from "../packages/core/src/runtime/project-root.mjs";
 import * as claudeSessions from "../packages/core/src/runtime/adapters/claude.mjs";
@@ -262,6 +264,60 @@ test("a purge on an agent this project never configured still keeps the notifica
     assert.equal(result.purged, false, "没有可清的会话数据");
     assert.equal(result.keptActions, ".agents/local/hook-actions.json");
     assert.equal(existsSync(actionsFile), true, "报「Preserved」的时候它就得真的还在");
+  });
+});
+
+// `--purge` 清的是被 deinit 的那个 agent 的东西，不是整个 `.agents/local`：别的
+// agent 的 project 答案（config.toml）、账本 ownership.json（证明过 Avenic 建过哪些
+// 文件的那一份）、用户自己的答案 runtime.local.json、以及 OpenCode 的项目 home
+// （导入名单与共享历史的投影）都不是这一次 deinit 的数据。早退分支（被 deinit 的
+// agent 本来就没配过）尤其没有理由动它们 —— 而走到那条路最常见的情形正是它：
+// claude 没配过，而 codex 配着。
+test("a purge for an agent this project never configured leaves every other resident of .agents/local alone", async () => {
+  await withTempProject(async (projectRoot) => {
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "project" });
+    await setLocalAuth(projectRoot, "codex", { authMethod: "account", accountScope: "project" });
+    const codexHome = path.join(projectRoot, ".agents", "local", "codex");
+    await writeFile(path.join(codexHome, "auth.json"), "credential\n");
+    const applied = await applyModelConfiguration(projectRoot, "codex", "project", codexTemplate("deepseek", { model: "deepseek-v4-pro" }));
+    assert.equal(applied.written, true);
+    const opencodeKeep = path.join(projectRoot, ".agents", "local", "opencode", "canonical", "keep.json");
+    await mkdir(path.dirname(opencodeKeep), { recursive: true });
+    await writeFile(opencodeKeep, "{}\n");
+
+    const result = await deinitializeAgent(projectRoot, "claude", { purge: true });
+    assert.equal(result.purged, false, "claude 没有可清的会话数据");
+
+    const facts = await readModelConfiguration(projectRoot, "codex", "project");
+    assert.equal(facts.exists, true, "别的 agent 的 project 答案不是这一发 purge 的");
+    assert.equal(facts.owned, true, "账本还在，所以 Avenic 还证明得了那份文件是它建的");
+    assert.equal(facts.unchanged, true);
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "runtime.local.json")), true, "用户自己的答案是用户的");
+    assert.equal(existsSync(opencodeKeep), true, "OpenCode 的项目 home 不属于任何一次 agent deinit");
+  });
+});
+
+// 正常那一条路（被 deinit 的 agent 配过，而且是最后一个）同一条规则：清掉它的
+// 东西之后，`.agents/local/` 里别人的东西照旧。OpenCode 的 home 与账本都不是任何
+// 一次 agent deinit 的对象。
+test("purging the last configured agent still leaves the other residents of .agents/local alone", async () => {
+  await withTempProject(async (projectRoot) => {
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "project" });
+    const codexHome = path.join(projectRoot, ".agents", "local", "codex");
+    await writeFile(path.join(codexHome, "auth.json"), "credential\n");
+    assert.equal((await applyModelConfiguration(projectRoot, "codex", "project", codexTemplate("deepseek", { model: "deepseek-v4-pro" }))).written, true);
+    const opencodeKeep = path.join(projectRoot, ".agents", "local", "opencode", "canonical", "keep.json");
+    await mkdir(path.dirname(opencodeKeep), { recursive: true });
+    await writeFile(opencodeKeep, "{}\n");
+
+    const result = await deinitializeAgent(projectRoot, "codex", { purge: true });
+    assert.equal(result.remaining, 0);
+    assert.equal(existsSync(path.join(codexHome, "config.toml")), false, "它自己的东西跟着它走");
+    assert.equal(existsSync(path.join(codexHome, "auth.json")), true);
+    assert.equal(existsSync(opencodeKeep), true, "OpenCode 的项目 home 不属于任何一次 agent deinit");
+    assert.equal(existsSync(path.join(projectRoot, ".agents", "local", "ownership.json")), true, "账本不是一次 deinit 的数据");
+    const gitignore = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
+    assert.match(gitignore, /\.agents\/local\//, "目录还有东西，保护它的规则就不能撤");
   });
 });
 
