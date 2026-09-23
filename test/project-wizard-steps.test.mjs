@@ -33,11 +33,16 @@ test("an Account answer opens the account scope question and nothing about provi
   assert.match(scope.description, /\.agents\/local\/claude/);
 });
 
-test("an API answer asks where the configuration lives, and nothing else", () => {
+test("an API answer asks where the configuration lives, then what fills it", () => {
   const steps = projectWizardSteps(draft({
     claude: { authMethod: "api", configScope: "project", sessionScope: "project" },
   }));
-  assert.deepEqual(ids(steps), ["agents", "auth:claude", "configuration-scope:claude", "sessions:claude", "history", "apply"]);
+  // 这一支问两件事：配置住在哪个文件（原有的那一问），以及谁来填它（Center）。
+  // Center 的那一问开在「自己来」上 —— 没选 provider 的项目，Avenic 仍然只准备
+  // 文件、不填内容，这是它在 Center 出现之前就有的契约。
+  assert.deepEqual(ids(steps), ["agents", "auth:claude", "configuration-scope:claude", "provider:claude", "sessions:claude", "history", "apply"]);
+  const answer = draft({ claude: { authMethod: "api", configScope: "project", sessionScope: "project" } });
+  assert.equal(stepById(steps, "provider:claude").value(answer), "hand");
   const scope = stepById(steps, "configuration-scope:claude");
   assert.equal(scope.title, "Claude Code configuration scope");
   assert.deepEqual(scope.options.map((option) => option.value), ["global", "project"]);
@@ -67,11 +72,12 @@ test("an unanswered configuration scope opens on the answer the rest of core def
   assert.equal(stepById(projectWizardSteps(answered), "configuration-scope:claude").value(answered), "project", "答过的作用域不被默认值覆盖");
 });
 
-test("Codex renders the same questions in the same order", () => {
+test("Codex renders the same questions in the same order, and is asked for no key", () => {
   const steps = projectWizardSteps(draft({
     codex: { authMethod: "api", configScope: "global", sessionScope: "project" },
   }));
-  assert.deepEqual(ids(steps), ["agents", "auth:codex", "configuration-scope:codex", "sessions:codex", "history", "apply"]);
+  // 顺序与 Claude 同形，只有在 provider 之后少一题：Codex 的凭据从不进它的配置文件。
+  assert.deepEqual(ids(steps), ["agents", "auth:codex", "configuration-scope:codex", "provider:codex", "sessions:codex", "history", "apply"]);
 });
 
 test("OpenCode is asked about Sessions only, and the record says who authenticates it", () => {

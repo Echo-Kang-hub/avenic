@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -385,11 +385,13 @@ test("editing a project that already has an API configuration offers it back, an
     keys(stdin, ENTER); // Keep the agents that are enabled
     // Every question opens on the answer the project already gave — the method
     // and the file it reads included — and Enter takes each of them as it is.
-    // There is no provider, endpoint, model or credential to ask for: those are
-    // the user's, in a file Avenic never writes into.
+    // The provider question is asked, and it opens on Set up by hand: the file
+    // names a host no preset knows, and Avenic says so instead of guessing. No
+    // endpoint, model or credential is asked for — those are the user's, and
+    // answering "by hand" leaves every one of them exactly where it is.
     for (const title of [
       "Claude Code authentication", "Claude Code configuration scope",
-      "Claude Code sessions", "History",
+      "Claude Code provider", "Claude Code sessions", "History",
     ]) {
       await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
       keys(stdin, ENTER);
@@ -448,5 +450,77 @@ test("No at the destructive question goes on to Apply instead of restarting the 
 
     assert.equal((await config()).agents.claude.authMethod, "account");
     assert.equal(existsSync(file), true, "No 什么都不删");
+  });
+});
+
+// Center 的答案落在 agent 自己的文件里，而那个文件同时装着用户的权限、hooks 和
+// 变量，所以写完之后用户要能看见「写了哪个文件、动了哪几行」，且那几行是遮过的：
+// 凭据进文件，不进屏幕。
+//
+// 这里把 console.log 也接到向导的那一条流上，于是断言的就是用户真正读到的那一屏：
+// 落定帧从帧首擦到屏底，写盘期间打印的东西会连同「正在问的那一帧」一起被擦掉 ——
+// 报告若早一步打印，这里就看不见它了。
+test("the Center's write is reported on the settled frame, with the credential masked", async () => {
+  await withWizardProject(async ({ projectRoot, logged, wizard }) => {
+    const typed = "sk-wizard-not-a-real-key";
+    const file = path.join(projectRoot, ".claude", "settings.local.json");
+    const { stdin, stdout, promise } = wizard("init");
+    console.log = (...parts) => {
+      const line = parts.join(" ");
+      logged.push(line);
+      stdout.write(`${line}\n`);
+    };
+    const typedKeys = (text) => keys(stdin, ...text.split(""));
+
+    await waitFor(() => /◆ {2}Select agents/.test(frame(stdout)), "the agent picker");
+    keys(stdin, " ", ENTER); // Claude Code
+    await waitFor(() => /◆ {2}Claude Code authentication/.test(frame(stdout)), "authentication");
+    keys(stdin, DOWN, ENTER); // API
+    await waitFor(() => /◆ {2}Claude Code configuration scope/.test(frame(stdout)), "the configuration scope");
+    keys(stdin, DOWN, ENTER); // Project — the file belongs to this project
+    await waitFor(() => /◆ {2}Claude Code provider/.test(frame(stdout)), "the provider question");
+    keys(stdin, DOWN, ENTER); // DeepSeek — the first provider after "Set up by hand"
+    await waitFor(() => /◆ {2}Claude Code model/.test(frame(stdout)), "the model question");
+    typedKeys("deepseek-v4-pro");
+    keys(stdin, ENTER);
+    await waitFor(() => /◆ {2}Claude Code credential/.test(frame(stdout)), "the credential question");
+    typedKeys(typed);
+    keys(stdin, ENTER);
+    for (const title of ["Claude Code sessions", "History"]) {
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(stdout)), title);
+      keys(stdin, ENTER);
+    }
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(stdout)), "the confirmation");
+    keys(stdin, ENTER); // Yes
+    assert.equal(await promise, 0);
+
+    const written = JSON.parse(await readFile(file, "utf8"));
+    assert.equal(written.env.ANTHROPIC_AUTH_TOKEN, typed, "打进去的 key 就在 agent 自己的文件里");
+    assert.equal(written.env.ANTHROPIC_BASE_URL, "https://api.deepseek.com/anthropic");
+    const settled = frame(stdout);
+    assert.match(settled, /└ {2}Avenic project initialized/, "落定帧是用户正在看的那一屏");
+    assert.match(settled, /Claude Code: wrote \.claude\/settings\.local\.json/, "写了哪个文件说得出名字");
+    assert.match(settled, /\+ +"ANTHROPIC_BASE_URL": "https:\/\/api\.deepseek\.com\/anthropic"/, "动了哪几行也在那一屏上");
+    assert.match(settled, /\+ +"ANTHROPIC_AUTH_TOKEN": "••••"/, "凭据那一行是遮过的");
+    assert.equal(settled.includes(typed), false, "屏幕上没有那个 key");
+
+    // 第二次：回来改 History，每一问都按 Enter 过去。答案和文件里的一模一样，
+    // 于是什么都不写 —— 而「什么都没写」也要说出来，因为用户刚刚答完了问题。
+    const follow = wizard("change");
+    console.log = (...parts) => {
+      const line = parts.join(" ");
+      logged.push(line);
+      follow.stdout.write(`${line}\n`);
+    };
+    await waitFor(() => /◆ {2}Select enabled agents/.test(frame(follow.stdout)), "the agent picker");
+    keys(follow.stdin, ENTER);
+    for (const title of ["Claude Code authentication", "Claude Code configuration scope", "Claude Code provider", "Claude Code model", "Claude Code credential", "Claude Code sessions", "History"]) {
+      await waitFor(() => new RegExp(`◆ {2}${title}`).test(frame(follow.stdout)), title);
+      keys(follow.stdin, ENTER);
+    }
+    await waitFor(() => /◆ {2}Apply configuration\?/.test(frame(follow.stdout)), "the confirmation");
+    keys(follow.stdin, ENTER); // Yes
+    assert.equal(await follow.promise, 0);
+    assert.match(frame(follow.stdout), /Claude Code: \.claude\/settings\.local\.json already matches — nothing written\./);
   });
 });

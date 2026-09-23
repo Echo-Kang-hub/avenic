@@ -34,6 +34,8 @@ export const LABELS = {
   accountStatus: "Account Status",
   configSource: "Config Source",
   provider: "Provider",
+  // 供应商自己的说法：每一家的文档都写 base URL，文件里的键也叫 base_url。
+  baseUrl: "Base URL",
   model: "Model",
   opusModel: "Opus Model",
   sonnetModel: "Sonnet Model",

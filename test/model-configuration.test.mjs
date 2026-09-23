@@ -365,13 +365,31 @@ test("the wizard's prefill describes only API answers, and says whether the file
     await configure(root, claudeApi());
     const presence = await modelConfigPresence(root, { claude: { authMethod: "api", configScope: "project" }, codex: { sessionScope: "project" } });
     assert.deepEqual(Object.keys(presence), ["claude"], "an agent with no API answer has no file to describe");
-    assert.deepEqual(presence.claude, { relative: ".claude/settings.local.json", scope: "project", exists: true, owned: true, unchanged: true });
+    // 空文件读出来是「什么都不说」：没有 endpoint、没有 model、没有凭据 —— 于是
+    // Center 的那几问从零开始，而不是从一个编出来的默认值开始。
+    assert.deepEqual(presence.claude, {
+      relative: ".claude/settings.local.json",
+      scope: "project",
+      exists: true,
+      owned: true,
+      unchanged: true,
+      valid: true,
+      baseUrl: null,
+      model: null,
+      credentialSet: false,
+    });
     // 用户改过之后，向导看到的就是「在，但不是原样了」—— 破坏性那一问正是问这个。
+    // 同时它也说得出文件现在指向哪一家：Center 打开时就是靠这几个字段落在正确的
+    // 那一项上，凭据本身永远不在其中（只要「有没有」）。
     await writeFile(path.join(root, ".claude", "settings.local.json"), claudeFilled, "utf8");
     const edited = await modelConfigPresence(root, { claude: { authMethod: "api", configScope: "project" } });
     assert.equal(edited.claude.exists, true);
     assert.equal(edited.claude.owned, true);
     assert.equal(edited.claude.unchanged, false);
+    assert.equal(edited.claude.baseUrl, "https://provider.fixture.invalid/v1");
+    assert.equal(edited.claude.model, "fixture-model");
+    assert.equal(edited.claude.credentialSet, true);
+    assert.equal(JSON.stringify(edited.claude).includes("fixture-token-not-a-real-secret"), false, "描述里不含凭据的值");
   });
 });
 
