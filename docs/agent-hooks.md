@@ -89,6 +89,11 @@ by the action's own budget rather than by the far side answering.
 
 ## Could not be confirmed
 
+- The exact TOML spelling of Codex's block. The event key, the
+  `matcher`/`hooks` pair, the `type` tag and the field names are read off the
+  binary's serde reflection; the array-of-tables layering
+  (`[[hooks.<Event>]]` → `[[hooks.<Event>.hooks]]`) is the inference from
+  `HookEventsToml` + `MatcherGroup` — no literal example exists in the binary.
 - Whether Codex's `Stop` also fires when a turn dies on an API error (no failure
   hook exists; `Interrupt` covers user interrupts only).
 - Whether an `untrusted` Codex hook is actually skipped at runtime — inferred
