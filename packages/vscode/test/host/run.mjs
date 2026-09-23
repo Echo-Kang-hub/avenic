@@ -399,7 +399,7 @@ foreach($wnd in $mine){
  $r=New-Object Win+RECT;[void][Win]::GetWindowRect($wnd,[ref]$r)
  $area=($r.Right-$r.Left)*($r.Bottom-$r.Top)
  if(-not $biggest -or $area -gt $biggest.area){
-   $biggest=[pscustomobject]@{area=$area;L=$r.Left;T=$r.Top;W=$r.Right-$r.Left;H=$r.Bottom-$r.Top}}}
+   $biggest=[pscustomobject]@{wnd=$wnd;area=$area;L=$r.Left;T=$r.Top;W=$r.Right-$r.Left;H=$r.Bottom-$r.Top}}}
 Start-Sleep -Milliseconds 900
 
 # What is over the window, and whose process owns it: raising is not a promise
@@ -425,11 +425,14 @@ if($Mode -eq "raise"){
  $vw=[Win]::GetSystemMetrics(78);$vh=[Win]::GetSystemMetrics(79)
  $L=$biggest.L;$T=$biggest.T;$W=$biggest.W;$H=$biggest.H;$moved=0
  if($biggest -and ($L -lt 0 -or $T -lt 0 -or ($L+$W) -gt $vw -or ($T+$H) -gt $vh)){
-  $nx=[Math]::Max(0,[Math]::Min($L,$vw-$W));$ny=[Math]::Max(0,[Math]::Min($T,$vh-$H))
+  # 留 8px 边距。窗口挪回桌面里之后，读窗口矩形的是另一条通道（CDP 报的尺寸比 Win32
+  # 大两三像素），贴着底边放下会让下一次读越界三像素——而那个读会被判成「窗口不在
+  # 屏幕上」，是运行自己造成的。挪一次就挪到用不着再挪的地方。
+  $nx=[Math]::Max(0,[Math]::Min($L,$vw-$W-8));$ny=[Math]::Max(0,[Math]::Min($T,$vh-$H-8))
   foreach($wnd in $mine){
    [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-1),$nx,$ny,0,0,0x0010 -bor 0x0001 -bor 0x0040)}
   Start-Sleep -Milliseconds 400
-  $r=New-Object Win+RECT;[void][Win]::GetWindowRect($biggest,[ref]$r)
+  $r=New-Object Win+RECT;[void][Win]::GetWindowRect($biggest.wnd,[ref]$r)
   $L=$r.Left;$T=$r.Top;$W=$r.Right-$r.Left;$H=$r.Bottom-$r.Top;$moved=1}
  Write-Output "rect=$L,$T,$W,$H desktop=$vw,$vh moved=$moved";exit 0
 }
@@ -486,6 +489,28 @@ const ps = (...args) => execFileSync("powershell.exe", ["-NoProfile", "-File", P
 // is here to clean up.
 const reap = () => execFileSync("powershell.exe", ["-NoProfile", "-Command",
   `Get-CimInstance Win32_Process -Filter "Name='Code.exe'" | Where-Object { $_.CommandLine -like '*avenic-host-check*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`]);
+
+// Removed, not reused: "installs into a clean profile" is a claim the report
+// makes, and a profile left over from the previous run makes it false —
+// extensions, workspace state and logs all carry into the next one. The retries
+// are for a window that died a moment ago and still holds its own profile.
+const removeProfile = (root) => rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+// The reap comes first, and this is not a tidy-up detail: the holder of that
+// profile is the corpse of a run that died, or a window --keep left on screen,
+// and Windows answers EPERM on a directory somebody still has open rather than
+// waiting for it. Retrying the wipe alone waits out a process nobody asked to
+// leave — that is how a run ended here before it had opened anything.
+export function clearProfile({ root = ROOT, reapProcesses = reap, removeProfile: remove = removeProfile } = {}) {
+  reapProcesses();
+  try {
+    remove(root);
+  } catch {
+    // Killed a moment ago is not gone yet: reap again, and let the wipe try
+    // once more. A second refusal is the run's to report.
+    reapProcesses();
+    remove(root);
+  }
+}
 
 // One run at a time. Two concurrent runs share the profile under ROOT and the
 // debug port: the second one's rmSync would erase the first one's window state,
@@ -771,14 +796,8 @@ async function main() {
       OUT = path.join(OUT, `upgrade-${previous.version}${OPEN_OLD ? "-open" : ""}`);
       log(`in-place update: ${previous.version} (${previous.file}) -> ${packaged.version} (${VSIX})${OPEN_OLD ? "; the previous release's own dashboard stays open across it" : ""}`);
     }
-    // Removed, not reused: "installs into a clean profile" is a claim the report
-    // makes, and a profile left over from the previous run makes it false —
-    // extensions, workspace state and logs all carry into the next one.
-    //
-    // Retried: a window that was killed a moment ago (or one left up by --keep)
-    // still holds its own profile open for a moment, and Windows answers EPERM
-    // rather than waiting — which ended a run before it had opened anything.
-    rmSync(ROOT, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
+    // Removed, not reused — see clearProfile, which reaps the holder first.
+    clearProfile();
     // ROOT 自己先落地：capture.ps1 就写在它里面，先写文件再建目录的话，
     // 第一次在干净机器上跑会在 PowerShell 那一行报「找不到这个 .ps1」。
     mkdirSync(ROOT, { recursive: true });
@@ -1054,11 +1073,16 @@ async function main() {
       // 第一次就是别人：再抬一次窗子重读一张，而不是马上判成被遮挡——上面那次探针说
       // 它就在最上面，一两秒后才被盖住的东西，多半是来了又走的。两次都是别人，才按
       // 被遮挡记（那也正是这次读真正说明的事）。
-      if (block === null && during.strangers.length > 0) {
+      //
+      // 一次不够。挡住快门的东西常常是桌面上来了又走的浮面（任务栏的浮出、通知），
+      // 它们的寿命是几秒而不是几百毫秒，所以给它几次机会、每次多等一点；判据一个字没
+      // 松：只要还有一个点属于别的进程，这张照片就删掉，绝不留下别人的屏幕。
+      const waits = [800, 1600, 3000];
+      for (let attempt = 0; attempt < waits.length && block === null && during.strangers.length > 0; attempt += 1) {
         const who = during.strangers[0];
-        log(`shot: pid ${who.pid}${byName(who)} owned ${who.x},${who.y} while the read was taken; raising and reading again`);
+        log(`shot: pid ${who.pid}${byName(who)} owned ${who.x},${who.y} while the read was taken; raising and reading again (${attempt + 1}/${waits.length})`);
         ps("-Mode", "raise");
-        await sleep(600);
+        await sleep(waits[attempt]);
         out = shootOnce();
         during = scanOf(out, "pre");
       }

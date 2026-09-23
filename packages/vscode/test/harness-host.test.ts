@@ -19,6 +19,7 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   windowEnvironment: () => Record<string, string | undefined>;
   writePsFile: (file: string) => void;
   pickPreviousVsix: (candidates: { version: string; file: string }[], currentVersion: string, wanted?: string | null) => { version: string; file: string } | null;
+  clearProfile: (options?: { root?: string; reapProcesses?: () => void; removeProfile?: (root: string) => void }) => void;
   AGENT_HOME: string;
 };
 const artifacts = (await import(pathToFileURL(path.join(repo, "scripts", "verify-artifacts.mjs")).href)) as {
@@ -246,6 +247,41 @@ test("the PowerShell the harness runs is written as UTF-8 with a BOM", async () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// 21:43 那次跑到「清空 profile」这一步就死了：EPERM。删掉的是上一次留下的那个
+// 目录，而它还握在某个进程手里——逃过一次 reap 的残骸，或者一次 --keep 留在屏幕上的
+// 窗口。Windows 不会等人，只会答 EPERM；而单纯重试删除，等于对着一个没人请它离开的
+// 进程干等。先收尸，再擦桌子。
+test("the profile is wiped after the corpses that hold it are reaped, not before", () => {
+  const order: string[] = [];
+  host.clearProfile({ root: "R", reapProcesses: () => void order.push("reap"), removeProfile: () => void order.push("remove") });
+  assert.deepEqual(order, ["reap", "remove"]);
+});
+
+test("a profile that survives the first wipe is reaped again and wiped again", () => {
+  const order: string[] = [];
+  let refusals = 1;
+  host.clearProfile({
+    root: "R",
+    reapProcesses: () => void order.push("reap"),
+    removeProfile: () => {
+      order.push("remove");
+      if (refusals-- > 0) throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    },
+  });
+  assert.deepEqual(order, ["reap", "remove", "reap", "remove"]);
+});
+
+test("a profile that refuses both wipes ends the run", () => {
+  assert.throws(
+    () => host.clearProfile({
+      root: "R",
+      reapProcesses: () => {},
+      removeProfile: () => { throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" }); },
+    }),
+    /EPERM/,
+  );
 });
 
 test("a screen read of somebody else's window fails the run", () => {
