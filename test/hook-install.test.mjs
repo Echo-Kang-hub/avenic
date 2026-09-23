@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,6 +48,16 @@ async function scratch() {
 
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const ours = (command) => typeof command === "string" && command.includes("avenic hook emit");
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 记录器写下的那些行：一个进程一行，行里是它 stdin 上收到的载荷。 */
+async function spawnLines(log) {
+  try {
+    return (await readFile(log, "utf8")).split("\n").filter((line) => line !== "");
+  } catch {
+    return [];
+  }
+}
 
 test("a fresh Claude project gets the file the agent reads, and nothing else", async () => {
   const run = await scratch();
@@ -370,6 +380,75 @@ test("the OpenCode plugin flattens the event to the fields the matrix reads", as
     assert.match(text, /export const AvenicHooks = async \(\{ directory \}\) => \(\{$/m, "插件要拿得到自己的 directory 入参");
     assert.match(text, /report\(\{ directory, \.\.\.event\.properties, type: event\.type \}\)/, "载荷要摊平成矩阵读的那个形状");
   } finally {
+    await run.done();
+  }
+});
+
+// OpenCode 的事件流里，助手每写一个增量都发一次事件（`message.part.updated`），
+// `message.updated` 也是助手每更新一次就发一次 —— 一次真实的会话里那是几百条。原来的
+// 插件为**每一条**起一个 `avenic hook emit`：core 的 normalizeHook 当然会把它们丢掉，
+// 但丢在进程之后，几百个进程的代价已经付掉了（每一轮都要付一次）。过滤要发生在插件这一
+// 层，名单从事件矩阵里来 —— 手抄的那一份会和 core 的规则分岔。
+//
+// 这一条只有把装好的那个文件真的跑起来才算数：断言文本里写着守门的那一行证明不了没有
+// 进程跑过；把进程数出来才是。假 PATH 上放一个记录器，agent 的钩子进程长什么样，这里
+// 就数到什么。
+test("the installed plugin starts no process for the events the matrix does not map", async () => {
+  const run = await scratch();
+  const bin = path.join(run.root, "bin");
+  const log = path.join(run.root, "spawns.log");
+  const saved = { PATH: process.env.PATH, Path: process.env.Path, recorderLog: process.env.AVENIC_RECORDER_LOG };
+  try {
+    await mkdir(bin, { recursive: true });
+    const recorder = path.join(bin, "recorder.mjs");
+    await writeFile(recorder, [
+      'import { appendFileSync } from "node:fs";',
+      'let data = "";',
+      "for await (const chunk of process.stdin) data += chunk;",
+      'appendFileSync(process.env.AVENIC_RECORDER_LOG, data + "\\n");',
+      "",
+    ].join("\n"));
+    const shim = process.platform === "win32" ? path.join(bin, "avenic.cmd") : path.join(bin, "avenic");
+    await writeFile(shim, process.platform === "win32"
+      ? `@echo off\r\n"${process.execPath}" "${recorder}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "${recorder}" "$@"\n`);
+    if (process.platform !== "win32") await chmod(shim, 0o755);
+    // 插件起的进程走 shell，PATH 是它唯一会看的地方：这一条测试里的 `avenic` 就是记录器。
+    process.env.PATH = bin;
+    process.env.Path = bin;
+    process.env.AVENIC_RECORDER_LOG = log;
+
+    const plan = await hookPlan("opencode", { scope: "project", projectRoot: run.project, environment: run.environment, version: "1.18.30" });
+    await installHooks(plan);
+    // 装出来的那个文件，按它自己的字节加载：`data:` 只绕开「临时目录里没有 package.json，
+    // `.js` 会被当成 CommonJS」这一件事。
+    const plugin = await import(`data:text/javascript;base64,${Buffer.from(await readFile(plan.file, "utf8")).toString("base64")}`);
+    const hooks = await plugin.AvenicHooks({ directory: run.project });
+    const fire = (event) => hooks.event({ event });
+    await fire({ type: "message.part.updated", properties: { sessionID: "s", part: { text: "delta" } } });
+    await fire({ type: "message.updated", properties: { sessionID: "s", info: { role: "assistant" } } });
+    await fire({ type: "message.updated", properties: { sessionID: "s", info: { role: "user" } } });
+    await fire({ type: "session.idle", properties: { sessionID: "s" } });
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && (await spawnLines(log)).length < 2) await sleep(25);
+    // 再等一拍才数：多出来的那个进程如果会来，这时候也该到了。端口（Windows 每一轮开一个
+    // 进程的代价就在这里）不是靠文本断言守住的。
+    await sleep(300);
+    const recorded = await spawnLines(log);
+    assert.equal(recorded.length, 2, `四条事件里只该有两条值得起一个进程，实际起了 ${recorded.length} 个：\n${recorded.join("\n")}`);
+    const payloads = recorded.map((line) => JSON.parse(line));
+    assert.deepEqual(payloads.map((payload) => payload.type).sort(), ["message.updated", "session.idle"], "起的两个进程分别是用户的提问和一次空转结束");
+    const user = payloads.find((payload) => payload.type === "message.updated");
+    assert.equal(user.info.role, "user", "转发的 message.updated 是用户那一条，不是助手的");
+    assert.equal(user.directory, run.project, "摊平之后目录还在：矩阵按这个字段读 cwd");
+    for (const payload of payloads) assert.equal(payload.sessionID, "s");
+  } finally {
+    // 记录器是被 detach 的：先让最后这一拍落完，再去删它正在写的目录。
+    await sleep(400);
+    if (saved.PATH === undefined) delete process.env.PATH; else process.env.PATH = saved.PATH;
+    if (saved.Path === undefined) delete process.env.Path; else process.env.Path = saved.Path;
+    if (saved.recorderLog === undefined) delete process.env.AVENIC_RECORDER_LOG; else process.env.AVENIC_RECORDER_LOG = saved.recorderLog;
     await run.done();
   }
 });

@@ -194,34 +194,57 @@ function codexEdit(agentId, capability, before, { remove }) {
 // ---- OpenCode: a file Avenic owns ---------------------------------------------
 
 /**
- * The plugin, whole. It does one thing: every event the session reports goes to
- * `avenic hook emit` flattened to the shape the capability matrix reads — the
+ * The plugin, whole. It does one thing: the events the capability matrix maps
+ * go to `avenic hook emit` flattened to the shape that matrix reads — the
  * native envelope keeps the session id inside `properties`, and the working
  * directory is the plugin's own input rather than a field of the event. Nothing
  * waits for the child: a notification is never a reason for the agent's own
  * turn to feel slower.
  *
+ * Which events those are is written out here from the matrix rather than
+ * hand-copied: the assistant's stream reports every increment as an event of
+ * its own (`message.part.updated`), so forwarding the whole stream would start
+ * a process per increment — hundreds of processes per turn, each one doing
+ * exactly nothing, because core drops them. The filter belongs on this side of
+ * the process boundary.
+ *
  * The command runs through the shell because `avenic` is a shim on Windows
  * (`avenic.cmd`), and Node cannot execute a shim directly — a plugin that threw
  * ENOENT on every event would look exactly like an agent that never reports
- * anything. The event itself goes on stdin and is never interpolated into the
- * command line.
+ * anything. The event goes on stdin and is never interpolated into the command
+ * line. `detached` is POSIX-only on purpose: there it is what lets the child
+ * outlive a closing terminal, and on Windows the combination runs nothing at
+ * all — `cmd.exe` starts, exits 0, and the shim is never reached.
  */
 export function opencodePlugin(agentId) {
+  const reported = Object.values(hookCapability(agentId).events)
+    .filter((entry) => entry.native !== null)
+    .map((entry) => [entry.native, entry.role ?? null]);
   return [
-    `// ${OWNED_MARKER} v1 — this file belongs to Avenic and is rewritten as a whole.`,
+    `// ${OWNED_MARKER} v2 — this file belongs to Avenic and is rewritten as a whole.`,
     `// Remove it with \`avenic hook uninstall --agent ${agentId}\`.`,
     'import { spawn } from "node:child_process";',
     "",
+    `const REPORTED = ${JSON.stringify(reported)};`,
+    "",
+    "// 表里连着角色一起写的那些名字（助手流的每一次增量也叫 message.updated）：角色对不上",
+    "// 的连进程都不该起。",
+    "function wanted(type, properties) {",
+    "  return REPORTED.some(([native, role]) => native === type && (role === null || properties?.info?.role === role));",
+    "}",
+    "",
     "function report(event) {",
-    `  const child = spawn("avenic hook emit --agent ${agentId}", { shell: true, stdio: ["pipe", "ignore", "ignore"], detached: true, windowsHide: true });`,
+    `  const child = spawn("avenic hook emit --agent ${agentId}", { shell: true, stdio: ["pipe", "ignore", "ignore"], detached: process.platform !== "win32", windowsHide: true });`,
     "  child.on(\"error\", () => {});",
     "  child.stdin.end(JSON.stringify(event));",
     "  child.unref();",
     "}",
     "",
     "export const AvenicHooks = async ({ directory }) => ({",
-    "  event: async ({ event }) => { report({ directory, ...event.properties, type: event.type }); },",
+    "  event: async ({ event }) => {",
+    "    if (!wanted(event.type, event.properties)) return;",
+    "    report({ directory, ...event.properties, type: event.type });",
+    "  },",
     "});",
     "",
   ].join("\n");
