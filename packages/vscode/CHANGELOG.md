@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.6.1
+
+- **Hooks & Notifications: the agents report, and Avenic delivers.** A new page
+  installs, removes and tests the agent-native hooks for Claude Code, Codex and
+  OpenCode — one agent at a time or all three, for this project or everywhere —
+  and decides what a finished turn does: a desktop notification, OpenClaw, a
+  webhook, or, behind Advanced and a warning you confirm, a command. A hook is
+  merged into the agent's own configuration as one Avenic-owned entry with its
+  own marker: a file nobody can prove is Avenic's is kept, and a hook Avenic did
+  not write is never rewritten or removed. The same install works with this
+  window closed — `avenic hook install` is the other door to it — and none of
+  these events can land in the project's shared conversation history.
+- **The Model Configuration Center.** With Authentication = API, Change opens a
+  guided editor for the agent's own configuration: provider presets (DeepSeek
+  behind Claude Code among them), a model list refreshed only when you ask and
+  cached, a real Test Connection with a bounded timeout, and View Diff before
+  anything is written. Writes merge: only the keys Avenic owns are touched, so
+  your own hooks, permissions, plugins and extra environment survive; a
+  credential is written with the tightest file permissions the platform allows
+  and is never printed, logged, or put in an address.
+- **The Sessions page is a live transcript.** Opening a session shows the
+  conversation itself — tool calls attributed to the agent that made them, and
+  the host's own bookkeeping never rendered as something you said. While a run
+  is going the page follows it: new messages arrive behind a **New messages ↓**
+  jump instead of a reload, the running state alone is core's, and a finished
+  run lands its final state about a second after the agent exits. Raw and
+  Diagnostics live behind the row's `⋯` menu.
+- **The host and the dashboard say every sentence from one bilingual table.**
+  English primary, complete zh-CN, chosen by VS Code's display language — a
+  page can no longer be half in one language and half in the other.
+- **Updating the extension in place no longer strands the Dashboard.** The
+  Marketplace replaces the extension under a running window, so for a moment the
+  new manifest is served by the previous release's code; when the two disagree
+  about the view's id, VS Code paints its own `No view is registered with id: …`
+  into the activity bar, and only an uninstall-then-install cleared it. The id
+  now has one source — the manifest, the registration and the menu bindings read
+  the same constant — and the view provider is mounted first in activation, with
+  every later step (data reads, output channel, version probe) inside a guard, so
+  a failure there cannot take the entry point down with it. The Avenic window
+  stays usable when a page cannot be opened: it says
+  `Avenic Dashboard could not be opened.` and offers **Reload Window** /
+  **View Logs** instead of VS Code's internal sentence. Old command ids from
+  earlier releases still reach the one implementation through a small fixed
+  alias table — no scan, no probe, nothing that costs a keystroke.
+- Ships core 1.6.6 (and CLI 1.8.5): `avenic hook` in the CLI, the hooks and the
+  model center behind this window, `avenic status` in the dashboard's own
+  words, and the conversation and transcript fixes.
+
 ## 0.6.0
 
 - **The extension is one window now: a dashboard drawn from the same answers as
@@ -26,20 +74,6 @@
   than half a second draws a status line above the content it is waiting to
   replace instead of blanking the panel. Reading is only ever a read: no
   network check, no model call, no login attempt.
-- **Updating the extension in place no longer strands the Dashboard.** The
-  Marketplace replaces the extension under a running window, so for a moment the
-  new manifest is served by the previous release's code; when the two disagree
-  about the view's id, VS Code paints its own `No view is registered with id: …`
-  into the activity bar, and only an uninstall-then-install cleared it. The id
-  now has one source — the manifest, the registration and the menu bindings read
-  the same constant — and the view provider is mounted first in activation, with
-  every later step (data reads, output channel, version probe) inside a guard, so
-  a failure there cannot take the entry point down with it. The Avenic window
-  stays usable when a page cannot be opened: it says
-  `Avenic Dashboard could not be opened.` and offers **Reload Window** /
-  **View Logs** instead of VS Code's internal sentence. Old command ids from
-  earlier releases still reach the one implementation through a small fixed
-  alias table — no scan, no probe, nothing that costs a keystroke.
 - Ships core 1.6.5 (and CLI 1.8.4): authentication method and model configuration
   are separate questions with separate owners, one wizard serves both hosts, and
   switching methods keeps what you had unless you say otherwise.
