@@ -78,8 +78,8 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
         async (finished) => {
           // 删除旧配置的二次确认是问卷里的一步（core 的 switch-confirm），不再在写盘
           // 期间弹模态：写盘一旦开始，取消就够不着它了，而同一按键也不该同时决定两帧。
-          return runMutation(deps.queue, () => withProgress("Avenic project configuration", (report) =>
-            applyProjectDraft(root, finished).then((result) => { report("Completed"); return result; }),
+          return runMutation(deps.queue, () => withProgress(sentence(vscode.env.language, "agents.config-progress"), (report) =>
+            applyProjectDraft(root, finished).then((result) => { report(sentence(vscode.env.language, "agents.config-done")); return result; }),
           ), () => deps.refresh());
         },
       );
@@ -87,8 +87,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
       // 一句话说清这一轮到底改了什么，尤其是「旧配置留着还是删了」——以及给不回来
       // 的那种键（组成在 services/releaseSummary，与 CLI 说同一组事实）。
       const detail = releaseSummary(outcome.result.released ?? [], vscode.env.language);
-      const what = sentence(vscode.env.language, editing ? "agents.config-updated" : "agents.initialized");
-      await vscode.window.showInformationMessage(`Avenic ${what}${detail ? ` · ${detail}` : ""} · ${root}`);
+      await vscode.window.showInformationMessage(sentence(vscode.env.language, editing ? "agents.updated-edited" : "agents.updated-created", { rest: detail ? ` · ${detail}` : "", root }));
     } finally {
       host.dispose();
     }
@@ -103,7 +102,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
     if (target === null) return;
     const command = updateCommandForInstallation(target.id, await agents.detectInstallation(target.id));
     if (command === null) {
-      await vscode.window.showWarningMessage(`Avenic detected a manual or unknown ${target.id} installation. It will not update a different npm copy; use that installation's updater.`);
+      await vscode.window.showWarningMessage(sentence(vscode.env.language, "agents.manual-install", { agent: target.id }));
       return;
     }
     const terminal = vscode.window.createTerminal({ name: `Avenic · ${target.id}` });

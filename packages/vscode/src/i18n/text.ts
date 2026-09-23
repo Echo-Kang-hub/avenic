@@ -49,6 +49,7 @@ export const TEXT = {
   // 那两个键（shell.no-folder / shell.not-set-up），这里是标题下面那句理由。
   "shell.no-folder-detail": { en: "Open a project folder to see its Avenic state.", zh: "打开一个项目文件夹，就能看到它的 Avenic 状态。" },
   "shell.unconfigured-detail": { en: "This project has no Avenic configuration yet.", zh: "这个项目还没有配置 Avenic。" },
+  "shell.open-folder-first": { en: "Open a project folder first.", zh: "先打开一个项目文件夹。" },
   // 相对时间：宿主算的（存在盘上的永远是那个 ISO 时刻），所以这句也由宿主说。单数复数
   // 各是一条：中文没有复数，英文有，而这两种说法都得是人写下的句子，不是拼出来的。
   "time.just-now": { en: "just now", zh: "刚刚" },
@@ -104,8 +105,13 @@ export const TEXT = {
   "flow.done": { en: "Done", zh: "完成" },
   // — 树视图/命令面板里那些一次操作的开场与收场。
   "agents.operation": { en: "Avenic Agent operation", zh: "Avenic Agent 操作" },
-  "agents.config-updated": { en: "configuration updated", zh: "配置已更新" },
-  "agents.initialized": { en: "initialized", zh: "初始化完成" },
+  "agents.config-progress": { en: "Avenic project configuration", zh: "Avenic 项目配置" },
+  // 配置写完那一行：它一半是路径、一半是已经说过的那句话，所以中文那一半只能在这些句子
+  // 里——框架本身没有可翻译的字，一个「框架」键的两半就只能是同一串英文。
+  "agents.updated-edited": { en: "Avenic configuration updated{rest} · {root}", zh: "Avenic 配置已更新{rest} · {root}" },
+  "agents.updated-created": { en: "Avenic initialized{rest} · {root}", zh: "Avenic 初始化完成{rest} · {root}" },
+  "agents.config-done": { en: "Completed", zh: "已完成" },
+  "agents.manual-install": { en: "Avenic detected a manual or unknown {agent} installation. It will not update a different npm copy; use that installation's updater.", zh: "Avenic 发现 {agent} 是手动装的（或来路不明）。它不会去动另一份 npm 拷贝，请用那份安装自己的升级方式。" },
   "sessions.import-summary": {
     en: "Found {discovered} sessions, imported {imported}, unchanged {unchanged}, failed {failed}.",
     zh: "发现 {discovered} 个会话；导入 {imported} 个；未变更 {unchanged} 个；失败 {failed} 个。",
@@ -170,6 +176,50 @@ export const TEXT = {
   "skills.repair": { en: "Repair skill links", zh: "修复 Skills 链接" },
   "skills.links-ok": { en: "Skill links are already up to date", zh: "Skills 链接已是最新" },
   "skills.links-summary": { en: "Linked {linked} · Migrated {migrated} · Fallback {fallback} · Conflicts {conflicts}", zh: "链接 {linked} · 迁移 {migrated} · 降级 {fallback} · 冲突 {conflicts}" },
+  // 面板上的 Import Skill：那场问答与 CLI 的 Add 同序，问的也是同一批问题。**问句在这里，
+  // 答案不在** —— 流程交出键与值，宿主用自己的语言说出来（ui/skill-import.ts 不知道
+  // 编辑器是哪种语言，它只负责「问什么、按什么顺序问」）。
+  "skills.import-read": { en: "Avenic · Reading the repository", zh: "Avenic · 正在读取这个仓库" },
+  "skills.import-cloning": { en: "Cloning {repo}…", zh: "正在克隆 {repo}…" },
+  "skills.import-none": { en: "No Skills found in that repository", zh: "那个仓库里没有找到 Skill" },
+  "skills.import-found": { en: "Found {skills}", zh: "找到 {skills}" },
+  "skills.import-select": { en: "Select Skills", zh: "选择 Skill" },
+  "skills.import-managed": { en: "already managed in this scope", zh: "这个作用域里已经受管" },
+  "skills.import-targets": { en: "Install to", zh: "安装到" },
+  "skills.import-canonical": { en: "always installed", zh: "总是安装" },
+  "skills.import-link": { en: "shared link", zh: "共享链接" },
+  "skills.import-scope": { en: "Scope", zh: "作用域" },
+  "skills.import-install": { en: "Install {skills}?", zh: "要安装 {skills} 吗？" },
+  "skills.import-summary-source": { en: "Source: {value}", zh: "来源：{value}" },
+  "skills.import-summary-skills": { en: "Skills: {value}", zh: "Skill 清单：{value}" },
+  "skills.import-summary-targets": { en: "Targets: {value}", zh: "目标：{value}" },
+  "skills.import-summary-scope": { en: "Scope: {value}", zh: "作用域：{value}" },
+  "skills.import-summary-config": { en: "Config: {value}", zh: "配置文件：{value}" },
+  "skills.import-confirm": { en: "Install", zh: "安装" },
+  "skills.import-installing": { en: "Avenic · Installing {skills}", zh: "Avenic · 正在安装 {skills}" },
+  "skills.import-working": { en: "Installing…", zh: "正在安装…" },
+  "skills.import-already": { en: "Already installed: {source} ({skills})", zh: "早就装好了：{source}（{skills}）" },
+  "skills.import-done": { en: "{skills} installed · {scope} · {config}", zh: "装好了 {skills} · {scope} · {config}" },
+  // 数量是个短语，不是一个拼出来的 `s`：中文没有单复数，两半都写成句子。小写的那个只
+  // 给「Found …」用（CLI 与原句都是小写）。
+  "skills.count-one": { en: "1 Skill", zh: "1 个 Skill" },
+  "skills.count": { en: "{count} Skills", zh: "{count} 个 Skill" },
+  "skills.count-lower-one": { en: "1 skill", zh: "1 个 Skill" },
+  "skills.count-lower": { en: "{count} skills", zh: "{count} 个 Skill" },
+  "skills.import-more": { en: ", +{count} more", zh: "，另加 {count} 个" },
+  // 面板上那两条不是问答的动作（装 Pack、同步 registry）与它们的进度。
+  "skills.pack-progress": { en: "Avenic · Installing pack", zh: "Avenic · 正在安装 Pack" },
+  "skills.no-registry": { en: "No registry is configured for this project.", zh: "这个项目还没有配置 registry。" },
+  "skills.sync-progress": { en: "Avenic · Syncing registry", zh: "Avenic · 正在同步 registry" },
+  "skills.sync-fetching": { en: "Fetching the registry…", zh: "正在拉取 registry…" },
+  // 活动日志那一列是宿主自己说的话（面板原样印出来），跟着语言的正是这些句子。
+  "activity.dashboard-opened": { en: "Dashboard opened", zh: "打开了面板" },
+  "activity.session-started": { en: "{name} session started", zh: "{name} 的会话开始了" },
+  "activity.session-continued": { en: "{name} session continued", zh: "{name} 的会话接着往下跑了" },
+  "activity.imported": { en: "Imported {count} skill(s) from {repo} · {scope}", zh: "从 {repo} 导入了 {count} 个 Skill · {scope}" },
+  "activity.import-already": { en: "Already installed: {repo}", zh: "早就装好了：{repo}" },
+  "activity.pack-installed": { en: "Pack installed: {names}", zh: "装好了 Pack：{names}" },
+  "activity.registry-synced": { en: "Registry synced: {spec}", zh: "registry 同步好了：{spec}" },
 
   // — 面板自己画的那一半（media/dashboard/main.js）。键名说的是这句话出现的那一块屏：
   // 概览上的卡片、Sessions 页、对话阅读器。同一句话只写一遍——侧栏的 `Skills` 就是
@@ -198,6 +248,8 @@ export const TEXT = {
   // 是同一句话，写一次），Codex 是一个目录，OpenCode 是它自己的界面。
   "agent.open-folder": { en: "Open Config Folder", zh: "打开配置文件夹" },
   "agent.open-opencode": { en: "Open OpenCode", zh: "打开 OpenCode" },
+  // 它没有 Avenic 可以打开的文件时的那句话（面板上的 Open Config 走到最后一步才说）。
+  "agent.own-config": { en: "{name} keeps its own authentication and provider configuration; Avenic has no file of its own to open.", zh: "{name} 自己管它的认证和供应商配置，Avenic 没有自己的文件可以打开。" },
 
   // Model Configuration Center：一个 agent 自己那份 provider 配置。这一页写下去的是
   // agent 的原生文件，Avenic 只做合并 —— 所以每一句说的都是这件事，凭据那一栏尤其：
@@ -443,6 +495,11 @@ export const TEXT = {
   "sessions.continue": { en: "Continue", zh: "继续" },
   "sessions.chip.active": { en: "Active", zh: "当前" },
   "sessions.chip.stale": { en: "Stale", zh: "已落后" },
+  // 面板上「继续」那一步由宿主执行（它要开终端、要写映射），所以在它真的问出口之前，
+  // 这几句也得由宿主来说。
+  "sessions.continue-progress": { en: "Avenic · Continuing with {name}", zh: "Avenic · 正在接着跑 {name}" },
+  "sessions.continue-with": { en: "Continue with", zh: "接着用哪个 Agent" },
+  "sessions.no-successor": { en: "No agent has a session for this conversation yet. Launch one first.", zh: "这条对话还没有任何一个 Agent 有会话，先启动一个。" },
   "sessions.actions": { en: "Session actions", zh: "会话操作" },
   // 行尾那份菜单里的两句话。第三件（设为当前）用的是对话头那一句同一个键——同一个动作在
   // 两个地方叫两个名字，用户会以为是两件事。

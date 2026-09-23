@@ -7,6 +7,7 @@ import * as skills from "../services/skills.ts";
 import { defaultSpec, sync } from "../services/catalog.ts";
 import { continueSession } from "../services/continue.ts";
 import { aboutFileFor } from "../services/about.ts";
+import { sentence } from "../i18n/text.ts";
 import { DOCS_URL } from "../product.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { importSkillsFlow, type ImportUi } from "../ui/skill-import.ts";
@@ -37,6 +38,8 @@ export interface DashboardDeps {
 
 export function registerDashboardCommands(deps: DashboardDeps): void {
   const { context, activity, queue, refresh } = deps;
+  // 编辑器自己的语言在这一层只读一次：宿主是唯一知道它的人，用户要读的每一句也都在这里成形。
+  const language = vscode.env.language;
   const panel = (section?: DashboardSection) => DashboardPanel.show(context, { root: deps.root, dispatch: (action) => void handle(action) }, () => activity.rows(), section);
   const register = (id: string, fn: () => void) => context.subscriptions.push(vscode.commands.registerCommand(id, fn));
 
@@ -45,7 +48,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   const openPanel = (section?: DashboardSection): void => {
     try {
       panel(section);
-      activity.record("Dashboard opened");
+      activity.record(sentence(language, "activity.dashboard-opened"));
     } catch (error) {
       void reportDashboardFailure(error, deps.failure);
     }
@@ -59,7 +62,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
 
   const projectRoot = async (): Promise<string | null> => {
     const root = deps.root();
-    if (root === null) await vscode.window.showWarningMessage("Open a project folder first.");
+    if (root === null) await vscode.window.showWarningMessage(sentence(language, "shell.open-folder-first"));
     return root;
   };
 
@@ -68,11 +71,11 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
     const root = await projectRoot();
     if (root === null) return;
     const name = getAgent(agentId).displayName;
-    await runMutation(queue, () => withProgress(`Avenic · Continuing with ${name}`, () => continueSession(root, canonicalId, agentId, {
+    await runMutation(queue, () => withProgress(sentence(language, "sessions.continue-progress", { name }), () => continueSession(root, canonicalId, agentId, {
       run: (definition) => runInTerminal(definition.name, definition.cwd, definition.environment, definition.command),
       log: (line) => activity.record(line, "muted"),
     })), () => refresh());
-    activity.record(`${name} session continued`);
+    activity.record(sentence(language, "activity.session-continued", { name }));
   };
 
   const successors = async (root: string, canonicalId: string): Promise<AgentId[]> => {
@@ -92,7 +95,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
           // 活动日志记在事情真的发生之后：这条命令自己知道它有没有跑起来（CLI 没装、
           // 没配置都挡在它前面），面板不能在它回答之前就写下「会话已开始」。
           const started = await vscode.commands.executeCommand<boolean>("avenic.agents.launch", { id: action.agent });
-          if (started === true) activity.record(`${getAgent(action.agent).displayName} session started`);
+          if (started === true) activity.record(sentence(language, "activity.session-started", { name: getAgent(action.agent).displayName }));
           return;
         }
         case "change": {
@@ -154,12 +157,12 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
           if (root === null) return;
           const candidates = await successors(root, action.id);
           if (candidates.length === 0) {
-            await vscode.window.showWarningMessage("No agent has a session for this conversation yet. Launch one first.");
+            await vscode.window.showWarningMessage(sentence(language, "sessions.no-successor"));
             return;
           }
           const chosen = candidates.length === 1
             ? candidates[0]
-            : (await vscode.window.showQuickPick(candidates.map((id) => ({ label: getAgent(id).displayName, id })), { title: "Continue with" }))?.id;
+            : (await vscode.window.showQuickPick(candidates.map((id) => ({ label: getAgent(id).displayName, id })), { title: sentence(language, "sessions.continue-with") }))?.id;
           if (chosen === undefined) return;
           await continueWith(action.id, chosen);
           return;
@@ -232,19 +235,21 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   // 默认作用域是项目：按钮就长在这个项目的面板里，但全局也是 CLI 认的一个作用域，所以
   // 它作为一个选项存在，而不是由插件替用户假定。
   const importUi = (): ImportUi => ({
-    askSource: async () => vscode.window.showInputBox({ prompt: "owner/repo or repository URL", placeHolder: "owner/repo" }),
+    // 流程没有语言：它交键，宿主说了算。占位符 "owner/repo" 是一个格式例子，不是一句话。
+    sentence: (key, values) => sentence(language, key, values),
+    askSource: async () => vscode.window.showInputBox({ prompt: sentence(language, "skills.repo-prompt"), placeHolder: "owner/repo" }),
     pickMany: async (title, items) => (await vscode.window.showQuickPick(items, { title, canPickMany: true }))?.map((item) => item.value),
     pickOne: async (title, items) => (await vscode.window.showQuickPick(items, { title }))?.value,
     confirm: async (title, summary) => (await vscode.window.showWarningMessage(title, {
       modal: true,
       detail: [
-        `Source: ${summary.source}`,
-        `Skills: ${summary.skills}`,
-        `Targets: ${summary.targets}`,
-        `Scope: ${summary.scope}`,
-        `Config: ${summary.config}`,
+        sentence(language, "skills.import-summary-source", { value: summary.source }),
+        sentence(language, "skills.import-summary-skills", { value: summary.skills }),
+        sentence(language, "skills.import-summary-targets", { value: summary.targets }),
+        sentence(language, "skills.import-summary-scope", { value: summary.scope }),
+        sentence(language, "skills.import-summary-config", { value: summary.config }),
       ].join("\n"),
-    }, "Install")) === "Install",
+    }, sentence(language, "skills.import-confirm"))) === sentence(language, "skills.import-confirm"),
     info: (message) => void vscode.window.showInformationMessage(message),
     warn: (message) => void vscode.window.showWarningMessage(message),
     progress: (title, work) => runMutation(queue, () => withProgress(title, work), () => refresh()),
@@ -255,8 +260,8 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
     const outcome = await importSkillsFlow(skills.importService(root), importUi());
     if (outcome.kind === "cancelled") return;
     activity.record(outcome.kind === "installed"
-      ? `Imported ${outcome.names.length} skill(s) from ${outcome.repo} · ${outcome.label}`
-      : `Already installed: ${outcome.repo}`);
+      ? sentence(language, "activity.imported", { count: outcome.names.length, repo: outcome.repo, scope: outcome.label })
+      : sentence(language, "activity.import-already", { repo: outcome.repo }));
   }
 
   // 面板上那一行 Pack 说的是「装这个」：用户已经点过的那一步不该再问一遍，所以安装
@@ -264,8 +269,8 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   // 这个项目，理由与 Import Skill 一样（按钮就长在这个项目的面板里）。
   async function installPack(root: string | null, packId: string): Promise<void> {
     if (root === null) return;
-    const result = await runMutation(queue, () => withProgress("Avenic · Installing pack", () => skills.installPacks("project", [packId], root)), () => refresh());
-    activity.record(`Pack installed: ${result.resolvedPacks.names.join(", ")}`);
+    const result = await runMutation(queue, () => withProgress(sentence(language, "skills.pack-progress"), () => skills.installPacks("project", [packId], root)), () => refresh());
+    activity.record(sentence(language, "activity.pack-installed", { names: result.resolvedPacks.names.join(", ") }));
   }
 
   // Registry 是 state 目录里的一份 checkout：同步是去拉它，与项目无关，但拉完要更新
@@ -273,14 +278,14 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
   async function syncHub(): Promise<void> {
     const spec = await defaultSpec();
     if (spec === null) {
-      await vscode.window.showWarningMessage("No registry is configured for this project.");
+      await vscode.window.showWarningMessage(sentence(language, "skills.no-registry"));
       return;
     }
-    await runMutation(queue, () => withProgress("Avenic · Syncing registry", async (report) => {
-      report("Fetching the registry…");
+    await runMutation(queue, () => withProgress(sentence(language, "skills.sync-progress"), async (report) => {
+      report(sentence(language, "skills.sync-fetching"));
       return sync(spec);
     }), () => refresh());
-    activity.record(`Registry synced: ${spec}`);
+    activity.record(sentence(language, "activity.registry-synced", { spec }));
   }
 
   // 打开一个 agent 自己的配置：路径由 core 给出（API 配置说的就是那个文件，Account
@@ -304,7 +309,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
       const target = vscode.Uri.file(`${root}/${candidate}`);
       if (await exists(target)) { await reveal(target, { pick: null, fallback: null }); return; }
     }
-    void vscode.window.showInformationMessage(`${getAgent(agentId).displayName} keeps its own authentication and provider configuration; Avenic has no file of its own to open.`);
+    void vscode.window.showInformationMessage(sentence(language, "agent.own-config", { name: getAgent(agentId).displayName }));
   }
 
   function resolveHome(home: string, root: string): string {

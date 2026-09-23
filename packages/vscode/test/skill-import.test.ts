@@ -11,6 +11,7 @@ import {
   type ImportSummary,
   type ImportUi,
 } from "../src/ui/skill-import.ts";
+import { sentence, type TextKey } from "../src/i18n/text.ts";
 import {
   importCwd,
   importService,
@@ -49,9 +50,15 @@ interface Recorder {
   summary: ImportSummary | null;
   infos: string[];
   warns: string[];
+  /** 这个假宿主被要求说的每一个键，按被问的顺序。 */
+  said: string[];
+  progressTitles: string[];
+  reports: string[];
 }
 
-function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
+// 假宿主说哪种语言，由它的构造参数决定 —— 就像真宿主由 vscode.env.language 决定。
+// 句子不是从这里递回来的：流程交出键与值，宿主把它翻成人话（这正是真宿主做的事）。
+function fakeUi(script: Script = {}, language = "en"): { ui: ImportUi; log: Recorder } {
   const log: Recorder = {
     asked: 0,
     sequence: [],
@@ -62,12 +69,19 @@ function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
     summary: null,
     infos: [],
     warns: [],
+    said: [],
+    progressTitles: [],
+    reports: [],
   };
+  /** 不带记录地翻一句：给「这句是谁说的」之外的比较用。 */
+  const said = (key: TextKey, values?: Record<string, string | number>) => sentence(language, key, values);
+  const say = (key: TextKey, values?: Record<string, string | number>) => { log.said.push(key); return said(key, values); };
   const ui: ImportUi = {
+    sentence: (key, values) => say(key, values),
     askSource: async () => { log.asked += 1; log.sequence.push("source"); return script.source; },
     pickMany: async <T>(title: string, items: ImportChoice<T>[]) => {
       log.sequence.push(title);
-      if (title === "Select Skills") {
+      if (title === said("skills.import-select")) {
         log.skillItems = items as ImportChoice<string>[];
         return script.skills as T[] | undefined;
       }
@@ -82,8 +96,9 @@ function fakeUi(script: Script = {}): { ui: ImportUi; log: Recorder } {
     confirm: async (title, summary) => { log.sequence.push("confirm"); log.confirmTitle = title; log.summary = summary; return script.confirm; },
     info: (message) => log.infos.push(message),
     warn: (message) => log.warns.push(message),
-    // 进度只是一层包装：测试里同步穿透，让每一步都在同一条调用链上。
-    progress: async (_title, work) => work(() => {}),
+    // 进度只是一层包装：测试里同步穿透，让每一步都在同一条调用链上；标题与进度里那行字
+    // 记下来，因为那也是宿主替流程说的话。
+    progress: async (title, work) => { log.progressTitles.push(title); return work((message) => log.reports.push(message)); },
   };
   return { ui, log };
 }
@@ -273,6 +288,50 @@ test("core short-circuiting with alreadyInstalled is reported as such, not as a 
   assert.equal(outcome.kind, "alreadyInstalled");
   assert.match(log.infos.at(-1) ?? "", /Already installed/);
   assert.equal(/Skills installed/.test(log.infos.at(-1) ?? ""), false, "不许把「早就装好了」说成「这次装好了」");
+});
+
+// ---- 说哪种语言：流程不说人话，它把键交给宿主 ----
+
+// 这一层没有语言（它不 import vscode，不知道编辑器现在是哪种语言），所以它说的每一句
+// 都必须是问宿主讨来的。反过来，core 的事实不是宿主说的话——作用域、目标、路径、来源
+// 原样带过去，翻译它们就等于替 core 改口。
+const CJK = /[㐀-鿿]/;
+
+test("the questions and the results are said in the host's language, which only the host knows", async () => {
+  const { service, calls } = fakeService({ managed: ["beta"] });
+  const { ui, log } = fakeUi({ source: REPO, skills: ["alpha", "beta"], targets: ["claude", "agents"], scope: "project", confirm: true }, "zh-cn");
+  const outcome = await importSkillsFlow(service, ui);
+  assert.equal(outcome.kind, "installed");
+  assert.deepEqual(calls.length, 1);
+  const zh = (key: TextKey, values?: Record<string, string | number>) => sentence("zh-cn", key, values);
+
+  // 问出去的每一句话（标题、提示、进度、结果）都来自词表，而且是按顺序讨的。
+  assert.deepEqual(log.sequence, ["source", zh("skills.import-select"), zh("skills.import-targets"), zh("skills.import-scope"), "confirm"], "三个标题都要宿主用它的语言说");
+  assert.equal(log.confirmTitle, zh("skills.import-install", { skills: zh("skills.count", { count: 2 }) }));
+  assert.equal(log.infos[0], zh("skills.import-found", { skills: zh("skills.count-lower", { count: 2 }) }));
+  assert.equal(log.infos[1], zh("skills.import-done", { skills: zh("skills.count", { count: 2 }), scope: "Project", config: projectFacts().configFile }));
+  assert.deepEqual(log.progressTitles, [zh("skills.import-read"), zh("skills.import-installing", { skills: zh("skills.count", { count: 2 }) })], "进度条上那两行也是宿主说的话");
+  assert.deepEqual(log.reports, [zh("skills.import-cloning", { repo: REPO }), zh("skills.import-working")]);
+  assert.equal(log.skillItems.find((item) => item.value === "beta")?.description, zh("skills.import-managed"));
+  assert.match(log.targetItems.find((item) => item.value === "claude")?.description ?? "", new RegExp(zh("skills.import-link")));
+  assert.match(log.targetItems.find((item) => item.value === "agents")?.description ?? "", new RegExp(zh("skills.import-canonical")));
+  assert.ok(CJK.test(log.confirmTitle ?? ""), `确认页的标题要说中文，实际是 ${log.confirmTitle}`);
+  assert.ok(log.said.length >= 8, `这一场问答说的句子不少，实际只讨了 ${log.said.length} 句`);
+
+  // core 的名字不是宿主说的话：两个作用域、目标、来源、配置文件原样是 core 的。
+  assert.deepEqual(log.scopeItems.map((item) => item.label), ["Project", "Global"], "作用域的名字是 core 的术语，不翻译");
+  assert.equal(log.summary?.scope, "Project");
+  assert.equal(log.summary?.targets, "Claude Code, Codex / OpenCode / universal agents");
+  assert.equal(log.summary?.source, `${REPO} @ ${REVISION.slice(0, 8)}`);
+  assert.equal(log.summary?.config, projectFacts().configFile);
+});
+
+test("a repository with no skills says so in the host's language too", async () => {
+  const { service, calls } = fakeService({ names: [] });
+  const { ui, log } = fakeUi({ source: REPO }, "zh-cn");
+  assert.equal((await importSkillsFlow(service, ui)).kind, "cancelled");
+  assert.deepEqual(log.warns, [sentence("zh-cn", "skills.import-none")]);
+  assert.deepEqual(calls, []);
 });
 
 // ---- 真 core、真仓库、真锁文件：假的替身证明不了「装的是什么」 ----

@@ -86,6 +86,85 @@ test("the host fills the slot it promised", async () => {
   assert.match(panel, /textScript\(/);
 });
 
+/** 注释去掉、其余原样（引号留着）：问「这里有没有写死一句话」时，注释里的例子不算数。 */
+function withoutComments(source: string): string {
+  const noBlocks = source.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));
+  return noBlocks.split("\n").map((line) => {
+    let quote: string | null = null;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (quote === null) {
+        if (char === "/" && line[i + 1] === "/") return line.slice(0, i);
+        if (char === '"' || char === "'" || char === "`") quote = char;
+        continue;
+      }
+      if (char === "\\") { i += 1; continue; }
+      if (char === quote) quote = null;
+    }
+    return line;
+  }).join("\n");
+}
+
+/** 某个位置在第几行（从 1 起）：报告里的位置就是要去改的那一行。 */
+function lineAt(source: string, index: number): number {
+  return source.slice(0, index).split("\n").length;
+}
+
+/**
+ * 一个字面量里、除 `${…}` 之外的那些字。夹在里面的键与变量不是「这句话」的一部分：
+ * `` `${message} ${detail}` `` 自己没有说任何话，它只是把两句别人的话接起来。
+ */
+function staticText(source: string, quoteAt: number): string {
+  const quote = source[quoteAt];
+  let out = "";
+  for (let i = quoteAt + 1; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === "\\") { out += source[i + 1] ?? ""; i += 1; continue; }
+    if (char === quote) break;
+    if (quote === "`" && char === "$" && source[i + 1] === "{") {
+      let depth = 0;
+      for (; i < source.length; i += 1) {
+        if (source[i] === "{") depth += 1;
+        else if (source[i] === "}") { depth -= 1; if (depth === 0) break; }
+      }
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
+// 另一条路反过来：宿主说给用户听的英文也必须来自词表。少了这道闸门，迁移同样只做一次就
+// 退回原样——一句写死的英文照样能编译、能过所有别的测试，只是在中文编辑器里说错话，而那
+// 正是这一整套要修的事。认出的是「发言动词后面直接跟一个字面量」：通知、活动日志、进度条
+// 标题，以及选单/输入框的标题与提示（它们收的是要显示的字，不是一句已经在表里的话）。
+test("the host speaks through the table, never in its own words", async () => {
+  const patterns = [
+    /(?:show(?:Warning|Information|Error)Message|\.record|withProgress)\(\s*["`]/g,
+    /show(?:QuickPick|InputBox)\([\s\S]{0,300}?(?:title|prompt):\s*["`]/g,
+  ];
+  const offenders: string[] = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) { await walk(file); continue; }
+      if (!entry.name.endsWith(".ts") || file === path.join(pkg, "src", "i18n", "text.ts")) continue;
+      const source = withoutComments(await readFile(file, "utf8"));
+      const where = path.relative(pkg, file).split(path.sep).join("/");
+      for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+          const quoteAt = (match.index ?? 0) + match[0].length - 1;
+          // 只在字面量**自己说了字**的时候才算：`${message} ${detail}` 是接话，不是说话。
+          if (!/[A-Za-z]{2,}/.test(staticText(source, quoteAt))) continue;
+          offenders.push(`${where}:${lineAt(source, match.index ?? 0)} ${match[0].replace(/\s+/g, " ").trim()}`);
+        }
+      }
+    }
+  };
+  await walk(path.join(pkg, "src"));
+  assert.deepEqual(offenders, [], `这些地方在自己写句子，把它们交给 src/i18n/text.ts（只有宿主知道用哪种语言说）：\n${offenders.join("\n")}`);
+});
+
 /** 只留字符串字面量里的字：注释和标识符里的中文不算「界面说了中文」。 */
 function stringLiterals(source: string): string {
   const noBlocks = source.replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "));

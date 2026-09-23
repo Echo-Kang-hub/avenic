@@ -7,6 +7,8 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { extensionBuildOptions } from "../build-options.mjs";
+import { en, zh } from "../src/i18n/text.ts";
+import { DASHBOARD_OPEN_FAILED } from "../src/views/dashboard-failure.ts";
 import { testEnv, withAgentHomes } from "./helpers.ts";
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,6 +89,16 @@ interface Control {
   effect: EffectKind;
   /** A sentence that outcome has to carry. */
   says?: string;
+  /**
+   * 编辑器说的是哪种语言。不写就是桩宿主自己的默认（英文）——每一行问的都是「这个控件
+   * 做了什么」，而那与语言无关。
+   */
+  language?: string;
+  /**
+   * 控件跑完之后由「页面」发给宿主的那条消息。命令层里有一半的话是回答页面的，那些话
+   * 只有这条线能问到——点一次命令到不了。
+   */
+  message?: object;
 }
 
 // One entry per command in the manifest. `says` is the reason, in the control's
@@ -151,12 +163,15 @@ interface Plan {
   id: string;
   open: Control["open"];
   answers: Answers;
+  language?: string;
+  message?: object;
   projectRoot: string;
   stateRoot: string;
 }
 
 interface Invocation {
   effects: Effect[];
+  outputLines?: string[];
   thrown: string | null;
   /** How long the command itself took. Reported when a row fails, nothing more. */
   ms: number;
@@ -213,7 +228,7 @@ async function buildArtifact() {
   await writeFile(loader, [
     `import { activate } from ${JSON.stringify(outfile)};`,
     `import { readFile } from "node:fs/promises";`,
-    `import { registered, Uri, ExtensionMode, effects, setAnswers, workspace } from "vscode";`,
+    `import { registered, Uri, ExtensionMode, env, effects, outputLines, sendToPanels, setAnswers, workspace } from "vscode";`,
     `const plan = JSON.parse(await readFile(process.argv[2], "utf8"));`,
     `const state = { get: () => undefined, update: async () => {}, keys: () => [] };`,
     `const context = {`,
@@ -225,10 +240,17 @@ async function buildArtifact() {
     `  secrets: { get: async () => undefined, store: async () => {}, delete: async () => {} },`,
     `  environmentVariableCollection: {},`,
     `  extensionMode: ExtensionMode.Test,`,
+    // 真编辑器一定有这个目录，面板建起来时要读它（设置/关于那两页的事实从这里来）。
+    // 少了它，建面板这一步会抛在 catch 里、只剩一句「打不开」——那是桩漏了一块，
+    // 不是产品的问题，而下面那条按语言说话的行正是靠这一步才够得着的。
+    `  globalStorageUri: Uri.file(${JSON.stringify(path.join(root, "globalStorage"))}),`,
     `  asAbsolutePath: (value) => value,`,
     `  logPath: ${JSON.stringify(out)},`,
     `};`,
     `if (plan.open === "project") workspace.workspaceFolders = [{ index: 0, name: "project", uri: Uri.file(plan.projectRoot) }];`,
+    // 编辑器用哪种语言，是宿主自己知道的事。命令层在注册时读一次，所以要在激活之前
+    // 摆好——摆晚了，读到的是桩宿主的默认，而那正好是这条测试要能分辨的差别。
+    `if (plan.language !== undefined) env.language = plan.language;`,
     // 激活自己也会碰宿主（入口树、输出通道）。它那部分不算这一次调用的账，所以先让它
     // 落地再记录起点——否则每个控件都能靠激活期的噪音"产生"一个效果。
     `const settle = async () => { for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r)); await new Promise((r) => setTimeout(r, 20)); };`,
@@ -242,12 +264,14 @@ async function buildArtifact() {
     `  const handler = registered.get(plan.id);`,
     `  if (handler === undefined) throw new Error("the artifact does not register " + plan.id);`,
     `  await handler();`,
+    // 面板开出来之后，页面那半边照原样再走一步：命令层里回答页面的那些句子只有这条线能问到。
+    `  if (plan.message !== undefined) await sendToPanels(plan.message);`,
     `} catch (error) { thrown = error instanceof Error ? error.message : String(error); }`,
     `await settle();`,
     // 报告完就结束。扩展自己的后台活会留下句柄（核心探测 npm 版本用的 15 秒 spawn
     // 超时定时器就是一个），等它们到期等于让每一行都付一次那笔时间的账——而那些活
     // 属于编辑器里的下一次刷新，不属于这一次调用。
-    `process.stdout.write(JSON.stringify({ effects: effects.slice(before), thrown, ms: Date.now() - startedAt }), () => process.exit(0));`,
+    `process.stdout.write(JSON.stringify({ effects: effects.slice(before), outputLines: outputLines.slice(0), thrown, ms: Date.now() - startedAt }), () => process.exit(0));`,
     "",
   ].join("\n"));
 
@@ -267,7 +291,7 @@ async function buildArtifact() {
 async function invoke(control: Control): Promise<Invocation> {
   const run = await sandbox();
   const { activation } = await builtArtifact();
-  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, projectRoot: run.project, stateRoot: run.state };
+  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, projectRoot: run.project, stateRoot: run.state };
   const planFile = path.join(run.root, "plan.json");
   await writeFile(planFile, JSON.stringify(plan));
   // 子进程拿的是隔离后的环境：状态目录在沙箱里，Agent 的配置根在沙箱里（withAgentHomes），
@@ -330,3 +354,35 @@ for (const control of CONTROLS) {
     }
   });
 }
+
+// 上面每一行问的都是「这个控件做了什么」，答案都是英文编辑器里的。但一句要显示的话是
+// 宿主说的，而只有宿主知道编辑器在用哪种语言——流程与 core 都只递键。这条把同一个控件
+// 放进中文编辑器再点一次：屏幕上那句话必须换成词表的中文那一半。少了它，「宿主把自己的
+// 语言传下去」这一段只剩类型检查看着，而类型对「说的是哪一半」一个字都说不了。
+test("the editor's own language reaches the words the host puts on screen", async () => {
+  // 问一句（Skills 那一层）和说一句理由（仪表盘那一层）各来一次：两层各自读一次
+  // 编辑器的语言，谁也不是靠别人替它读的。
+  const asked = await invoke({ id: "avenic.skills.addDirect", open: "project", effect: "prompt", language: "zh-cn" });
+  assert.equal(asked.thrown, null);
+  const question = asked.effects.map(describe).join(" | ");
+  assert.ok(question.includes(zh("skills.repo-prompt")), `中文编辑器里这个问题得是中文（${zh("skills.repo-prompt")}），实际说的是：${question}`);
+  assert.equal(question.includes(en("skills.repo-prompt")), false, `中文编辑器里不该出现英文那一半：${question}`);
+
+  // 面板里那一半的话是回答页面的，点一次命令到不了——所以开面板，再由「页面」把
+  // 继续共享会话那条消息递回去。这个项目里没有那条会话，宿主必须把理由说出来。
+  const answered = await invoke({
+    id: "avenic.dashboard.open",
+    open: "project",
+    effect: "message",
+    language: "zh-cn",
+    message: { type: "action", action: "continueShared", id: "5f7c3b1e-0000-4000-8000-000000000000" },
+  });
+  assert.equal(answered.thrown, null);
+  // 面板是真的建起来了：打不开时用户读到的那句结论只说结论，而它一旦出现，这条测试
+  // 问的就成了别的东西——所以先把「没有失败」钉住，再去看那句话说的是哪种语言。
+  const failed = (answered.outputLines ?? []).filter((line) => line.includes(DASHBOARD_OPEN_FAILED));
+  assert.deepEqual(failed, [], `面板这一步就不该失败，通道里写着：${failed.join(" / ")}`);
+  const reason = answered.effects.map(describe).join(" | ");
+  assert.ok(reason.includes(zh("sessions.no-successor")), `中文编辑器里这句理由得是中文（${zh("sessions.no-successor")}），实际说的是：${reason}`);
+  assert.equal(reason.includes(en("sessions.no-successor")), false, `中文编辑器里不该出现英文那一半：${reason}`);
+});

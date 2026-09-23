@@ -1,3 +1,4 @@
+import type { TextKey } from "../i18n/text.ts";
 import type { Scope, SkillImport } from "../services/skills.ts";
 
 // 面板上「Import Skill」按下去之后的那场问答，与 CLI 的 Add 流程一字不差地同一场：
@@ -26,6 +27,11 @@ export interface ImportSummary {
 }
 
 export interface ImportUi {
+  /**
+   * 这一层不说人话：它不 import vscode，不知道编辑器现在是哪种语言。每一句要显示的字
+   * 都由这里问宿主讨（键与值进去，那句话出来），与 CLI 那边把键交给宿主是同一件事。
+   */
+  sentence(key: TextKey, values?: Record<string, string | number>): string;
   askSource(): Promise<string | undefined>;
   pickMany<T>(title: string, items: ImportChoice<T>[]): Promise<T[] | undefined>;
   pickOne<T>(title: string, items: ImportChoice<T>[]): Promise<T | undefined>;
@@ -44,37 +50,38 @@ export type ImportOutcome =
 const CANCELLED: ImportOutcome = { kind: "cancelled" };
 const SUMMARY_NAME_LIMIT = 6;
 
-function skillCount(count: number): string {
-  return `${count} Skill${count === 1 ? "" : "s"}`;
-}
-
 /** 摘要行里的名字：多了就截断，摘要不该长成一份清单（与 CLI 同一个上限）。 */
-function summarizeNames(names: string[]): string {
+function summarizeNames(names: string[], more: string): string {
   const shown = names.slice(0, SUMMARY_NAME_LIMIT).join(", ");
-  return names.length > SUMMARY_NAME_LIMIT ? `${shown}, +${names.length - SUMMARY_NAME_LIMIT} more` : shown;
+  return names.length > SUMMARY_NAME_LIMIT ? `${shown}${more}` : shown;
 }
 
 export async function importSkillsFlow(service: SkillImport, ui: ImportUi): Promise<ImportOutcome> {
+  // 数量是个短语，不是一个拼出来的 `s`：中文没有单复数，两半都写成句子。
+  const count = (names: number, lower = false): string => ui.sentence(
+    lower ? (names === 1 ? "skills.count-lower-one" : "skills.count-lower") : (names === 1 ? "skills.count-one" : "skills.count"),
+    { count: names },
+  );
   // 发现先在项目作用域里做：按钮长在这个项目的面板上，多选里的「已受管」提示也是
   // 这个作用域的事实。改主意选了 Global 时，core 会在那个作用域里再落一份。
   const entered = await ui.askSource();
   const repo = (entered ?? "").trim();
   if (repo === "") return CANCELLED;
 
-  const discovery = await ui.progress("Avenic · Reading the repository", (report) => {
-    report(`Cloning ${repo}…`);
+  const discovery = await ui.progress(ui.sentence("skills.import-read"), (report) => {
+    report(ui.sentence("skills.import-cloning", { repo }));
     return service.discover(repo, "project");
   });
   if (discovery.names.length === 0) {
-    ui.warn("No Skills found in that repository");
+    ui.warn(ui.sentence("skills.import-none"));
     return CANCELLED;
   }
-  ui.info(`Found ${discovery.names.length} skill${discovery.names.length === 1 ? "" : "s"}`);
+  ui.info(ui.sentence("skills.import-found", { skills: count(discovery.names.length, true) }));
 
   const managed = new Set(await service.managed("project"));
-  const names = await ui.pickMany("Select Skills", discovery.names.map((name) => ({
+  const names = await ui.pickMany(ui.sentence("skills.import-select"), discovery.names.map((name) => ({
     label: name,
-    ...(managed.has(name) ? { description: "already managed in this scope" } : {}),
+    ...(managed.has(name) ? { description: ui.sentence("skills.import-managed") } : {}),
     value: name,
   })));
   if (names === undefined || names.length === 0) return CANCELLED;
@@ -82,15 +89,15 @@ export async function importSkillsFlow(service: SkillImport, ui: ImportUi): Prom
   // Scope 是在 Install to 之后才问的（与 CLI 同序），所以两个作用域的事实先各取一份：
   // 目标清单用当前这一个，摘要用选中的那一个。
   const [here, away] = await Promise.all([service.facts("project"), service.facts("global")]);
-  const targets = await ui.pickMany("Install to", here.targets.map((target) => ({
+  const targets = await ui.pickMany(ui.sentence("skills.import-targets"), here.targets.map((target) => ({
     label: target.label,
-    description: `${target.path} · ${target.canonical ? "always installed" : "shared link"}`,
+    description: `${target.path} · ${ui.sentence(target.canonical ? "skills.import-canonical" : "skills.import-link")}`,
     picked: true,
     value: target.id,
   })));
   if (targets === undefined || targets.length === 0) return CANCELLED;
 
-  const scope = await ui.pickOne("Scope", [here, away].map((facts, index) => ({
+  const scope = await ui.pickOne(ui.sentence("skills.import-scope"), [here, away].map((facts, index) => ({
     label: facts.label,
     description: facts.root,
     picked: index === 0,
@@ -105,23 +112,23 @@ export async function importSkillsFlow(service: SkillImport, ui: ImportUi): Prom
   const chosen = [...new Set([...targets, ...facts.targets.filter((target) => target.canonical).map((target) => target.id)])];
   const labels = facts.targets.filter((target) => chosen.includes(target.id)).map((target) => target.label);
 
-  const yes = await ui.confirm(`Install ${skillCount(names.length)}?`, {
+  const yes = await ui.confirm(ui.sentence("skills.import-install", { skills: count(names.length) }), {
     source: `${repo} @ ${discovery.revision.slice(0, 8)}`,
-    skills: `${names.length} · ${summarizeNames(names)}`,
+    skills: `${names.length} · ${summarizeNames(names, ui.sentence("skills.import-more", { count: Math.max(0, names.length - SUMMARY_NAME_LIMIT) }))}`,
     targets: labels.join(", "),
     scope: facts.label,
     config: facts.configFile,
   });
   if (yes !== true) return CANCELLED;
 
-  const result = await ui.progress(`Avenic · Installing ${skillCount(names.length)}`, (report) => {
-    report("Installing…");
+  const result = await ui.progress(ui.sentence("skills.import-installing", { skills: count(names.length) }), (report) => {
+    report(ui.sentence("skills.import-working"));
     return service.install(repo, names, scope, chosen);
   });
   if (result.alreadyInstalled === true) {
-    ui.info(`Already installed: ${result.sourceId} (${skillCount(result.names.length)})`);
+    ui.info(ui.sentence("skills.import-already", { source: result.sourceId, skills: count(result.names.length) }));
     return { kind: "alreadyInstalled", repo, names: result.names, sourceId: result.sourceId };
   }
-  ui.info(`${skillCount(result.names.length)} installed · ${facts.label} · ${facts.configFile}`);
+  ui.info(ui.sentence("skills.import-done", { skills: count(result.names.length), scope: facts.label, config: facts.configFile }));
   return { kind: "installed", repo, names: result.names, scope, label: facts.label, configFile: facts.configFile };
 }

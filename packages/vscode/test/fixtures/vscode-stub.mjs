@@ -48,6 +48,17 @@ export function setAnswers(next = {}) {
   for (const kind of Object.keys(answers)) answers[kind] = [...(next[kind] ?? [])];
 }
 
+// 页面对宿主说的话。真面板上这条线是 webview 的 postMessage；桩里没有网页，所以由
+// 调用方把同一条消息递进来——命令层那半边（dispatch）照原样跑，与真编辑器里一样。
+const livePanels = [];
+export function sendToPanels(message) {
+  for (const panel of livePanels) panel.receive?.(message);
+}
+
+// Avenic 输出通道里的每一行。失败那句话只说结论（「打不开」），真正的原因按设计写在
+// 这里——所以断言「原因去到了它该去的地方」需要的正是这一行行文字。
+export const outputLines = [];
+
 function record(effect) {
   effects.push(effect);
   return effect;
@@ -236,10 +247,11 @@ export const window = {
       dispose() {},
     };
     record({ kind: "webview", viewType, action: "create" });
+    livePanels.push(panel);
     return panel;
   },
   createStatusBarItem() { return { text: "", tooltip: "", command: undefined, show() {}, hide() {}, dispose() {} }; },
-  createOutputChannel(name) { return { name, appendLine() {}, append() {}, show() {}, dispose() {} }; },
+  createOutputChannel(name) { return { name, appendLine(line) { outputLines.push(String(line)); }, append(line) { outputLines.push(String(line)); }, show() {}, dispose() {} }; },
   createTerminal: createTerminalLike,
   onDidCloseTerminal(listener) { return { listener, dispose() {} }; },
   createQuickPick: picker,
