@@ -95,7 +95,7 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
 
   // 安装/升级官方 Agent CLI（npm @latest）：集成终端实时输出 npm 进度（无文字按钮，
   // 键位图标区分：安装 cloud-download / 升级 arrow-up）。两条命令共用同一 npm line；
-  // 终端关闭后作废版本缓存并刷新，让「可升级」/「CLI 未安装」态即时退场。
+  // 终端关闭后刷新一次——装没装上是这台机器上的事实，界面重新读一遍才知道。
   const runCliInstall = async (treeItem?: vscode.TreeItem) => {
     if (busy()) return;
     const target = await agentTarget(treeItem);

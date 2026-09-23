@@ -43,7 +43,6 @@ export function detectAgentInstallation(agentId: string, options?: { environment
 // The same record for a host that must not block its event loop (the extension host).
 export function detectAgentInstallationAsync(agentId: string, options?: { environment?: ProcessEnvLike; cwd?: string }): Promise<AgentInstallation>;
 export function installedCliVersion(executable: string, options?: { environment?: ProcessEnvLike; timeoutMs?: number }): Promise<string | null>;
-export function latestPublishedVersion(agentId: string, options?: { packageSpec?: string; environment?: ProcessEnvLike; timeoutMs?: number }): Promise<string | null>;
 
 // ---- runtime: config ----
 

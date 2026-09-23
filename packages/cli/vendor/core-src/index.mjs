@@ -14,7 +14,6 @@ export {
 export {
   detectAgentInstallationAsync,
   installedCliVersion,
-  latestPublishedVersion,
 } from "./runtime/versions.mjs";
 export {
   clearLocalAuth,

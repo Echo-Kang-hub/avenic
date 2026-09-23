@@ -229,11 +229,16 @@ agent, or the project.
    or which model is configured is ever discovered by asking anyone: no network
    check, no model call, no login attempt on the user's behalf, ever, from
    `init`, `change`, `status`, the extension or a launch.
-   One deliberate exception, and it is not about state: the extension's agent
-   rows (the "可升级" mark) and `avenic self-update` read the published *version
-   numbers* from the npm registry. That lookup is cached (10 minutes), tolerates
-   failure (no answer is `null`, never an error), never runs inside a launch,
-   and decides nothing about authentication or configuration.
+   One deliberate exception, and it is not about state: `avenic self-update`
+   reads the published *version number* of its own package from the npm
+   registry, because that is the command the user just gave it. It never runs
+   inside a launch, and it decides nothing about authentication or
+   configuration. Nothing else asks the network about versions: the extension's
+   footer runs the *installed* `avenic` with `--version` — a local process,
+   cached for ten minutes, whose failure is an absent version rather than an
+   invented one — and whether an installed agent CLI is the newest one is
+   answered by core's `updateStrategy` (the command to run), never by asking the
+   registry.
 
 ## Setup
 
