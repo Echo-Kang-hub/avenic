@@ -301,7 +301,10 @@ export async function listCanonicalSessions(projectRoot) {
     if (!entry.isDirectory() || !SAFE_ID.test(entry.name)) continue;
     try { sessions.push((await readCanonicalSession(projectRoot, entry.name)).session); } catch { /* ignore incomplete untrusted entries */ }
   }
-  return sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  // Same tolerance as the record list below: a session whose file carries no
+  // timestamp is placed last instead of taking the list down (or, worse,
+  // reaching the comparator from the side that would read it as a string).
+  return sessions.sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""));
 }
 
 /**

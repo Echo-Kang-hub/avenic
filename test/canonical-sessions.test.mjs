@@ -11,6 +11,7 @@ import {
   getSessionAdapter,
   importProjectSessions,
   listCanonicalSessionRecords,
+  listCanonicalSessions,
   readCanonicalSession,
   syncNativeMapping,
 } from "../packages/core/src/index.mjs";
@@ -159,6 +160,24 @@ test("a session named after its first turn takes the name its store gains later"
     await writeFile(native, `${JSON.stringify({ type: "summary", summary: "Project orientation", sessionId: "rename-me" })}\n${turn}\n`);
     await importProjectSessions(projectRoot, "claude", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
     assert.equal((await readCanonicalSession(projectRoot, "claude-rename-me")).session.title, "Project orientation");
+  });
+});
+
+// 两份清单对同一批文件的容忍度曾经不一样：records 那份给每个字段留了余地，events
+// 这份直接拿 updatedAt 比大小。一条没有时间戳的记录（写了一半、被手改过、老版本留
+// 下的）于是让整份清单抛出去 —— 用户看到的是「没有共享历史」，恰好是那份注释说它自
+// 己防住的那种失败。
+test("a session record without a timestamp costs itself a place, not the whole list", async () => {
+  await withStore(async (projectRoot) => {
+    const stamped = await createCanonicalSession(projectRoot, { id: "aaaa-stamped", title: "Stamped", source: "claude" });
+    const unstamped = await createCanonicalSession(projectRoot, { id: "zzzz-unstamped", title: "Unstamped", source: "claude" });
+    const file = path.join(projectRoot, ".agents", "sessions", "canonical", unstamped.id, "session.json");
+    const record = JSON.parse(await readFile(file, "utf8"));
+    delete record.updatedAt;
+    await writeFile(file, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+
+    const sessions = await listCanonicalSessions(projectRoot);
+    assert.deepEqual(sessions.map((session) => session.id), [stamped.id, unstamped.id]);
   });
 });
 
