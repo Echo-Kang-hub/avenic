@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { textScript } from "../../src/i18n/text.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageDir = path.resolve(here, "..", "..");
@@ -925,6 +926,10 @@ function buildPage(payload, fixture) {
     .replace("<body>", `<body class="${theme === "light" ? "vscode-light" : "vscode-dark"}">`)
     .replace("<link rel=\"stylesheet\" href=\"{{style}}\" />", `<style>\n${themeCss}\n${css}\n</style>`)
     .replace("<script nonce=\"{{nonce}}\" src=\"{{mainJs}}\"></script>", `<script>\n${geometry}\n${js}\n</script>`)
+    // 词表和宿主注入的是同一张（panel.ts 的 `{{text}}` 槽）：页面上每一句话都从它取，
+    // 所以这里也得把它交进去。少了这一句，页面上的字会变成键名——按标签点的 tab、
+    // 「表头写的是哪个词」那些检查跟着一起失灵，而且是安静地失灵。
+    .replace("<script nonce=\"{{nonce}}\">{{text}}</script>", `<script>${textScript("en")}</script>`)
     // Stands in for asWebviewUri(): the harness points the brand mark at the
     // packaged file so the screenshot exercises the real asset.
     .replace("{{iconUri}}", `file:///${path.join(packageDir, "media", "avenic.png").replaceAll("\\", "/")}`);
