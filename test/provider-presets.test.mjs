@@ -273,6 +273,28 @@ test("the Codex merge writes its own native keys, keeps comments, and never carr
   assert.equal(again.changed, false, "同样的合并第二次没有改动");
 });
 
+// 用户在 Windows 上写的 config.toml 是 CRLF 的。合并只动点名的那几行，别的行是别人的
+// ——可只要把整份文件按 LF 重新拼一遍，就是一次全文件改写：换行全变了，用户下一次提交
+// 看到的 diff 是「每一行都变了」。而且「这次写不写」也跟着错：一份已经写好的 CRLF 文件
+// 会被判成「有改动」，白写一遍。
+test("a Codex file written with CRLF comes back with CRLF, and untouched stays untouched", () => {
+  const provider = { providerId: "deepseek", displayName: "DeepSeek", baseUrl: "https://api.deepseek.com", envKey: "DEEPSEEK_API_KEY", model: "deepseek-v4-pro" };
+  const before = ["# my own codex config", 'model = "old-model"', "", "[model_providers.deepseek]", 'base_url = "https://api.deepseek.com"', 'env_key = "DEEPSEEK_API_KEY"', 'wire_api = "responses"', 'name = "DeepSeek"', ""].join("\r\n");
+
+  const merged = mergeCodexConfig(before, provider);
+  assert.match(merged.text, /^# my own codex config\r\n/, "没被点名的行一个字节都不动，换行也在内");
+  assert.equal(/[^\r]\n/.test(merged.text), false, "合并之后没有一行悄悄变成 LF");
+  assert.match(merged.text, /^model = "deepseek-v4-pro"\r$/m);
+
+  // 一份已经写好的 CRLF 文件：没有要改的，就不该被写。
+  const settled = mergeCodexConfig(merged.text, provider);
+  assert.equal(settled.changed, false, "同样的合并第二次没有改动");
+  assert.equal(settled.text, merged.text);
+  // LF 的文件也不该被塞进 CR。
+  const lf = merged.text.replace(/\r\n/g, "\n");
+  assert.equal(mergeCodexConfig(lf, provider).text.includes("\r"), false);
+});
+
 test("the diff a user approves never shows a credential", () => {
   const before = `${JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "old-secret-value" } }, null, 2)}\n`;
   const after = mergeClaudeSettings(before, claudeTemplate("deepseek", { apiKey: KEY, model: "deepseek-v4-pro" })).text;

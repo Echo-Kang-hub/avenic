@@ -135,10 +135,17 @@ function findTableKey(lines, table, key, limit) {
 /**
  * Codex's config.toml with this provider's keys set, and every other line —
  * comments, other tables, other providers — untouched.
+ *
+ * "Untouched" includes the file's line endings: the user's editor chose them,
+ * and rewriting the document in LF is a whole-file change — every line moves
+ * in their next commit — for a merge that set one key. The same choice decides
+ * whether a file that already says what the template says was changed at all,
+ * so a settled CRLF file is left unread and unwritten rather than normalized.
  */
 export function mergeCodexConfig(existingText, provider) {
   const original = stripBom(existingText);
-  const lines = original.split("\n");
+  const crlf = original.includes("\r\n");
+  const lines = (crlf ? original.replace(/\r\n/g, "\n") : original).split("\n");
   const wanted = {
     model: tomlString(provider.model, "the model"),
     model_provider: tomlString(provider.providerId, "the provider id"),
@@ -179,7 +186,7 @@ export function mergeCodexConfig(existingText, provider) {
       }
     }
   }
-  const text = lines.join("\n");
+  const text = lines.join(crlf ? "\r\n" : "\n");
   return { text, changed: text !== original };
 }
 
