@@ -45,7 +45,8 @@ const OPENCLAW_GATEWAY = "http://127.0.0.1:18789";
 const OPENCLAW_PATH = "/hooks/avenic";
 
 // The emit runs inside the agent's own hook, so every wait it takes is a wait
-// the turn takes. These are the whole budget, and an action may lower its own.
+// the turn takes. These bound ONE action; the chain itself has one shared
+// budget (HOOK_POLICY.dispatchBudgetSeconds), and an action may lower its own.
 const DEFAULT_TIMEOUT_MS = 2000;
 const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 30_000;
@@ -70,8 +71,10 @@ export function hookActionsPath(projectRoot) {
   return path.join(runtimePaths(projectRoot).localRoot, "hook-actions.json");
 }
 
-// 项目级的动作在那个项目的 .agents/local/ 下（gitignore 规则本来就挡着它，而一条动作
-// 里可能有 hook token）；全机的那一份跟着 Avenic 的机器状态走，和别的全局配置一个家。
+// 项目级的动作在那个项目的 .agents/local/ 下。项目被 Avenic 配置过之后那里的 gitignore
+// 规则会挡着它，而一条动作里可能有 hook token；没配过的项目没有这条规则，所以这个文件
+// 自己也按 0600 写（见 writeHookActions）。全机的那一份跟着 Avenic 的机器状态走，和别的
+// 全局配置一个家。
 function globalHookActionsPath(environment) {
   return path.join(stateRoot(environment), "hook-actions.json");
 }
@@ -299,12 +302,12 @@ function headersOf(action, token) {
   return headers;
 }
 
-// 等，但不等过这个动作自己的上限。计时器是 Avenic 自己的，而不是交给运输方去守：
-// 这一段跑在 agent 的钩子里，它等多久用户这一轮就等多久，所以「有个尽头」不能依赖
-// fetch 记不记得看 signal —— 一个不回答的地址在这里也只是慢，不是卡死。signal 仍然
-// 传下去，它负责的是把请求放开。
-function post(action, id, kind, url, event, token, toolkit) {
-  const timeoutMs = timeoutOf(action);
+// 等，但不等过这个动作自己的上限，也不等过这条链子剩下的预算。计时器是 Avenic 自己的，
+// 而不是交给运输方去守：这一段跑在 agent 的钩子里，它等多久用户这一轮就等多久，所以
+// 「有个尽头」不能依赖 fetch 记不记得看 signal —— 一个不回答的地址在这里也只是慢，
+// 不是卡死。signal 仍然传下去，它负责的是把请求放开。
+function post(action, id, kind, url, event, token, toolkit, remainingMs) {
+  const timeoutMs = Math.min(timeoutOf(action), remainingMs);
   return new Promise((resolve) => {
     const controller = new AbortController();
     let settled = false;
@@ -358,8 +361,8 @@ async function runDesktop(action, id, event, durationMs, toolkit) {
   }
 }
 
-function runCommand(action, id, event, durationMs, toolkit, environment, now) {
-  const timeoutMs = timeoutOf(action);
+function runCommand(action, id, event, durationMs, toolkit, environment, now, remainingMs) {
+  const timeoutMs = Math.min(timeoutOf(action), remainingMs);
   const args = Array.isArray(action.args) ? action.args.map(String) : [];
   return new Promise((resolve) => {
     let child;
@@ -378,6 +381,10 @@ function runCommand(action, id, event, durationMs, toolkit, environment, now) {
       return;
     }
     child.on("error", (error) => settle("failed", String(error?.message ?? error)));
+    // 程序可能在读完之前就退出（不读 stdin 的命令、一上线就崩的命令）：管道这头收到的
+    // 是一个 EPIPE。流上一个没人监听的 'error' 在 Node 里是抛出去的异常 —— 它会把这一个
+    // 进程连同后面还没跑的动作一起带走，而去重窗口已经认领过这件事了。
+    child.stdin.on("error", (error) => settle("failed", String(error?.message ?? error)));
     child.on("close", (code) => settle(code === 0 ? "sent" : "failed", `exit ${code}`));
     timer = setTimeout(() => {
       settle("failed", `timed out after ${timeoutMs} ms`);
@@ -392,23 +399,23 @@ function runCommand(action, id, event, durationMs, toolkit, environment, now) {
   });
 }
 
-async function runAction(action, event, durationMs, toolkit, environment, now) {
+async function runAction(action, event, durationMs, toolkit, environment, now, remainingMs) {
   const { id, kind } = action;
   if (kind === "desktop") return runDesktop(action, id, event, durationMs, toolkit);
-  if (kind === "command") return runCommand(action, id, event, durationMs, toolkit, environment, now);
+  if (kind === "command") return runCommand(action, id, event, durationMs, toolkit, environment, now, remainingMs);
   const payload = eventJson(event, durationMs, now);
   if (kind === "webhook") {
     const url = typeof action.url === "string" ? action.url : "";
     // 凭据只走头：URL 会进日志、进 Referer、进别人的错误信息。
     if (url === "") return { id, kind, state: "failed", detail: "no url configured" };
-    return post(action, id, kind, url, payload, tokenOf(action, environment), toolkit);
+    return post(action, id, kind, url, payload, tokenOf(action, environment), toolkit, remainingMs);
   }
   const gateway = typeof action.gateway === "string" && action.gateway !== "" ? action.gateway : OPENCLAW_GATEWAY;
   const route = typeof action.path === "string" && action.path !== "" ? action.path : OPENCLAW_PATH;
   const token = tokenOf(action, environment);
   // 没有专门的 hook token 就不发：一个不带的请求打到别人的网关上，只是把失败推给下一次。
   if (token === null) return { id, kind, state: "skipped", detail: "no hook token configured" };
-  return post(action, id, kind, `${gateway.replace(/\/+$/, "")}${route.startsWith("/") ? route : `/${route}`}`, payload, token, toolkit);
+  return post(action, id, kind, `${gateway.replace(/\/+$/, "")}${route.startsWith("/") ? route : `/${route}`}`, payload, token, toolkit, remainingMs);
 }
 
 /**
@@ -459,9 +466,18 @@ export async function emitHook({ agentId, payload, projectRoot, environment = pr
   state.dedupe[fingerprint] = now;
   await saveState(projectRoot, state, now);
 
+  // 一条链子共用一个总预算：动作是一个接一个跑的，所以「每个动作各自有上限」加起来
+  // 仍然可以是一条没有尽头的链子。花完之后的动作一次都不发 —— 但也不能从答案里消失，
+  // 那一行就是「为什么你配了它却没收到」的答案本身。
+  const deadline = now + HOOK_POLICY.dispatchBudgetSeconds * 1000;
   const results = [];
   for (const action of readHookActions(projectRoot, environment)) {
-    results.push(await runAction(action, event, durationMs, toolkit, environment, now));
+    const remainingMs = deadline - toolkit.now();
+    if (remainingMs <= 0) {
+      results.push({ id: action.id, kind: action.kind, state: "skipped", detail: "the dispatch budget was spent by the actions before it" });
+      continue;
+    }
+    results.push(await runAction(action, event, durationMs, toolkit, environment, now, remainingMs));
   }
   return { accepted: true, event, fingerprint, skipped: null, results };
 }

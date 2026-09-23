@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -62,8 +63,20 @@ function readTree(directory) {
 // One fake child process per spawn. The desktop action must never wait for it,
 // so it only answers stdin with a close event when the test says a real command
 // ended; the fire-and-forget path never touches stdin at all.
-function fakeChild({ close = true, code = 0, fail = null } = {}) {
+//
+// `input: "closed"` is the program that exits without reading what was written
+// to it: the real pipe answers with an EPIPE on our side. That stream is a real
+// EventEmitter here on purpose — an unlistened 'error' on a Node stream is
+// thrown, not ignored, and a fake that swallowed it could not catch the bug.
+function fakeChild({ close = true, code = 0, fail = null, input = "open" } = {}) {
   const handlers = new Map();
+  const stdin = new EventEmitter();
+  stdin.write = (chunk) => { child.writes.push(String(chunk)); return true; };
+  stdin.end = () => {
+    if (input === "closed") setImmediate(() => stdin.emit("error", new Error("write EPIPE — the command closed its input")));
+    else if (fail !== null) setImmediate(() => handlers.get("error")?.(fail));
+    else if (close) setImmediate(() => handlers.get("close")?.(code, null));
+  };
   const child = {
     writes: [],
     unrefCalls: 0,
@@ -73,13 +86,7 @@ function fakeChild({ close = true, code = 0, fail = null } = {}) {
     on(event, handler) { handlers.set(event, handler); return child; },
     once(event, handler) { return child.on(event, handler); },
     stderr: { on() { return child.stderr; } },
-    stdin: {
-      write(chunk) { child.writes.push(String(chunk)); return true; },
-      end() {
-        if (fail !== null) setImmediate(() => handlers.get("error")?.(fail));
-        else if (close) setImmediate(() => handlers.get("close")?.(code, null));
-      },
-    },
+    stdin,
   };
   return child;
 }
@@ -376,6 +383,61 @@ test("an action that answers slowly has an end, and it is the action's own budge
   }
 });
 
+test("the whole chain has one budget, not one per action", async () => {
+  // 每个动作都有自己的上限，于是 N 个动作串起来就是 N 份等待 —— 而这个进程跑在 agent
+  // 自己的钩子里（Claude 给钩子的上限是 60 秒）。一条链子要有尽头，尽头就得是这一条
+  // 链子共用的：花完之后的动作一次都不发，而且要在答案里说出来，不能悄悄消失。
+  const budget = HOOK_POLICY.dispatchBudgetSeconds * 1000;
+  const box = harness({
+    actions: [
+      { id: "first", kind: "webhook", url: "https://first.example.invalid/avenic" },
+      { id: "second", kind: "webhook", url: "https://second.example.invalid/avenic" },
+    ],
+    respond: async () => {
+      box.io.clock += budget + 1000;
+      return { ok: true, status: 204 };
+    },
+  });
+  try {
+    const result = await box.emit(CLAUDE_STOP);
+    assert.equal(result.results.length, 2, "预算花完不等于把它从答案里删掉");
+    const byId = Object.fromEntries(result.results.map((item) => [item.id, item]));
+    assert.equal(byId.first.state, "sent");
+    assert.equal(byId.second.state, "skipped");
+    assert.match(byId.second.detail, /budget/);
+    assert.equal(box.calls.fetch.length, 1, "预算花完之后的动作一次都不发");
+  } finally {
+    box.dispose();
+  }
+});
+
+test("no single action can outlast what is left of the budget", async () => {
+  const budget = HOOK_POLICY.dispatchBudgetSeconds * 1000;
+  const box = harness({
+    actions: [
+      { id: "first", kind: "webhook", url: "https://first.example.invalid/avenic" },
+      { id: "slow", kind: "command", command: "my-notifier", timeoutMs: 30_000 },
+    ],
+    respond: async () => {
+      box.io.clock += budget - 500;
+      return { ok: true, status: 204 };
+    },
+    child: () => fakeChild({ close: false }),
+  });
+  try {
+    const startedAt = Date.now();
+    const result = await bounded(box.emit(CLAUDE_STOP), "命令不回答，等待却没有尽头");
+    const waited = Date.now() - startedAt;
+    const byId = Object.fromEntries(result.results.map((item) => [item.id, item]));
+    assert.equal(byId.slow.state, "failed");
+    assert.match(byId.slow.detail, /timed out after 500 ms/);
+    assert.equal(box.calls.spawn[0].child.killCalls, 1, "到点了要把命令收掉");
+    assert.ok(waited < 2000, `等待该在 500ms 附近结束，实际 ${waited}ms`);
+  } finally {
+    box.dispose();
+  }
+});
+
 test("the credential reaches the far side in a header, never in the URL, the state file or a printed line", async () => {
   const box = harness({
     actions: [{ id: "hook", kind: "webhook", url: "https://hooks.example.invalid/avenic", token: SECRET }],
@@ -484,6 +546,29 @@ test("a command that will not start is a failed result, not a crash", async () =
     const result = await box.emit(CLAUDE_STOP);
     assert.equal(result.results[0].state, "failed");
     assert.match(result.results[0].detail, /ENOENT/);
+  } finally {
+    box.dispose();
+  }
+});
+
+test("a command that stops reading its input is a failed result, not the end of the emit", async () => {
+  // 一个立刻退出的程序（不读 stdin 的命令、一上线就崩的命令）会让管道这头收到 EPIPE。
+  // 没人监听的 'error' 在 Node 里是抛出去的异常：这一轮剩下的动作一个都不会跑，而去重
+  // 窗口已经认领过这件事了 —— 那一条通知就此消失，且没有任何地方说过它消失过。
+  const box = harness({
+    actions: [
+      { id: "quits", kind: "command", command: "my-notifier", args: ["--once"] },
+      { id: "after", kind: "webhook", url: "https://after.example.invalid/avenic" },
+    ],
+    child: () => fakeChild({ input: "closed" }),
+  });
+  try {
+    const result = await bounded(box.emit(CLAUDE_STOP), "命令关掉输入之后这一轮没回来");
+    assert.equal(result.results.length, 2, "前面的动作失败，后面的动作还是要跑");
+    const byId = Object.fromEntries(result.results.map((item) => [item.id, item]));
+    assert.equal(byId.quits.state, "failed");
+    assert.match(byId.quits.detail, /EPIPE/);
+    assert.equal(byId.after.state, "sent");
   } finally {
     box.dispose();
   }

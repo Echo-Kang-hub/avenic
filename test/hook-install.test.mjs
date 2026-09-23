@@ -123,6 +123,41 @@ test("uninstalling what was never installed changes nothing", async () => {
   }
 });
 
+test("a file that was already there is still there after the hooks are removed", async () => {
+  // 「剩下的一件不是用户的」推不出「文件是 Avenic 建的」。用户可能本来就放了一个
+  // `{}` 在这里：收走它不是在清理自己的东西，是在删用户的数据。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "{}\n");
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+    await installHooks(await hookPlan("claude", options));
+    const result = await uninstallHooks(await hookPlan("claude", options));
+    assert.equal(result.changed, true);
+    assert.equal(await run.exists(file), true, "文件本来就在，卸载不该把它一起收走");
+    assert.equal(await run.text(file), "{}\n", "空配置回到原来的字节");
+  } finally {
+    await run.done();
+  }
+});
+
+test("Codex's own project home keeps its file too", async () => {
+  const run = await scratch();
+  try {
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "0.154.0" };
+    const plan = await hookPlan("codex", options);
+    await installHooks(plan);
+    assert.equal(await run.exists(plan.file), true);
+    const result = await uninstallHooks(await hookPlan("codex", options));
+    assert.equal(result.changed, true);
+    assert.equal(await run.exists(plan.file), true, "同一件事在 Codex 上也是同一件事：读不出创建者的文件不删");
+    assert.equal((await run.text(plan.file)).trim(), "");
+  } finally {
+    await run.done();
+  }
+});
+
 test("global scope lives in the agent's own home, project scope in the project", async () => {
   const run = await scratch();
   try {
@@ -208,6 +243,22 @@ test("a Codex that cannot have hooks says so instead of writing them", async () 
   }
 });
 
+test("the project Codex caveat says who even reads that file", async () => {
+  // 项目里那份 config.toml 是 project 自己的 Codex home，而只有 Avenic 起的 Codex 会被
+  // 指到那里（agentRuntimeEnvironment 把它写进 CODEX_HOME）。用户自己开的 codex 读的是
+  // 自己的家：装上了、审阅过了、还是不响 —— 这件事得在装之前就说。
+  const run = await scratch();
+  try {
+    const options = { projectRoot: run.project, environment: run.environment, version: "0.154.0" };
+    const project = await hookPlan("codex", { ...options, scope: "project" });
+    assert.match(project.caveat, /avenic codex/i, "项目里的那份要由 Avenic 起的 Codex 才读到");
+    const global = await hookPlan("codex", { ...options, scope: "global" });
+    assert.doesNotMatch(global.caveat, /avenic codex/i, "全局那份每个 Codex 都读得到，不需要这句话");
+  } finally {
+    await run.done();
+  }
+});
+
 test("OpenCode's plugin file is Avenic's own, and only Avenic's own is ever removed", async () => {
   const run = await scratch();
   try {
@@ -229,6 +280,26 @@ test("OpenCode's plugin file is Avenic's own, and only Avenic's own is ever remo
     const removed = await uninstallHooks(plan);
     assert.equal(removed.changed, true);
     assert.equal(await run.exists(foreign), false);
+  } finally {
+    await run.done();
+  }
+});
+
+test("a mention of the marker is not the marker", async () => {
+  // 归属标记是那一行注释，不是这七个字母：别人的插件在别处提到 `avenic:hooks`（一句
+  // 注释、一个字面量），整文件出现即归属就等于「只要提到过就是我们的，可以删」。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, ".opencode", "plugins", "avenic-hooks.js");
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = `// my own plugin, which mentions avenic:hooks in passing\nexport const Mine = async () => ({});\n`;
+    await writeFile(file, mine);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "1.18.30" };
+
+    assert.equal((await hookStatus("opencode", options)).installed, false, "提到过不等于 Avenic 写过");
+    const result = await uninstallHooks(await hookPlan("opencode", options));
+    assert.equal(result.changed, false);
+    assert.equal(await run.text(file), mine, "别人的插件一个字节都不动");
   } finally {
     await run.done();
   }
@@ -324,6 +395,27 @@ test("an entry the user moved behind a quoted path is still Avenic's own", async
     const left = await readJson(file);
     assert.deepEqual(left.permissions, { allow: ["Bash(ls:*)"] }, "用户自己的设置要留着");
     assert.equal(JSON.stringify(left).includes("avenic"), false, "卸载之后一个入口都不剩");
+  } finally {
+    await run.done();
+  }
+});
+
+test("a quote in somebody else's command does not make it Avenic's", async () => {
+  // 引号是认路径用的，不是归属标记：一句 `echo "avenic hook emit"` 里也有这几个词。
+  // 认错了的代价是把用户的钩子从用户的文件里删掉 —— 这是最不能出的那一类错。
+  const run = await scratch();
+  try {
+    const file = path.join(run.project, PROJECT_AGENT_HOMES.claude);
+    await mkdir(path.dirname(file), { recursive: true });
+    const mine = { hooks: { Stop: [{ hooks: [{ type: "command", command: 'echo "avenic hook emit"' }] }] } };
+    await writeFile(file, `${JSON.stringify(mine, null, 2)}\n`);
+    const before = await run.text(file);
+    const options = { scope: "project", projectRoot: run.project, environment: run.environment, version: "2.1.274" };
+
+    assert.equal((await hookPlan("claude", options)).installed, false, "别人的命令里出现这几个词，不等于 Avenic 装过");
+    const result = await uninstallHooks(await hookPlan("claude", options));
+    assert.equal(result.changed, false);
+    assert.equal(await run.text(file), before, "一个 echo 不该让 Avenic 去动别人的文件");
   } finally {
     await run.done();
   }

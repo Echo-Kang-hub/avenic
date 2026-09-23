@@ -63,7 +63,9 @@ stdin, normalizes it to one small event (`turn.started`, `turn.completed`,
 dispatches to the notification actions. It works with VS Code closed and the
 extension never activated, and it never writes hook traffic into the shared
 conversation — the semantic session model and the automation event bus are
-separate.
+separate. The read itself is bounded twice: a payload larger than 256 KB is
+refused, and a payload that has not finished arriving within 10 s ends the
+process with one sentence instead of hanging the turn.
 
 The other half is the install, and it is the same CLI (`avenic hook install |
 uninstall | status`, with `--dry-run` showing the diff before anything is
@@ -78,14 +80,21 @@ notification chain with VS Code closed, and it prints the first hop next to the
 last one: whether this agent's hooks are installed for this project in the
 first place. A test that proves the actions work and then says nothing about
 the file is how a user ends up staring at a silent hook they never installed.
+When the agent's own version cannot carry the hooks, it says so and fires
+nothing: a test that pops a notification for an agent that can never report an
+event is a notification from nowhere.
 
 The emit path is charged to the turn, so it is measured: on Windows 11 the
 whole `avenic hook emit` process costs ~230 ms end to end, of which ~170 ms is
 Node's own start-up on this machine and single-digit milliseconds are Avenic's
 dispatch. The entry routes `hook` before the dispatcher (a loader test proves
 the process never resolves the dispatcher, the prompt layer, or core's session
-machinery), and every wait inside the dispatch — webhook, command — is bounded
-by the action's own budget rather than by the far side answering.
+machinery). Every wait inside the dispatch is bounded twice — by the action's
+own `timeoutMs` and by the chain's shared budget (30 s): the actions run one
+after another, so N actions each with a bound of their own would still be a
+chain without an end, while the agent's own hook timeout is 60 s. An action the
+budget never reaches is reported as skipped rather than dropping out of the
+answer.
 
 ## Could not be confirmed
 

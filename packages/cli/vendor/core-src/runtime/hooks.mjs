@@ -44,6 +44,10 @@ export const HOOK_POLICY = {
   attentionImmediate: true,
   failedImmediate: true,
   dedupeSeconds: 45,
+  // 一次派发是**一条链子共用一个总预算**，不是每个动作各有一份：这个进程跑在 agent
+  // 自己的钩子里，链子等多久，用户的这一轮就等多久（Claude 给钩子的上限是 60 秒）。
+  // 30 秒与单个动作的上限同值 —— 一个动作可以自己调短，但谁也调不长这条链子。
+  dispatchBudgetSeconds: 30,
 };
 
 // `reliable` 装上去就会响；`conditional` 响了要看条件（用户审阅、版本、被观测到与否）；

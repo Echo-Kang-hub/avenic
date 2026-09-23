@@ -56,7 +56,11 @@ const commandFor = (agentId) => `avenic hook emit --agent ${agentId}`;
 // `avenic` 不在 agent 的 PATH 上时，把完整路径引起来是常规写法（`"C:\npm\avenic.cmd"`），
 // 而引号是入口的一部分、不是命令的一部分 —— 不认它，install 会装出第二份、钩子每件事
 // 响两次，uninstall 又会说「已移除」却把它留在文件里。
-const OURS = /(?:^|[\\/ "])avenic(?:\.cmd|\.exe)?"?\s+hook\s+emit\b/;
+// 两种写法：一个入口词（前面是行首、斜杠或空格），或者整个入口被引号包起来 —— Windows
+// 上 `avenic` 不在 PATH 里时 `"C:\npm\avenic.cmd" hook emit` 是常规写法。引号**只能**
+// 这样参与：一句 `echo "avenic hook emit"` 里也有这几个词，把它当成自己的就是把用户的
+// 钩子从用户的文件里摘掉。
+const OURS = /(?:^|[\\/ ])avenic(?:\.cmd|\.exe)?"?\s+hook\s+emit\b|"avenic(?:\.cmd|\.exe)?"\s+hook\s+emit\b/;
 const isOurs = (command) => typeof command === "string" && OURS.test(command);
 
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -133,7 +137,7 @@ function claudeEdit(agentId, capability, before, { remove }) {
   const changed = JSON.stringify(merged) !== JSON.stringify(parsed);
   // 没改就一个字节都不动：用户把文件排成什么样是用户的事，一次「什么也没做」的安装
   // 不该顺手把它重排一遍。
-  return { text: changed ? `${JSON.stringify(merged, null, 2)}\n` : before, changed, emptied: Object.keys(merged).length === 0 };
+  return { text: changed ? `${JSON.stringify(merged, null, 2)}\n` : before, changed };
 }
 
 // ---- Codex: one marked block in a file full of the user's own -----------------
@@ -180,11 +184,11 @@ function stripCodex(before) {
 function codexEdit(agentId, capability, before, { remove }) {
   const stripped = stripCodex(before);
   if (stripped === null) throw new Error(`${CODEX_BEGIN} has no matching end marker — Avenic will not rewrite a file it cannot read`);
-  if (remove) return { text: stripped.found ? stripped.text : before, changed: stripped.found, emptied: stripped.text.trim() === "" };
+  if (remove) return { text: stripped.found ? stripped.text : before, changed: stripped.found };
   const block = codexBlock(agentId, capability);
   const base = stripped.text;
   const text = base === "" ? block : `${base}\n${block}`;
-  return { text, changed: text !== before, emptied: false };
+  return { text, changed: text !== before };
 }
 
 // ---- OpenCode: a file Avenic owns ---------------------------------------------
@@ -243,7 +247,7 @@ export async function hookPlan(agentId, { scope, projectRoot, environment = proc
   const support = hookSupport(agentId, version);
   const before = await readText(file);
   const edit = editFor(agentId, before, { remove: false });
-  const installed = agentId === "opencode" ? before.includes(OWNED_MARKER) : agentId === "claude" ? claudeInstalled(before) : codexInstalled(before);
+  const installed = agentId === "opencode" ? opencodeOurs(before) : agentId === "claude" ? claudeInstalled(before) : codexInstalled(before);
   return {
     agent: agentId,
     displayName: capability.displayName,
@@ -253,7 +257,7 @@ export async function hookPlan(agentId, { scope, projectRoot, environment = proc
     version,
     supported: support.supported,
     note: support.note,
-    caveat: caveatFor(agentId, capability),
+    caveat: caveatFor(agentId, capability, scope),
     installed,
     before,
     contents: edit.text,
@@ -275,6 +279,9 @@ function claudeInstalled(before) {
 }
 
 const codexInstalled = (before) => before.includes(CODEX_BEGIN);
+// OpenCode 的归属是那一行注释本身，不是这七个字母：别人的插件在别处（一句注释、一个
+// 字面量）提到 `avenic:hooks`，整文件按「出现过」算就等于「只要提到过就是我们的、可以删」。
+const opencodeOurs = (before) => /^\/\/ avenic:hooks\b/m.test(before);
 
 /**
  * The sentence a screen shows next to the install button, when the mechanism
@@ -283,9 +290,13 @@ const codexInstalled = (before) => before.includes(CODEX_BEGIN);
  * do not load at all until the project is trusted, so "installed" would be a
  * claim the product cannot keep.
  */
-export function caveatFor(agentId, capability) {
+export function caveatFor(agentId, capability, scope) {
   if (agentId !== "codex") return "";
-  return `Codex keeps a newly written hook untrusted until you review it (run /hooks in Codex${capability.events["turn.completed"].reliability === "conditional" ? "; project hooks also need the project to be trusted" : ""}) — until then the hook is installed but silent.`;
+  // 项目那份住在 project 自己的 Codex home 里，而只有 Avenic 起的 Codex 会被指到那里
+  // （agentRuntimeEnvironment 把它写进 CODEX_HOME）。自己开的 codex 读自己的家：装上了、
+  // 审阅过了、还是不响 —— 这是用户装之前就该知道的一件事。
+  const reachable = scope === "project" ? " The project's file is the Codex home only for launches Avenic makes (`avenic codex`) — a Codex you start yourself reads its own home and will not see it." : "";
+  return `Codex keeps a newly written hook untrusted until you review it (run /hooks in Codex${capability.events["turn.completed"].reliability === "conditional" ? "; project hooks also need the project to be trusted" : ""}) — until then the hook is installed but silent.${reachable}`;
 }
 
 /**
@@ -335,18 +346,17 @@ export async function installHooks(plan) {
 export async function uninstallHooks(plan) {
   const before = await readText(plan.file);
   if (plan.agent === "opencode") {
-    if (!before.includes(OWNED_MARKER)) return { changed: false, file: plan.file };
+    // 只有带归属标记的那一份是 Avenic 写的；也只删这一种。
+    if (!opencodeOurs(before)) return { changed: false, file: plan.file };
     await rm(plan.file, { force: true });
     return { changed: true, file: plan.file };
   }
   const edit = editFor(plan.agent, before, { remove: true });
   if (!edit.changed) return { changed: false, file: plan.file };
-  // 文件里剩下的东西一件不是用户的（它本来就只装过 Avenic 那些条目）：那就连文件一起
-  // 收走，别留一个空壳让下一个人以为这里配置过什么。
-  if (edit.emptied) {
-    await rm(plan.file, { force: true });
-    return { changed: true, file: plan.file };
-  }
+  // 摘掉 Avenic 的条目之后文件空了，但「剩下的一件不是用户的」推不出「文件是 Avenic
+  // 建的」：用户可能本来就放了一个 `{}` 在这里。读不出创建者就保留 —— 一个空配置无害，
+  // 而删掉用户的数据是更重的那一类错。OpenCode 的那份不在此列：它的归属标记就是 Avenic
+  // 建过它的证明。
   await write(plan.file, edit.text);
   return { changed: true, file: plan.file };
 }

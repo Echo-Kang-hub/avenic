@@ -115,20 +115,30 @@ async function statusVerb(argumentsList, context) {
   const agents = target.agentId === null ? ["claude", "codex", "opencode"] : [target.agentId];
   const rows = [];
   for (const agentId of agents) {
-    const plan = await planFor(agentId, target.scope, context);
-    rows.push({ agent: plan.agent, displayName: plan.displayName, scope: plan.scope, file: plan.file, installed: plan.installed, supported: plan.supported, note: plan.note, caveat: plan.caveat });
+    // 一个读不动的文件是**一个** agent 的答案，不是另外两个的：整条 status 挂掉会让用户
+    // 一次失去三个答案。这一行说出读不动的那个，另外两行照常回答。
+    try {
+      const plan = await planFor(agentId, target.scope, context);
+      rows.push({ agent: plan.agent, displayName: plan.displayName, scope: plan.scope, file: plan.file, installed: plan.installed, supported: plan.supported, note: plan.note, caveat: plan.caveat });
+    } catch (error) {
+      rows.push({ agent: agentId, displayName: hookCapability(agentId).displayName, scope: target.scope, file: null, installed: null, supported: null, note: null, caveat: "", error: error?.message ?? String(error) });
+    }
   }
   if (asJson) {
     io.log(JSON.stringify({ scope: target.scope, agents: rows }));
     return 0;
   }
   for (const row of rows) {
+    if (row.error !== undefined) {
+      io.log(`${row.displayName}  could not be read — ${row.error}`);
+      continue;
+    }
     const state = !row.supported ? "unsupported" : row.installed ? "installed" : "not installed";
     io.log(`${row.displayName}  ${state}  ${row.file}`);
   }
-  const unsupported = rows.filter((row) => !row.supported && row.note !== null);
+  const unsupported = rows.filter((row) => row.supported === false && row.note !== null);
   for (const row of unsupported) io.log(row.note);
-  const installed = rows.filter((row) => row.installed && row.caveat !== "");
+  const installed = rows.filter((row) => row.installed === true && row.caveat !== "");
   for (const row of installed) io.log(`${row.displayName}: ${row.caveat}`);
   return 0;
 }

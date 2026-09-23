@@ -88,7 +88,11 @@ test("install writes the project's hooks, and uninstall takes exactly them away"
     const removed = capturing();
     assert.equal(await dispatchHookCommand(["uninstall", "--agent", "claude", "--scope", "project"], run.context(removed)), 0);
     assert.match(removed.lines.join("\n"), /^Removed: /m);
-    assert.equal(await run.exists(file), false, "只装了 Avenic 那些条目的文件，卸载之后不该留空壳");
+    // 「摘掉我们的条目之后文件空了」推不出「文件是 Avenic 建的」：用户可能就是从一个
+    // `{}` 开始的。留一个空配置无害，删掉用户的数据要重得多 —— 所以那一行还在，
+    // 里面一个条目都不剩。
+    assert.equal(await run.exists(file), true, "读不出创建者就把文件留下，只摘走自己那几条");
+    assert.equal((await readFile(file, "utf8")).trim(), "{}");
 
     const nothing = capturing();
     assert.equal(await dispatchHookCommand(["uninstall", "--agent", "claude", "--scope", "project"], run.context(nothing)), 0);
@@ -165,9 +169,21 @@ test("a test that fires nothing still says whether the hooks are installed", asy
 test("an agent that cannot carry hooks says that instead, and Codex's caveat rides with the installed answer", async () => {
   const run = await machine({ versions: { claude: "2.0.0", codex: "0.154.0" } });
   try {
+    // 一个装不上钩子的 agent 没有这一跳可测：真的发一条出来，用户收到的是一次从哪来的
+    // 都不知道的通知，而那句话前面正写着「这个版本不支持」。所以场景里放一个真的动作 ——
+    // 它会留下一个文件 —— 件数不对就说明还是发出去了。
+    const marker = path.join(run.root, "the-action-ran");
+    await mkdir(path.dirname(path.join(run.root, "state", "hook-actions.json")), { recursive: true });
+    await writeFile(path.join(run.root, "state", "hook-actions.json"), JSON.stringify({
+      actions: [{ id: "leaves-a-trace", kind: "command", command: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "x")`] }],
+    }, null, 2));
+
     const unsupported = capturing();
     assert.equal(await dispatchHookCommand(["test", "--agent", "claude"], run.context(unsupported)), 0, unsupported.errors.join("\n"));
-    assert.match(unsupported.lines.join("\n"), /^Hooks: Unsupported by Claude Code 2\.0\.0$/m);
+    const unsupportedText = unsupported.lines.join("\n");
+    assert.match(unsupportedText, /^Hooks: Unsupported by Claude Code 2\.0\.0$/m);
+    assert.match(unsupportedText, /Nothing was sent/, "装不上就说没发，不能让用户以为桌面上那一下是测试");
+    assert.equal(await run.exists(marker), false, "不支持这个 agent，一次都不该发");
 
     assert.equal(await dispatchHookCommand(["install", "--agent", "codex", "--scope", "project"], run.context(capturing())), 0);
     const codex = capturing();
@@ -175,6 +191,7 @@ test("an agent that cannot carry hooks says that instead, and Codex's caveat rid
     const text = codex.lines.join("\n");
     assert.match(text, /^Hooks: installed — /m);
     assert.match(text, /^Codex: .*untrusted/im, "装了不等于会响：这句话要跟着答案一起出现");
+    assert.equal(await run.exists(marker), true, "支持这个 agent，测试该真的走一遍");
   } finally {
     await run.done();
   }
@@ -223,6 +240,44 @@ test("a usage mistake is a sentence and an exit code, never a stack", async () =
       assert.match(cli.errors.join("\n"), expected);
       assert.match(cli.errors.join("\n"), /Usage: avenic hook/);
     }
+  } finally {
+    await run.done();
+  }
+});
+
+test("a payload that never finishes arriving has an end too", async () => {
+  // stdin 是 agent 给的管道。字节上限挡得住大载荷，挡不住永远不结束的载荷 —— 一个挂着的
+  // 管道不是大载荷，是没有尽头：这一轮会挂在这里，而钩子进程本来不该有任何一种等待没有尽头。
+  const run = await machine({ versions: { claude: "2.1.274" } });
+  try {
+    let destroyed = false;
+    const hanging = {
+      async *[Symbol.asyncIterator]() { await new Promise(() => {}); },
+      destroy() { destroyed = true; },
+    };
+    const io = capturing();
+    const outcome = await Promise.race([
+      dispatchHookCommand(["emit", "--agent", "claude"], { ...run.context(io), stdin: hanging, readTimeoutMs: 30 }),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 2000)),
+    ]);
+    assert.equal(outcome, 1, `读入没有尽头：${io.errors.join("\n")}`);
+    assert.match(io.errors.join("\n"), /within 30 ms/);
+    assert.equal(destroyed, true, "到点了要把管道收掉，一个还在写的 agent 不该继续往这里写");
+  } finally {
+    await run.done();
+  }
+});
+
+test("one unreadable file does not take the other two answers down with it", async () => {
+  const run = await machine({ versions: { claude: "2.1.274", codex: "0.154.0", opencode: "1.18.30" } });
+  try {
+    // 同名目录：读得出来才有答案，而这个读不出来的是**一个** agent 的答案。
+    await mkdir(path.join(run.project, ".claude", "settings.local.json"), { recursive: true });
+    const status = capturing();
+    assert.equal(await dispatchHookCommand(["status", "--scope", "project"], run.context(status)), 0, status.errors.join("\n"));
+    const text = status.lines.join("\n");
+    for (const name of ["Claude Code", "Codex", "OpenCode"]) assert.match(text, new RegExp(`^${name}  `, "m"));
+    assert.match(text, /^Claude Code  could not be read — /m);
   } finally {
     await run.done();
   }
