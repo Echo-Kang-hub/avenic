@@ -287,6 +287,30 @@ test("the diff a user approves never shows a credential", () => {
   assert.equal(maskSecrets('env_key = "DEEPSEEK_API_KEY"').includes("DEEPSEEK_API_KEY"), true, "env_key 是变量名，不是秘密");
 });
 
+// 用户手写的文件缩进和 Avenic 写的不一样，而这一次要改的只是模型：合并会把整份文件
+// 按自己的缩进重排一遍，于是按行比较时每一行都算「变了」——包括那个字节都没动过的凭据
+// 行（值被遮成 ••••，看上去就是「你的 key 被换掉了」）。这一屏说的是这次改动是什么，
+// 不是哪些字节不同；重排不是改动，凭据那一行更没有理由出现在上面。
+test("a re-indent does not turn a credential nobody touched into a change", () => {
+  const before = `${JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "old-secret-value", ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic", ANTHROPIC_MODEL: "deepseek-v4-pro" } }, null, 4)}\n`;
+  const after = mergeClaudeSettings(before, claudeTemplate("deepseek", { model: "deepseek-flash" })).text;
+  const changed = configurationDiff(before, after).filter((entry) => entry.kind !== "same");
+  assert.equal(changed.some((entry) => entry.text.includes("ANTHROPIC_AUTH_TOKEN")), false, "凭据没有变，就不该出现在这一屏上");
+  assert.ok(changed.some((entry) => entry.kind === "add" && entry.text.includes("deepseek-flash")), "真变了的那一行要在");
+});
+
+// 文件还不存在 —— before 是空字符串（Codex 的项目配置就是这一条路：合并出来的文本不带
+// 结尾换行）。空文档不是「一行空行」：那样的开头是一句「删掉一个空行」，而这一笔什么都
+// 没删——一个从来没存在过的文件里也没有东西可删。
+test("a file that does not exist yet is an addition, not a removal of nothing", () => {
+  assert.deepEqual(
+    configurationDiff("", 'model = "fixture-model"').filter((entry) => entry.kind !== "same"),
+    [{ kind: "add", text: 'model = "fixture-model"', masked: false }],
+    "新建一份文件只有加，没有减",
+  );
+  assert.deepEqual(configurationDiff("", ""), [], "空对空没有可看的改动");
+});
+
 test("a credential is masked even when its name says nothing", () => {
   // 名字不说自己是秘密的（自定义 provider 的 header、用户自己起的字段名）就得靠值本身
   // 认出来。预览是用户批准改动时读的东西，漏一个凭据，这一屏自己就成了泄漏点。

@@ -200,8 +200,15 @@ export function maskSecrets(line) {
   return named.replace(SECRET_VALUE, "••••");
 }
 
-function indexFrom(list, value, start) {
-  for (let index = start; index < list.length; index += 1) if (list[index] === value) return index;
+/** A document's lines. An empty document has none: `"".split("\n")` is one empty
+ * line, and a preview whose first line removes nothing is a preview nobody trusts. */
+function linesOf(text) {
+  const body = stripBom(text);
+  return body === "" ? [] : body.split("\n");
+}
+
+function indexFrom(list, line, start) {
+  for (let index = start; index < list.length; index += 1) if (list[index].trim() === line.trim()) return index;
   return -1;
 }
 
@@ -211,13 +218,20 @@ function indexFrom(list, value, start) {
  * preview cannot become the leak that the file's own permissions exist to
  * prevent, and a changed credential still shows which line it was.
  *
+ * Lines are compared by what they say, not by how they are indented: a merge
+ * rewrites the whole document in its own indent, which would otherwise turn
+ * every line into a change — including a credential the merge never touched,
+ * shown as a removal and an addition of a value nobody can read (see the test
+ * that keeps it out). Re-indenting is not a change; what the user approves is
+ * the lines whose meaning moved.
+ *
  * The merge only ever replaces or appends lines, so aligning the two sides by
  * the next line they share is enough to say what moved — this is a preview, not
  * a patch format, and nothing consumes it but a person and a test.
  */
 export function configurationDiff(before, after) {
-  const from = stripBom(before).split("\n");
-  const to = stripBom(after).split("\n");
+  const from = linesOf(before);
+  const to = linesOf(after);
   const out = [];
   // `masked` 说的是「这一行为什么被遮」：遮罩改过它，它就有秘密 —— 名字认出来的和
   // 值认出来的都算，比较一次胜过把两条规则再写一遍。
@@ -231,7 +245,7 @@ export function configurationDiff(before, after) {
   let left = 0;
   let right = 0;
   while (left < from.length && right < to.length) {
-    if (from[left] === to[right]) {
+    if (from[left].trim() === to[right].trim()) {
       same(from[left]);
       left += 1;
       right += 1;
