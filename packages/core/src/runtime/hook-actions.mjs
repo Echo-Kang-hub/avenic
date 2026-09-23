@@ -31,7 +31,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { writeFileAtomic } from "./atomic-file.mjs";
 import { HOOK_POLICY, hookCapability, hookFingerprint, normalizeHook } from "./hooks.mjs";
-import { parseJsonObject } from "./model-write.mjs";
+import { maskSecrets, parseJsonObject } from "./model-write.mjs";
 import { runtimePaths } from "./project-paths.mjs";
 import { stateRoot } from "../skills/paths.mjs";
 
@@ -325,7 +325,10 @@ function post(action, id, kind, url, event, token, toolkit, remainingMs) {
       .fetch(url, { method: "POST", headers: headersOf(action, token), body: JSON.stringify(event), signal: controller.signal })
       .then(
         (response) => settle(response?.ok ? "sent" : "failed", `HTTP ${response?.status ?? "unknown"}`),
-        (error) => settle("failed", String(error?.message ?? error)),
+        // 运输方的原话可能带着整个地址，而地址可能是用户手写的、令牌就在查询串上：
+        // 地址本身抹掉，名字像凭证的那些值也抹掉，剩下的还是要说出来 —— 一条没有理由
+        // 的失败没法排查。
+        (error) => settle("failed", maskSecrets(String(error?.message ?? error).replace(/https?:\/\/\S+/g, "<url>"))),
       );
   });
 }

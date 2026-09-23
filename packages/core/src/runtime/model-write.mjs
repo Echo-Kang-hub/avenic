@@ -32,9 +32,16 @@ const singleLine = (value, label) => {
 };
 const tomlString = (value, label) => `"${singleLine(value, label).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 
-/** A key whose value is a secret — the name is what decides, never the value. */
-const SECRET_NAME = /(?:^|[_-])(?:AUTH_TOKEN|API_KEY|ACCESS_TOKEN|SECRET|PASSWORD|TOKEN)$/i;
-export const isSecretName = (name) => SECRET_NAME.test(String(name));
+/**
+ * A key whose value is a secret — the name is what decides, never the value.
+ * Names are compared with their separators gone (`x-api-key`, `apiKey` and
+ * `API_KEY` are one name), because a header a user wrote by hand spells it
+ * however it likes. `KEY` on its own is deliberately not a secret word:
+ * `env_key` names the variable a credential lives in, and hiding that would
+ * hide the one thing the user needs to see.
+ */
+const SECRET_NAME = /(?:APIKEY|AUTHTOKEN|ACCESSTOKEN|SECRETKEY|PRIVATEKEY|CLIENTSECRET|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|TOKEN)$/;
+export const isSecretName = (name) => SECRET_NAME.test(String(name).toUpperCase().replace(/[^A-Z0-9]+/g, ""));
 /**
  * A *value* that is a credential no matter what name it sits under — an API
  * key's own prefix, a GitHub token, an authorization header. The name-based
@@ -43,7 +50,7 @@ export const isSecretName = (name) => SECRET_NAME.test(String(name));
  * that misses one credential is the leak the file's permissions exist to
  * prevent.
  */
-const SECRET_VALUE = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|Bearer\s+\S+)/g;
+const SECRET_VALUE = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|Bearer\s+\S+)/g;
 
 /**
  * A JSON configuration, parsed — and the one refusal both writers give.

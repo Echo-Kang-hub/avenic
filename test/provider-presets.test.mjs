@@ -294,6 +294,10 @@ test("a credential is masked even when its name says nothing", () => {
     ['"x-api-key": "sk-live-0123456789abcdef"', "sk-live-0123456789abcdef"],
     ["Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def", "eyJhbGciOiJIUzI1NiJ9.abc.def"],
     ['endpoint = "ghp_abcdefghijklmnopqrst"', "ghp_abcdefghijklmnopqrst"],
+    // 名字认不出来、值也不带任何厂商前缀的：一个连字符拼写的 header 名字仍要认出来，
+    // 而一个 JWT 从长相上就是凭证，跟谁给它起的名字无关。
+    ['"x-api-key": "opaque-fixture-value"', "opaque-fixture-value"],
+    ['"custom-header": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl"', "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJl"],
   ];
   for (const [line, token] of cases) assert.equal(maskSecrets(line).includes(token), false, line);
   // 不是凭据的照常看得见：掩掉一个模型名是小事，掩掉一个 URL 会让人不知道为什么连不上。

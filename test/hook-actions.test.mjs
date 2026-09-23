@@ -334,6 +334,23 @@ test("a failed turn and a call for attention are reported at once, with no floor
   }
 });
 
+test("an address that fails to parse does not carry its token out in the failure's words", async () => {
+  // 有些地址是配置里手写的，令牌就挂在查询串上。运输方拒绝一个这样的地址时，它说的
+  // 那句话里带着整个地址 —— 一条「失败」不该把配置里的凭证转述一遍。
+  const box = harness({
+    actions: [{ id: "hook", kind: "webhook", url: `http://[fixture/hook?token=${SECRET}` }],
+    respond: async (url) => { throw new TypeError(`Failed to parse URL from ${url}`); },
+  });
+  try {
+    const result = await box.emit(CLAUDE_STOP);
+    assert.equal(result.results[0].state, "failed");
+    assert.equal(JSON.stringify(result).includes(SECRET), false, "失败的那一句话里不该有地址，更不该有地址里的令牌");
+    assert.match(result.results[0].detail, /URL|address|failed/i, "但必须有话说：一个没有理由的失败没法排查");
+  } finally {
+    box.dispose();
+  }
+});
+
 test("a webhook that refuses is a failed result and not a thrown hook", async () => {
   const box = harness({
     actions: [{ id: "hook", kind: "webhook", url: "https://hooks.example.invalid/avenic" }],
