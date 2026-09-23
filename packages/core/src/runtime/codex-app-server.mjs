@@ -1,4 +1,5 @@
 import { spawnExecutableChild } from "./process.mjs";
+import { ITEM_ID_PREFIX, REFUSED_ITEM_ID_PREFIX } from "./projection.mjs";
 
 // Codex exposes its own session machinery over a documented JSON-RPC protocol
 // (`codex app-server --listen stdio://`). Avenic uses it for exactly one thing:
@@ -8,24 +9,39 @@ import { spawnExecutableChild } from "./process.mjs";
 // request the Codex team defined, and the schema ships with the CLI
 // (`codex app-server generate-json-schema`).
 
-export const CODEX_ITEM_PREFIX = "avenic_evt_";
+export const CODEX_ITEM_PREFIX = ITEM_ID_PREFIX;
 const CLIENT_INFO = { name: "avenic", title: "Avenic", version: "1" };
 const DEFAULT_TIMEOUT = 20_000;
 const INJECT_CHUNK = 200;
 
 function isInjectedItem(item) {
-  return typeof item === "string" && item.startsWith(CODEX_ITEM_PREFIX);
+  return typeof item === "string"
+    && (item.startsWith(CODEX_ITEM_PREFIX) || item.startsWith(REFUSED_ITEM_ID_PREFIX));
 }
 
 /**
  * Did a rollout record come from Avenic's own projection rather than from a
  * real turn? Capture must skip these or the projected history would be
- * re-imported as new work on every switch.
+ * re-imported as new work on every switch. Both id shapes count: the one the
+ * provider accepts, and the one written before that rule was known.
  */
 export function isInjectedRecord(record) {
   const payload = record?.payload ?? record;
   if (!payload || payload.type !== "message") return false;
   return isInjectedItem(payload.id);
+}
+
+/**
+ * Was this record injected with the id shape the provider refuses? Such a
+ * thread cannot be sent another turn — the request is rejected before the model
+ * sees it — so it is rebuilt from canonical history instead of resumed.
+ */
+export function isRefusedInjection(record) {
+  const payload = record?.payload ?? record;
+  return Boolean(payload)
+    && payload.type === "message"
+    && typeof payload.id === "string"
+    && payload.id.startsWith(REFUSED_ITEM_ID_PREFIX);
 }
 
 /**

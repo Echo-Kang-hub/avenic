@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-file.mjs";
+import { projectIdentity } from "./project-paths.mjs";
 import { stateRoot } from "../skills/paths.mjs";
 
 const SCHEMA_VERSION = 1;
@@ -11,7 +13,7 @@ const SCHEMA_VERSION = 1;
 // loses history, so they live in machine state rather than in the project tree
 // (a committed cursor would be meaningless on another checkout).
 export function cursorFilePath(projectRoot, environment = process.env) {
-  const key = createHash("sha256").update(path.resolve(projectRoot)).digest("hex").slice(0, 16);
+  const key = createHash("sha256").update(projectIdentity(projectRoot) ?? path.resolve(projectRoot)).digest("hex").slice(0, 16);
   return path.join(stateRoot(environment), "runtime", key, "cursors.json");
 }
 
@@ -38,10 +40,7 @@ export async function saveCursors(projectRoot, cursors, environment = process.en
   const file = cursorFilePath(projectRoot, environment);
   const content = `${JSON.stringify(cursors, null, 2)}\n`;
   if (existsSync(file) && (await readFile(file, "utf8")) === content) return false;
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporary, content, "utf8");
-  await rename(temporary, file);
+  await writeFileAtomic(file, content);
   return true;
 }
 

@@ -19,17 +19,20 @@
 // compositor surface over CDP. The screen read is the one that shows the real
 // editor, so the whole of it is scanned — a grid of points every 40px, each asked
 // which process owns the window under it — and repeated if another window is
-// above; if it stays occluded the file is saved with `-occluded` in its name,
-// because a picture that is not of this window must not be readable as one that
-// is. The surface capture cannot be occluded at all, so a busy desktop cannot
-// quietly turn the evidence into a picture of somebody else's window.
+// above; if it stays occluded the read is dropped rather than kept (a picture of
+// somebody else's window must not sit in this repo's artifacts under this
+// window's name), and only the report line naming the pid, the process and the
+// point survives. The surface capture cannot be occluded at all, so a busy
+// desktop cannot quietly turn the evidence into a picture of somebody else's
+// window.
 //
 // The run ends in a verdict: a click that changed nothing, a session that did
-// not open, a screen read of another window, a lost compositor fallback or an
-// error in the extension's own log fail it, and the process exits non-zero — a
-// green run is one where the checks ran and passed. However it ends, the window
-// is dropped back to NOTOPMOST and this run's processes are reaped (--keep
-// leaves the window up to look at).
+// not open, a screen read of another window, a read that holds only the part of
+// the window that was on the desk, a lost compositor fallback or an error in the
+// extension's own log fail it, and the process exits non-zero — a green run is
+// one where the checks ran and passed. However it ends, the window is dropped
+// back to NOTOPMOST and this run's processes are reaped (--keep leaves the
+// window up to look at).
 //
 // Nothing here launches or resumes an agent session. The fixture is synthetic:
 // a project of the class the product is actually used on (API-managed Claude,
@@ -244,6 +247,18 @@ function writeCliShim() {
 // Chromium cannot be captured with PrintWindow (GPU-composited content comes
 // back black), so the window is raised with SWP_NOACTIVATE and read off screen.
 const PS_FILE = path.join(ROOT, "capture.ps1");
+
+// Windows PowerShell 5.1 读一个没有 BOM 的文件用的是本机 ANSI 代码页（这台机器上是
+// GBK）：UTF-8 的中文注释在那里被拆错，行尾的多字节序列连换行一起吃掉，下一行就并进
+// 了注释里——`$scan=@(Get-Owners …)` 这么消失过一次，扫描一声不响地什么也没做，
+// 快门照下的画面因此没经过「这些像素是谁的」这道检查，而报告上一个字都不会提。
+// 所以这个文件先写 BOM 再落盘；而 BOM 写成一个转义序列而不是源码里的那个字符，是因为
+// 看不见的字节不该只活在看不见的地方——读者要能一眼看出它是故意写下的。
+const BOM = "\uFEFF";
+
+export function writePsFile(file) {
+  writeFileSync(file, BOM + PS);
+}
 const PS = String.raw`
 param([string]$Mode,[string]$OutFile,[string]$InFile,[int]$X=0,[int]$Y=0,[int]$W=0,[int]$H=0,[int]$Scale=1)
 # PowerShell variable names are case-insensitive, so the window loops below
@@ -399,9 +414,24 @@ if($Mode -eq "probe"){
 }
 
 if($Mode -eq "raise"){
+ # 抬到最前（TopMost，SWP_NOACTIVATE 保住键盘焦点），再把它挪回桌面里：一个被拖到
+ # 屏幕外的窗口仍然会渲染，合成面里整整齐齐，而 CopyFromScreen 只交得回落在桌面上的
+ # 那一条——94 像素的细条顶着「这张窗口的照片」的名字，就是它这么来的。（这里原先写的是
+ # HWND_NOTOPMOST：一次「再抬一次」实际上把窗口降到了普通层，用户的窗口一点就回到上面，
+ # 重试因此白重试。）
  foreach($wnd in $mine){
-  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}
- Write-Output "rect=$($biggest.L),$($biggest.T),$($biggest.W),$($biggest.H)";exit 0
+  [void][Win]::ShowWindow($wnd,9)
+  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-1),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002 -bor 0x0040)}
+ $vw=[Win]::GetSystemMetrics(78);$vh=[Win]::GetSystemMetrics(79)
+ $L=$biggest.L;$T=$biggest.T;$W=$biggest.W;$H=$biggest.H;$moved=0
+ if($biggest -and ($L -lt 0 -or $T -lt 0 -or ($L+$W) -gt $vw -or ($T+$H) -gt $vh)){
+  $nx=[Math]::Max(0,[Math]::Min($L,$vw-$W));$ny=[Math]::Max(0,[Math]::Min($T,$vh-$H))
+  foreach($wnd in $mine){
+   [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-1),$nx,$ny,0,0,0x0010 -bor 0x0001 -bor 0x0040)}
+  Start-Sleep -Milliseconds 400
+  $r=New-Object Win+RECT;[void][Win]::GetWindowRect($biggest,[ref]$r)
+  $L=$r.Left;$T=$r.Top;$W=$r.Right-$r.Left;$H=$r.Bottom-$r.Top;$moved=1}
+ Write-Output "rect=$L,$T,$W,$H desktop=$vw,$vh moved=$moved";exit 0
 }
 
 # A read that runs past the desktop edge comes back blank rather than throwing,
@@ -422,7 +452,17 @@ Start-Sleep -Milliseconds 250
 # The same grid, read here — the call above happened seconds ago, and a window that
 # arrived since is invisible to it. The report demotes the file when this disagrees
 # with the process the read was meant to be of.
-Get-Owners "pre=" $X $Y $W $H
+#
+# 这张画要不要落盘，先问再读：哪怕一个点被别人的进程占着，读下来的也是那个人的屏幕，
+# 而别人的桌面不该出现在这个 harness 的产物里，一秒也不该。扫描本来就在快门之前，
+# 把它放进同一个判断里，读之前就知道该不该读。
+$scan=@(Get-Owners "pre=" $X $Y $W $H)
+foreach($line in $scan){Write-Output $line}
+$strangers=@($scan|Where-Object{$_ -like "pre=*" -and $_ -match " pid="})
+if($strangers.Count -gt 0){
+ foreach($wnd in $mine){
+  [void][Win]::SetWindowPos($wnd,[IntPtr]::new(-2),0,0,0,0,0x0010 -bor 0x0001 -bor 0x0002)}
+ Write-Output ("shot=" + $OutFile + " rect=" + $X + "," + $Y + "," + $W + "," + $H + " dropped=" + $strangers.Count + $note);exit 0}
 $bmp=New-Object System.Drawing.Bitmap($W,$H)
 $g=[System.Drawing.Graphics]::FromImage($bmp);$g.CopyFromScreen($X,$Y,0,0,$bmp.Size);$g.Dispose()
 $img="" + $bmp.Width + "x" + $bmp.Height
@@ -637,7 +677,7 @@ export function clickAllowed(label) {
 // without a desktop (test/harness-host.test.ts). Everything it fails on used to
 // be prose in the report while the process exited 0, which made a run that
 // clicked nothing and opened nothing as green as one that worked.
-export function verdict({ steps = [], row = null, header = null, shots = [], errors = [], footer = null }) {
+export function verdict({ steps = [], row = null, header = null, shots = [], errors = [], footer = null, state = null }) {
   const reasons = [];
   for (const step of steps) {
     // 每个按钮被问的是它那一件事：切换分区的点击必须换掉屏幕上的字，而「刷新」的活儿
@@ -645,6 +685,12 @@ export function verdict({ steps = [], row = null, header = null, shots = [], err
     // （`expectText: false` 是那一步自己声明的，不是这里替它开脱。）
     if (step.changed !== true && step.expectText !== false) reasons.push(`the ${JSON.stringify(step.label)} click left the page's text unchanged`);
     if (!(step.mutations > 0)) reasons.push(`the ${JSON.stringify(step.label)} click caused no DOM mutations`);
+    // 重读按钮（expectText: false 那一个）的活儿是「问过、答过」：宿主那条 data 回来
+    // 了没有，比页面动没动更早、更准——一次重读要读盘、要问 CLI 的版本，固定时刻的
+    // 一眼突变数会把一次真发生了的重读读成「面板没动」。
+    if (step.expectText === false && !(step.answers > 0)) {
+      reasons.push(`the ${JSON.stringify(step.label)} click was never answered — the host sent no data message after it`);
+    }
   }
   // 头部的三段各就各位是「看起来像参考图」的一部分，而且是最先塌的一块：窗口一窄、
   // 项目路径一长，路径就画到状态块上去了。量不到这一项不算通过——没测过与没重叠是两
@@ -660,8 +706,24 @@ export function verdict({ steps = [], row = null, header = null, shots = [], err
     if (row.sessionsActive !== true) reasons.push("the session click did not leave Sessions as the sidebar's current section");
     if (!(row.turns > 0)) reasons.push(`the transcript did not render (${row.turns} .transcript .turn nodes after the session click)`);
   }
+  // 「CLI 已经退出，面板还写着 Running」是这一轮要关掉的 bug：判据不是"有没有刷新按钮
+  // 被人点过"，而是**没有任何点击**时，外部的一次启动结束能否让面板当场改口。所以这一
+  // 项要么量到了两个方向（先出现 Running，再消失），要么就是没测过——没量到与通过是两
+  // 件事，"Running 一直没出现"和"出现了但没消失"也要分开点名。
+  if (state === null) reasons.push("the running/idle transition was never measured (no external lease step ran)");
+  else {
+    if (state.running !== true) reasons.push(`the dashboard never showed Running while a launch held the lease (${state.note ?? "no pill"})`);
+    if (state.idle !== true) reasons.push("the Running pill outlived the lease — the panel did not follow the launch's end on its own");
+  }
   for (const shot of shots.filter((entry) => entry.occluded === true)) {
-    reasons.push(`${shot.name} is a screen read of another window (pid ${shot.byPid} owned ${shot.at})`);
+    reasons.push(`${shot.name} is a screen read of another window (pid ${shot.byPid} owned ${shot.at}) — the desk was in use, and no picture of this window was kept; the paired compositor capture of the same view is what that step has`);
+  }
+  // 窗口没全在桌面上时，CopyFromScreen 交回来的就是裁剩下的那一条，而它照样会被写在一个
+  // 干净的名字下面——一次跑里的 05-running.png 和 final-overview.png 正是这么来的，两个
+  // 19KB 的细条，本该是这一轮要交的证据。有别人的窗口压在上面是「拍不到」，窗口自己不
+  // 在屏幕里是「拍到的不算」：分开点名，读者才不会把前者读成产品坏了。
+  for (const shot of shots.filter((entry) => entry.partial === true)) {
+    reasons.push(`${shot.name} is a screen read of ${Math.round((shot.visible ?? 0) * 100)}% of the window — the window was not on screen when the picture was taken`);
   }
   if (shots.some((entry) => entry.surface === true) && !shots.some((entry) => entry.surface === true && entry.captured === true)) {
     reasons.push("no compositor surface capture succeeded — the fallback for a blocked screen read did not work either");
@@ -720,7 +782,7 @@ async function main() {
     // ROOT 自己先落地：capture.ps1 就写在它里面，先写文件再建目录的话，
     // 第一次在干净机器上跑会在 PowerShell 那一行报「找不到这个 .ps1」。
     mkdirSync(ROOT, { recursive: true });
-    writeFileSync(PS_FILE, PS);
+    writePsFile(PS_FILE);
     for (const d of [OUT, UD, EXT, path.join(UD, "User")]) mkdirSync(d, { recursive: true });
     // An earlier run's report is not this run's evidence: absent is honest, a
     // stale PASS sitting under a new run's screenshots is not.
@@ -946,8 +1008,10 @@ async function main() {
       // The raise can come back without a rect (windows momentarily gone, or the
       // instance is mid-restart); cdp geometry is the primary source, so a missing
       // rect only matters when cdp is unusable too.
-      const raised = ps("-Mode", "raise").match(/rect=(-?\d+),(-?\d+),(\d+),(\d+)/);
-      const win32 = raised ? raised.slice(1).map(Number) : null;
+      const raised = ps("-Mode", "raise");
+      if (/moved=1/.test(raised)) log("the window was off the desktop; moved it back inside before reading");
+      const rect = raised.match(/rect=(-?\d+),(-?\d+),(\d+),(\d+)/);
+      const win32 = rect ? rect.slice(1).map(Number) : null;
       const g = await geometry();
       // screenX/Y are CSS pixels; the screen read is in physical pixels. If the
       // renderer still reports a minimized position, fall back to the Win32 rect.
@@ -972,12 +1036,13 @@ async function main() {
       // The OS rectangle and the renderer's own numbers should agree now that the
       // capture is DPI-aware; when they do not, say so rather than pick silently.
       if (win32 && Math.abs(win32[2] - w) > 4) log(`geometry mismatch: win32 ${win32.join(",")} vs cdp ${x},${y},${w},${h}`);
-      // An occluded read is still taken — it is the only picture of the real
-      // editor — but it is not saved under a clean shot's name: `-occluded` in
-      // the filename is the part of the evidence a reader cannot miss, and the
-      // report carries the point and the pid that were on top.
+      // A read that came back holding somebody else's window is not kept as a
+      // file: it is a picture of that window, and keeping it puts a picture of
+      // whatever the desk was showing into this repo's artifacts. The report
+      // line carries what a reader needs (pid, process, window title, point),
+      // and the paired compositor capture of the same view is the picture.
       const shootOnce = () => ps("-Mode", "window", "-OutFile", `${OUT}/${file}`, "-X", String(x), "-Y", String(y), "-W", String(w), "-H", String(h));
-      let file = block === null ? name : name.replace(/\.png$/, "-occluded.png");
+      let file = name;
       let out = shootOnce();
       // 快门落下的那一刻，整个矩形是谁的：探针和快门隔着一两秒，这期间冒出来的窗口
       // 对探针是不存在的，于是它会把别人的像素写在一个干净的名字下面。同一次
@@ -999,17 +1064,27 @@ async function main() {
       }
       // An occluder named here as LockApp (window class Windows.UI.Core.CoreWindow, title "Windows 输入体验") is the lock screen itself: it runs on the Default desktop, so this line naming it means the workstation is locked even though LogonUI is absent and the input desktop still reads Default.
       const stolen = block ?? during.strangers[0] ?? null;
-      if (stolen !== block && stolen !== null) {
-        renameSync(`${OUT}/${file}`, `${OUT}/${file.replace(/\.png$/, "-occluded.png")}`);
-        file = file.replace(/\.png$/, "-occluded.png");
+      // 读回来的像素比窗口小，就是窗口没全在桌面上：裁剪是越过桌面的矩形唯一能被读下来
+      // 的样子。它不是「拍不到」，是「拍到的不算」——细条照样会被写在一个完整的名字下面，
+      // 只有当名字说出它是什么，读者才不会把它当成这张窗口的照片。
+      const pixels = out.match(/img=(\d+)x(\d+)/);
+      const visible = pixels && w * h > 0 ? (Number(pixels[1]) * Number(pixels[2])) / (w * h) : 1;
+      const partial = /\bclip=/.test(out);
+      const dropped = /\bdropped=\d+/.test(out);
+      if (stolen !== null) {
+        if (!dropped) rmSync(`${OUT}/${file}`, { force: true });
+      } else if (partial) {
+        renameSync(`${OUT}/${file}`, `${OUT}/${file.replace(/\.png$/, "-partial.png")}`);
+        file = file.replace(/\.png$/, "-partial.png");
       }
       const said = out.split(/\r?\n/).filter((line) => !line.startsWith("pre=")).join(" ").trim();
       geo0 = g;
       shots.push({
         name: file, screen: true, surface: false, occluded: stolen !== null, byPid: stolen?.pid ?? null, at: stolen === null ? null : `${stolen.x},${stolen.y}`,
+        partial, visible, dropped,
         out: `${said} (${sane ? "cdp" : "win32"} geometry, dpr=${g.dpr}, ${stolen === null
-          ? `all ${during.points} points of a ${during.step}px grid over this window belong to this instance, before and during the read`
-          : `pid ${stolen.pid}${byName(stolen)} owns the pixels at ${stolen.x},${stolen.y} — occluded`})`,
+          ? `all ${during.points} points of a ${during.step}px grid over this window belong to this instance, before and during the read${partial ? `, but only ${(visible * 100).toFixed(0)}% of the window was inside the desktop` : ""}`
+          : `pid ${stolen.pid}${byName(stolen)} owns the pixels at ${stolen.x},${stolen.y} — occluded, and the read was dropped rather than kept`})`,
       });
       // The same view a few seconds later, this time from the window's own
       // compositor surface over CDP — the two pictures are paired, not
@@ -1025,7 +1100,7 @@ async function main() {
       } catch (error) {
         shots.push({ name: `(no surface capture for ${name})`, screen: false, surface: true, captured: false, occluded: false, out: error.message });
       }
-      log("shot", file, `${w}x${h} at ${x},${y} via ${sane ? "cdp" : "win32"}`, stolen === null ? `(on top of every one of ${during.points} points)` : `(occluded by pid ${stolen.pid}${byName(stolen)})`);
+      log("shot", file, `${w}x${h} at ${x},${y} via ${sane ? "cdp" : "win32"}`, stolen !== null ? `(occluded by pid ${stolen.pid}${byName(stolen)} — dropped, not kept)` : `(on top of every one of ${during.points} points${partial ? `; only ${(visible * 100).toFixed(0)}% of the window was on the desk` : ""})`);
     };
     const crop = (src, name, r) => {
       // Crops are cut from the surface capture, whose origin and size are the
@@ -1117,9 +1192,13 @@ async function main() {
         throw new Error(`nothing labelled ${JSON.stringify(label)} can be clicked where it is: ${el.target} at (${el.x}, ${el.y}) is not what is under that point`);
       }
       // Text equality alone is a weak signal: Refresh re-reads the same project and
-      // legitimately paints the same words. Counting the DOM mutations the click
-      // causes says whether the panel reacted at all.
-      await evalIn(wvc, `(()=>{const d=${DOC};window.__mut=0;
+      // legitimately paints the same words. Two counters say whether the panel
+      // reacted at all: the mutation batches this click caused, and the data
+      // messages the host sent back. The second one is what the re-read button is
+      // judged on — a repaint that changes nothing is invisible, an answer is not.
+      await evalIn(wvc, `(()=>{const d=${DOC};window.__mut=0;window.__data=0;
+    if(!window.__dataHook){window.__dataHook=true;
+      d.defaultView.addEventListener('message',(e)=>{const m=e.data;if(m&&typeof m==='object'&&m.type==='data')window.__data++;});}
     new MutationObserver(()=>{window.__mut++}).observe(d.body,{subtree:true,childList:true,characterData:true});
     return true})()`);
       const x = frame.x + el.x, y = frame.y + el.y;
@@ -1127,10 +1206,16 @@ async function main() {
       await wbc.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, buttons: 1 });
       await sleep(80);
       await wbc.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, buttons: 0 });
-      await sleep(1600);
+      // 等的是「有反应」，不是一个固定的时长：重读一个项目要多久是项目自己的事，
+      // 不是这次点击的对错，固定的一眼会把一次真发生了的重读数成「面板没动」。
+      // 有反应之后再给一小段时间，让随后的几批落地。
+      const reactionDeadline = Date.now() + 6000;
+      const reacted = async () => Number(await evalIn(wvc, "(window.__mut || 0) + (window.__data || 0)")) > 0;
+      while (Date.now() < reactionDeadline && !(await reacted())) await sleep(150);
+      await sleep(500);
       // 点的是哪一个元素、点的是它的哪一点，跟着这一击一起记下来：下一回这一击没
       // 反应时，报告里先要看的就是这两样。
-      const hit = { label, x, y, target: el.target, aimed: el.where, mutations: Number(await evalIn(wvc, "window.__mut || 0")) };
+      const hit = { label, x, y, target: el.target, aimed: el.where, mutations: Number(await evalIn(wvc, "window.__mut || 0")), answers: Number(await evalIn(wvc, "window.__data || 0")) };
       // 每一次点击都进这本账，不只是被记进 steps 的那几个：报告里要能一眼看完这一趟
       // 到底点了哪些元素——「有没有点过哪个开始 agent 的按钮」是一眼就能回答的问题。
       clicks.push(hit);
@@ -1146,7 +1231,7 @@ async function main() {
       const hit = await click(label);
       await shoot(file);
       const now = await evalIn(wvc, `${DOC}.body.innerText`);
-      steps.push({ label, hit, file, changed: prev !== now, mutations: hit.mutations, expectText });
+      steps.push({ label, hit, file, changed: prev !== now, mutations: hit.mutations, answers: hit.answers, expectText });
       prev = now;
     }
     // A session row lives on the Sessions page.
@@ -1168,11 +1253,72 @@ async function main() {
     sessionsActive: d.querySelector('.nav-item[data-section="sessions"][aria-current="page"]') !== null,
     turns: d.querySelectorAll('.transcript .turn').length};})()`);
       row = { found: true, label: rowLabel, sessionsActive: opened.sessionsActive, turns: opened.turns };
-      steps.push({ label: rowLabel, hit, file: "04-click-session.png", changed: prev !== now, mutations: hit.mutations, opened });
+      steps.push({ label: rowLabel, hit, file: "04-click-session.png", changed: prev !== now, mutations: hit.mutations, answers: hit.answers, opened });
       log(`session click -> Sessions current: ${opened.sessionsActive}, transcript turns: ${opened.turns}`);
     } else {
       log("no session row found on the Sessions page");
       await shoot("04-click-session.png");
+    }
+
+    // ------------------------------------------- the launch that ends by itself
+    // 这一轮最贵的一个 bug 是"CLI 已经退出，面板还写着 Running"。它不能靠点击来证明：
+    // 用户关掉 agent 时不会顺手点一下刷新。所以这一格不点任何东西，只是从外面真的开一
+    // 个启动组（core 自己的 joinLaunchGroup，和 CLI、扩展走同一条路），等面板自己改口，
+    // 再真的离开那个组，等它自己改回来。判据由 verdict 把着：两个方向都量到才算过。
+    //
+    // 租约开始之前先站到会显示状态的那一页上：胶囊画在 agent 卡片上，卡片在概览；
+    // 从别的页面量这一格，量到的是「这一页上没有胶囊」，不是「面板没跟上」。站页
+    // 面的这一击在租约之前，租约期间没有任何点击——量到的仍然是面板自己改口。
+    await click("Overview");
+    await sleep(1200);
+    const readRun = () => evalIn(wvc, `(()=>{const d=${DOC};
+  const pill=[...d.querySelectorAll('.run-pill')].map(n=>(n.textContent||'').trim()).filter(Boolean);
+  return {pill:[...new Set(pill)], text:(d.body.innerText||'').includes('Running')};})()`);
+    const waitRun = async (want, ms) => {
+      const deadline = Date.now() + ms;
+      let last = null;
+      while (Date.now() < deadline) {
+        last = await readRun();
+        if (want(last)) return last;
+        await sleep(200);
+      }
+      return last;
+    };
+    // 面板有没有答、答了什么：把 webview 收到的消息记一条流水（只记类型，status 连
+    // runs 一起记）。「页面上没有 Running」有两种完全不同的原因——面板没答，和面板答
+    // 了而状态没到这一页——流水把这两种分开。
+    await evalIn(wvc, `(()=>{const d=${DOC};window.__msgs=[];
+  if(!window.__msgHook){window.__msgHook=true;
+    d.defaultView.addEventListener('message',(e)=>{const m=e.data;if(m&&typeof m==='object'&&m.type){
+      window.__msgs.push(m.type==='status'?('status '+JSON.stringify(m.runs)):m.type);
+      if(window.__msgs.length>24)window.__msgs.shift();}});}
+  return true})()`);
+    let state = null;
+    try {
+      const { joinLaunchGroup } = await import("../../../../packages/core/src/index.mjs");
+      const group = await joinLaunchGroup(PROJECT, "claude", { environment: windowEnvironment() });
+      const heldAt = Date.now();
+      const appeared = await waitRun((seen) => seen.text, 6000);
+      const appearedMs = Date.now() - heldAt;
+      await shoot("05-running.png");
+      const releasedAt = Date.now();
+      await group.release();
+      const cleared = await waitRun((seen) => !seen.text, 6000);
+      const clearedMs = Date.now() - releasedAt;
+      await shoot("06-idle.png");
+      const trail = await evalIn(wvc, "JSON.stringify(window.__msgs || [])");
+      log(`messages the webview received during the lease: ${trail}`);
+      state = {
+        running: appeared?.text === true,
+        idle: cleared?.text === false,
+        appearedMs,
+        clearedMs,
+        note: `pill while held: ${JSON.stringify(appeared?.pill ?? [])}, gone ${clearedMs} ms after the lease was released, messages: ${trail}`,
+      };
+      log(`running/idle by lease alone -> running: ${state.running} (${appearedMs} ms), idle: ${state.idle} (${clearedMs} ms after release)`);
+    } catch (error) {
+      state = { running: false, idle: false, note: `the lease step failed: ${error.message}` };
+      log(`running/idle step failed: ${error.message}`);
     }
 
     // ---------------------------------------------------- the artifact shot
@@ -1249,7 +1395,7 @@ async function main() {
     const cardOf = (id) => digest.agents.find((agent) => agent.id === id) ?? { status: "?", fields: [] };
     const cardLines = ["claude", "codex", "opencode"]
       .map((id) => `- ${id}: ${cardOf(id).status} — ${cardOf(id).fields.join(" · ")}`).join("\n");
-    const outcome = verdict({ steps, row, header, shots, errors, footer: { text: footer.text, expected: FOOTER_LINE } });
+    const outcome = verdict({ steps, row, header, shots, errors, footer: { text: footer.text, expected: FOOTER_LINE }, state });
     writeFileSync(`${OUT}/report.md`, `# Avenic VS Code Extension Host check
 
 ## Verdict: ${outcome.pass ? "PASS" : "FAIL"}
@@ -1339,7 +1485,14 @@ The project header's three parts (title, path, status block) measured in the web
 ## Clicks (injected via CDP, not the OS cursor)
 ${clicks.map((c) => `\`${c.label}\` → ${c.target}`).join(" · ") || "_none_"} — every element any label resolved to. The session row was opened by its *title* (\`viewSession\` → the transcript); no Continue or Launch was clicked, and \`clickAllowed\` refuses such a label outright (starting an agent is the user's action, not this run's).
 
-${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y})${s.hit.target ? ` (${s.hit.target}${s.hit.aimed === "text" ? ", aimed at its text" : ""})` : ""} → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
+${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y})${s.hit.target ? ` (${s.hit.target}${s.hit.aimed === "text" ? ", aimed at its text" : ""})` : ""} → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**, data messages the host sent back: **${s.answers ?? "n/a"}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
+
+## The launch that ended by itself
+Nothing is clicked between taking the lease and releasing it; the panel is only read.
+
+- Running showed up while an external lease was held: **${state?.running === true}**${state?.appearedMs === undefined ? "" : ` (${state.appearedMs} ms after the lease was taken)`}
+- the pill went away on its own after the lease was released: **${state?.idle === true}**${state?.clearedMs === undefined ? "" : ` (${state.clearedMs} ms after release)`}
+- what was on screen while the lease was held: \`${state?.note ?? "not measured"}\`
 
 ## Extension Host log
 Only log files written at or after this run started are listed${staleLogs.length ? ` (${staleLogs.length} from earlier runs ignored)` : ""}.
@@ -1348,7 +1501,7 @@ ${logLines.length ? "```\n" + logLines.join("\n") + "\n```" : "_no lines mention
     log("report:", `${OUT}/report.md`);
     log(`verdict: ${outcome.pass ? "PASS" : "FAIL"}`);
     for (const reason of outcome.reasons) log(`  reason: ${reason}`);
-    for (const s of steps) log(`click ${JSON.stringify(s.label)} -> ${s.hit.target ?? "?"} ${s.hit.aimed ?? ""} changed=${s.changed} mutations=${s.mutations}`);
+    for (const s of steps) log(`click ${JSON.stringify(s.label)} -> ${s.hit.target ?? "?"} ${s.hit.aimed ?? ""} changed=${s.changed} mutations=${s.mutations} answers=${s.answers ?? "n/a"}`);
     log(`clicks this run made: ${clicks.map((c) => `${JSON.stringify(c.label)} -> ${c.target}`).join(", ")}`);
     process.exitCode = outcome.pass ? 0 : 1;
   } finally {

@@ -23,9 +23,9 @@ code --install-extension packages/vscode/dist/avenic-agent-manager.vsix
 
 左侧导航的六个分区：
 
-- **Overview**：三列 Agent 卡片、Shared Sessions 与 Project Sessions、Skills、Quick Actions、Recent Activity——下面几节按卡片讲。
+- **Overview**：三列 Agent 卡片、Shared Sessions 与 Agent Sessions、Skills、Quick Actions、Recent Activity——下面几节按卡片讲。
 - **Configure** 和 **Agents**：三张 Agent 卡片本身——这个项目里每个 Agent 的全部字段和入口，Configure 是从配置进入，Agents 是从「这个 Agent 现在怎么样」进入。
-- **Sessions**：共享会话与各 Agent 原生会话的完整列表。
+- **Sessions**：一个两栏的浏览器，占满整个内容区。左栏顶上在 **Shared** 与 **Agent** 之间切换，下面是一个按标题和元数据过滤的搜索框与一列会话行（参与者、相对时间、正在跑或没对上的标记），右栏读你点开的那一条：标题、参与者、更新时间、事件数、同步状态，**Continue**，以及 **⋯** 里的 **Raw** 和 **Diagnostics**。读到一半来了新消息就地在下面接上；往下翻说明你不在底部，那时屏幕下沿给一条 **New messages ↓**。列表和对话各自滚动，页面本身不滚。
 - **Skills**：全部 Skill 与 Skill 来源。
 - **Quick Actions**：新建会话、继续共享会话、管理 Skills、查看日志。
 
@@ -39,7 +39,7 @@ Claude Code、Codex、OpenCode 各一张卡。每张卡列出 Core 真能答出�
 
 ### 会话卡片
 
-**Shared Sessions** 是跨 Agent 共用的 canonical 历史，**Project Sessions** 是这个项目里各 Agent 的原生会话，用标签页按 Agent 切换。标题取 Agent 自己写的摘要，其次才是首条消息或短 id——永远不是一串 UUID。**Continue** 从共享历史续上一条会话。
+**Shared Sessions** 是跨 Agent 共用的 canonical 历史，**Agent Sessions** 是各 Agent 自己那份原生会话，用标签页按 Agent 切换；**Agent Sessions 是 Agent 自己的 CLI 能打开的那些会话，Session Storage 是 Avenic 在这个项目里留的副本**，两件事。标题取 Agent 自己写的摘要，其次才是首条消息或短 id——永远不是一串 UUID。**Continue** 从当前这一半续上一条会话（Shared 走共享历史，Agent 走那个 Agent 的原生会话）。
 
 ### Skills 卡片
 
@@ -91,17 +91,20 @@ Avenic 会把共享历史保存为 canonical session。Claude、Codex、OpenCode
 
 在 Dashboard 的 **Sessions** 分区（活动栏 Avenic 列表里的 **Sessions** 也直接落在这里）可以看到：
 
-- 共享会话与各 Agent 原生会话的标题、时间和当前状态；
+- 左栏顶上在 **Shared** 与 **Agent** 之间切换，下面的搜索框按标题和元数据过滤（在面板里过滤，不问宿主）；
+- 会话行的标题、参与者、相对时间和当前状态——正在跑的、没和共享历史对上账的、以及就是 active 的那一条；
 - 每条原生会话属于哪个 Agent，以及它同步到哪一步——面板上写作「已同步」「投射落后于共享历史」等；
 - 当前项目的 active session，也就是不带 id 启动时会接上的那一条。
 
 ### 阅读共享对话
 
-打开 Dashboard 的 **Sessions** 分区（命令 **Avenic: Sessions** 也直接落在这里）。最上面的卡片读的就是 `avenic sessions show <id>` 读的那份共享对话，内容和措辞都来自同一处：
+打开 Dashboard 的 **Sessions** 分区（命令 **Avenic: Sessions** 也直接落在这里），点左栏里的任意一条：右栏读的就是 `avenic sessions show <id>` 读的那份对话，内容和措辞都来自同一处：
 
 - 每一轮一段，说话人是 **You** / **Claude** / **Codex** / **OpenCode**；
-- 卡片标题是这条会话的标题，副标题说明它是一份所有 Agent 都看得见的共享历史；
-- 不是 active 的会话上有一个 **Set as Active**，把它设成不带 id 启动时接上的那一条。
+- Agent 跑过的工具不是一个说话人：它折在发起它的那一轮下面，写成一行 `ran Read(...)`；
+- 头部四格是这条会话的参与者、更新时间、事件数和同步状态；**⋯** 里是 **Raw**（收到的轮次原样）与 **Diagnostics**（这条会话的投影说过什么）；
+- 一次画最新的 100 轮，往上滚到顶再往前接；
+- 不是 active 的会话上有一个 **Set as Active**（只在 Shared history 模式下），把它设成不带 id 启动时接上的那一条。
 
 这一页只读：它不会写 canonical history，也不会触发写回。
 

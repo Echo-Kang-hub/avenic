@@ -214,6 +214,56 @@ test("direct `claude` and `avenic claude` see the same world", async () => {
   }, { agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } } });
 });
 
+test("a launch keeps the terminal's own words, whatever the terminal is", async () => {
+  // A terminal describes itself to the programs it runs: `TERM_PROGRAM=vscode`
+  // and the VSCODE_* IPC handles are how the official CLI finds the editor it
+  // was started from. A wrapper that dropped one of them would silently turn
+  // off IDE integration — a change in how the terminal presents the agent,
+  // which is not Avenic's to make. A wrapper that invented one would be
+  // pretending to be a terminal it is not. So the differential is run inside a
+  // terminal that says what VS Code's terminals say, and both legs must see
+  // every one of those names.
+  const vscodeTerminal = {
+    TERM: "xterm-256color",
+    TERM_PROGRAM: "vscode",
+    TERM_PROGRAM_VERSION: "1.105.0",
+    COLORTERM: "truecolor",
+    VSCODE_INJECTION: "1",
+    VSCODE_IPC_HOOK: "\\\\.\\pipe\\vscode-ipc-fixture",
+    VSCODE_IPC_HOOK_CLI: "\\\\.\\pipe\\vscode-ipc-cli-fixture",
+    VSCODE_GIT_IPC_HANDLE: "\\\\.\\pipe\\vscode-git-fixture",
+    VSCODE_CWD: "fixture-workspace",
+    VSCODE_PID: "4242",
+    VSCODE_NLS_CONFIG: "fixture-locale",
+  };
+  await withClaudeProject(async ({ projectRoot, home, launch, directAgent }) => {
+    await writeFile(
+      path.join(home, ".claude", ".credentials.json"),
+      `${JSON.stringify({ fixture: "the user's own credentials live here" })}\n`,
+    );
+    await mkdir(path.join(projectRoot, ".claude"), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, ".claude", "settings.local.json"),
+      `${JSON.stringify({ env: PROVIDER_ENVIRONMENT }, null, 2)}\n`,
+    );
+    const overrides = { ...PROVIDER_ENVIRONMENT, ...vscodeTerminal };
+
+    const direct = await directAgent([], overrides);
+    assert.equal(direct.status, 0, direct.stderr);
+    const wrapped = await launch(["claude"], overrides);
+    assert.equal(wrapped.status, 0, wrapped.stderr);
+    assert.ok(direct.probe && wrapped.probe, "both legs must have started the agent");
+
+    for (const name of Object.keys(vscodeTerminal)) {
+      assert.equal(direct.probe.presentation[name], true, `the terminal's ${name} must reach a direct launch`);
+      assert.equal(wrapped.probe.presentation[name], true, `the launch must not swallow the terminal's ${name}`);
+    }
+    // And the legs agree on the whole picture, presentation included.
+    const strip = ({ startedAt, wroteAt, ...rest }) => rest;
+    assert.deepEqual(strip(wrapped.probe), strip(direct.probe));
+  }, { agents: { claude: { authMethod: "api", configScope: "project", sessionScope: "project" } } });
+});
+
 test("the live child keeps the provider secrets while the durable state never records them", async () => {
   // "Do not persist secrets" must never mean "strip secrets from the live
   // agent": the process that pays for the run needs them, the files that

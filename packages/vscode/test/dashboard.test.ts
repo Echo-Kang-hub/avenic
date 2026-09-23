@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { configureProject, importProjectSessions, setActiveCanonicalSession } from "@avenic/core";
+import { configureProject, finishLaunch, importProjectSessions, joinLaunchGroup, sessionLeasePath, setActiveCanonicalSession } from "@avenic/core";
 import { fillApiConfiguration } from "./api-config.ts";
 import { buildDashboardData } from "../src/dashboard/state.ts";
-import { isWebviewMessage } from "../src/dashboard/protocol.ts";
+import { isWebviewMessage, runStateOf } from "../src/dashboard/protocol.ts";
 import { initialize, invalidateAgentStatusCache, projectStatus } from "../src/services/agents.ts";
 import { defaultSpec, packsFor, select, sync } from "../src/services/catalog.ts";
 import { installPacks } from "../src/services/skills.ts";
@@ -549,6 +549,56 @@ test("Last updated is a real moment in Avenic's one timestamp format", async () 
   }
 });
 
+test("a launch that is running right now says so on the card, and says otherwise when it is over", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-run-"));
+  try {
+    const project = path.join(root, "project");
+    const env = testEnv(path.join(root, "state"));
+    await mkdir(project, { recursive: true });
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    invalidateAgentStatusCache();
+
+    const idle = await buildDashboardData(project, env, { cliVersion: "0" });
+    assert.equal(idle.agents.find((card) => card.id === "claude")?.run, "idle", "没有任何启动在跑，就是 idle");
+
+    // 一次真实的启动：租约是 core 写的，面板读的也是它——不是面板自己记的开没开过。
+    const group = await joinLaunchGroup(project, "claude", { environment: env });
+    invalidateAgentStatusCache();
+    const running = await buildDashboardData(project, env, { cliVersion: "0" });
+    const live = running.agents.find((card) => card.id === "claude");
+    assert.equal(live?.run, "running", "跑着的时候卡片必须说 running");
+    assert.equal(live?.ready, true, "正在跑不等于没配好");
+    assert.equal(running.agents.find((card) => card.id === "codex")?.run, "idle", "别的 agent 不受影响");
+
+    await finishLaunch(project, "claude", { environment: env, member: group?.member });
+    invalidateAgentStatusCache();
+    const after = await buildDashboardData(project, env, { cliVersion: "0" });
+    assert.equal(after.agents.find((card) => card.id === "claude")?.run, "idle", "退出之后卡片自己就改了，不需要谁手动刷新");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a launch that died leaves the card interrupted instead of ready", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-run-died-"));
+  try {
+    const project = path.join(root, "project");
+    const env = testEnv(path.join(root, "state"));
+    await mkdir(project, { recursive: true });
+    await initialize(project, "claude", { authMethod: "account", accountScope: "project", sessionScope: "project" });
+    // 一个没有收尾就消失的进程：租约还在，进程不在了——这正是崩溃留下的样子。
+    const stateDir = sessionLeasePath("claude", project);
+    await mkdir(path.join(stateDir, "pids"), { recursive: true });
+    await writeFile(path.join(stateDir, "pids", `2147483647-${Date.now()}-0`), "");
+    invalidateAgentStatusCache();
+
+    const data = await buildDashboardData(project, env, { cliVersion: "0" });
+    assert.equal(data.agents.find((card) => card.id === "claude")?.run, "interrupted", "一次没跑完的启动不能看起来像 Ready");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the registry reports what core says about it, including the middle state", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "avenic-ext-hub-"));
   try {
@@ -673,5 +723,19 @@ test("an API card stops showing provider and model once the file no longer holds
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// 「一次启动此刻的样子」在 core 里有两个入口、两种拼写：状态模型说
+// "running"/"dirty"（syncState），state stamp 说 "running"/"interrupted"
+// （launchStates）。实时那一帧读 stamp（便宜），初帧读状态模型——同一个事实的两种
+// 拼写都必须读出同一个 RunState，否则「另一个终端里杀掉的一次启动」会在初帧看起来
+// 像 Ready，在实时那一帧看起来像 Interrupted。
+test("core 的两种拼写都读成同一个 RunState", () => {
+  assert.equal(runStateOf("running"), "running", "活着的一次启动就是 Running");
+  assert.equal(runStateOf("dirty"), "interrupted", "状态模型的拼写");
+  assert.equal(runStateOf("interrupted"), "interrupted", "stamp 的拼写");
+  for (const idle of ["idle", "current", "stale", "missing", "none"]) {
+    assert.equal(runStateOf(idle), "idle", `${idle} 不是一次启动`);
   }
 });

@@ -17,6 +17,7 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   clickAllowed: (label: string) => boolean;
   ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; proc: string; window: string }[] };
   windowEnvironment: () => Record<string, string | undefined>;
+  writePsFile: (file: string) => void;
   pickPreviousVsix: (candidates: { version: string; file: string }[], currentVersion: string, wanted?: string | null) => { version: string; file: string } | null;
   AGENT_HOME: string;
 };
@@ -41,8 +42,11 @@ const SURFACE = { name: "01-dashboard-open.window.png", surface: true, captured:
 // version has not shown that the panel named this repo's CLI.
 const FOOTER = { text: "Avenic v1.8.4", expected: "Avenic v1.8.4" };
 
+// 没有点击的那一格：外面开一个启动组、再离开，面板自己改口两次。
+const STATE = { running: true, idle: true };
+
 const run = (over: Record<string, unknown> = {}) =>
-  host.verdict({ steps: [SKILLS], row: SESSION, header: HEADER, shots: [SCREEN, SURFACE], errors: [], footer: FOOTER, ...over });
+  host.verdict({ steps: [SKILLS], row: SESSION, header: HEADER, shots: [SCREEN, SURFACE], errors: [], footer: FOOTER, state: STATE, ...over });
 
 // The report used to record all of this and exit 0, so a run that clicked
 // nothing and opened nothing was as green as one that worked.
@@ -79,14 +83,23 @@ test("a click that left the page unchanged fails the run", () => {
 // Refresh 的活儿是重新读一遍同一个项目：项目没变时，它正确的样子就是再画一遍同一段
 // 字。用「字变了没有」判它，会把一次成功的重读判成失败——它该被问的是「面板动了吗」。
 test("a refresh that repainted the same words still counts as the panel reacting", () => {
-  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 1, expectText: false }] });
+  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 1, expectText: false, answers: 1 }] });
   assert.deepEqual(result, { pass: true, reasons: [] });
 });
 
 test("a refresh that repainted nothing at all still fails", () => {
-  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 0, expectText: false }] });
+  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 0, expectText: false, answers: 1 }] });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /mutation/i);
+});
+
+// 突变数是在固定时刻数的一眼：一次重读要读盘、要问 CLI 的版本，落地比观察窗口晚
+// 半步是常事，一次真发生了的重读会被数成「面板没动」。重读按钮真正的证据是宿主答没
+// 答——那条 data 有没有回来——所以它单独成一条，而不是靠数一眼突变去推断。
+test("a refresh the host never answered fails even if the page moved", () => {
+  const result = run({ steps: [{ label: "Refresh", changed: false, mutations: 1, expectText: false, answers: 0 }] });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /never answered/);
 });
 
 test("a click that caused no DOM mutation fails the run even if the text differs", () => {
@@ -99,6 +112,26 @@ test("a session row that was never found fails the run", () => {
   const result = run({ row: null });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /session row/);
+});
+
+// 启动结束这一格没有点击可数，所以它的证据是那两个方向本身：Running 出现过、并且
+// 在租约离开之后自己消失了。三件事要分开——没测过、没出现过、出现了不肯走。
+test("a launch that never showed Running fails the run", () => {
+  const result = run({ state: { running: false, idle: true, note: "pill while held: []" } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /never showed Running/);
+});
+
+test("a Running pill that outlived its launch fails the run", () => {
+  const result = run({ state: { running: true, idle: false, note: "pill while held: [\"Running\"]" } });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /outlived the lease/);
+});
+
+test("a run that never measured the transition does not pass by omission", () => {
+  const result = run({ state: null });
+  assert.equal(result.pass, false);
+  assert.match(result.reasons.join("\n"), /never measured/);
 });
 
 // 头部的三段（标题、路径、状态块）在参考图里各就各位；窗口窄下来之后，长路径会把
@@ -195,10 +228,42 @@ test("a stranger whose process is gone still reads by its window title", () => {
   assert.deepEqual(scan.strangers, [{ x: 1219, y: 1334, pid: 13232, proc: "?", window: "Notepad" }]);
 });
 
+// Windows PowerShell 5.1 读一个没有 BOM 的文件用的是本机 ANSI 代码页（这台机器上是
+// GBK）：UTF-8 的中文注释在那里被拆错，行尾的多字节序列把换行也吃掉，下一行就并进了
+// 注释里。`$scan=@(Get-Owners …)` 正是这么消失的——所有权扫描一声不响地什么也没做，
+// 快门照下的画面因此根本没经过「这些像素是谁的」这道检查，而报告上一个字都不会提。
+// 写文件时先写 BOM，PowerShell 就按 UTF-8 读，中文注释想怎么写就怎么写。
+test("the PowerShell the harness runs is written as UTF-8 with a BOM", async () => {
+  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const os = await import("node:os");
+  const dir = mkdtempSync(path.join(os.tmpdir(), "avenic-ps-"));
+  const file = path.join(dir, "capture.ps1");
+  try {
+    host.writePsFile(file);
+    const bytes = readFileSync(file);
+    assert.deepEqual([...bytes.subarray(0, 3)], [0xef, 0xbb, 0xbf], "the script must start with a UTF-8 BOM");
+    assert.match(bytes.subarray(3).toString("utf8"), /Get-Owners "pre=" \$X \$Y \$W \$H/, "and hold the scan the shutter depends on");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a screen read of somebody else's window fails the run", () => {
   const result = run({ shots: [{ name: "01-dashboard-open-occluded.png", occluded: true, byPid: 4242 }, SURFACE] });
   assert.equal(result.pass, false);
   assert.match(result.reasons.join("\n"), /01-dashboard-open-occluded\.png/);
+});
+
+// 一张只拍到窗口一角的读数，不是这张窗口的照片。窗口被拖到屏幕外面之后，探针在剩下
+// 的那 94 像素里谁也没抓到，于是「干净」这个名字写给了一张细条——那次的 05-running.png
+// 和 final-overview.png 正是这么来的，而它们本该是这一轮要交出去的证据。有别人的窗口
+// 压在下面是「拍不到」，窗口自己不在屏幕里是「拍到的不算」，两个问题得分着回答。
+test("a screen read that holds only a corner of the window fails the run", () => {
+  const result = run({ shots: [{ name: "05-running-partial.png", screen: true, occluded: false, partial: true, visible: 0.04 }, SURFACE] });
+  assert.equal(result.pass, false);
+  const reasons = result.reasons.join("\n");
+  assert.match(reasons, /05-running-partial\.png/);
+  assert.match(reasons, /4%/);
 });
 
 test("a run whose compositor fallback never worked fails", () => {

@@ -532,6 +532,25 @@ export function sessionLeasePath(agentId: string, projectRoot: string): string;
 // live process holds the lease, "interrupted" means one died without finishing
 // its exit sequence, "idle" means nothing to recover from.
 export function launchGroupState(agentId: string, projectRoot: string): Promise<"idle" | "running" | "interrupted">;
+/**
+ * The tiny file a watching host reads to learn that a launch started, ended or a
+ * conversation arrived. It is a change signal, not a second source of truth: the
+ * revision moves with every meaningful change while the answers themselves stay
+ * in `launchGroupState` and the canonical store, and a reader that has been
+ * notified re-asks rather than believing the stamp.
+ */
+export interface StateStamp {
+  schemaVersion: number;
+  revision: number;
+  updatedAt: string;
+  launches: Record<string, "idle" | "running" | "interrupted">;
+  sessions: { count: number; active: string | null };
+}
+export function stateStampFile(projectRoot: string): string;
+export function readStateStamp(projectRoot: string): Promise<StateStamp | null>;
+/** Re-derive the stamp from the truth and write it only when something moved. */
+export function refreshStateStamp(projectRoot: string, options?: { active?: string | null }): Promise<StateStamp>;
+export const STATE_STAMP_SCHEMA_VERSION: number;
 export function processAlive(pid: number): boolean;
 // The part of an environment a detached launch helper keeps: the variables that
 // locate an agent's native storage and home directory, and nothing credential

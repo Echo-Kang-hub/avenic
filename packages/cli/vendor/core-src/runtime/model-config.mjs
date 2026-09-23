@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { writeFileAtomic } from "./atomic-file.mjs";
 import { getAgent } from "./agents.mjs";
 import { AGENT_HOME_VARIABLE, CONFIG_FILE, CONFIG_FORMAT, NATIVE_HOME, accountHome } from "./agent-home.mjs";
 import { environmentHome } from "./environment.mjs";
@@ -50,10 +51,7 @@ export function modelConfigAgents() {
 const emptyLedger = () => ({ schemaVersion: OWNERSHIP_SCHEMA_VERSION, files: {} });
 
 async function writeAtomic(file, content) {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporary, content, { encoding: "utf8", mode: 0o600 });
-  await rename(temporary, file);
+  return writeFileAtomic(file, content, { mode: 0o600 });
 }
 
 async function readLedger(projectRoot) {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
-import { isWebviewMessage, type ActivityRow, type DashboardAction, type DashboardSection } from "./protocol.ts";
+import { isWebviewMessage, type ActivityRow, type AgentId, type DashboardAction, type DashboardSection, type RunState } from "./protocol.ts";
 import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
 import { buildDashboardData } from "./state.ts";
 
@@ -84,6 +84,19 @@ export class DashboardPanel {
   refresh(): void {
     if (this.disposed) return;
     void this.sendData();
+  }
+
+  /**
+   * 一次启动的开始或结束：只有状态那一行变了，所以只送那一行。
+   *
+   * Both callers here are the outside world noticing — a launch in another
+   * terminal, an agent that exited — and none of them changed a single row of
+   * history. Re-sending the whole payload would re-read the project and make the
+   * page jump under whoever was reading it; the runs ride on their own message.
+   */
+  status(runs: Record<AgentId, RunState>): void {
+    if (this.disposed) return;
+    this.post({ type: "status", runs });
   }
 
   /** 打开一条会话：读它的对话内容随下一次推送一起过去，初帧永远不读事件日志。

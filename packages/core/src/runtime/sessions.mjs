@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import {
   copyFile as copyFileNative,
   mkdir,
@@ -14,46 +14,17 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "./atomic-file.mjs";
 import { agentCursors, restoreStamps, sameStamp, stampOf } from "./cursors.mjs";
 import { timed } from "./timing.mjs";
+import { AGENTS } from "./agents.mjs";
+import { projectIdentity, runtimePaths, stateStampFile } from "./project-paths.mjs";
 
 export const PROJECT_ROOT_TOKEN = "${PROJECT_ROOT}";
 
-// Resolving a path through the filesystem is the expensive half of comparing
-// two identities, and discovery compares the same few spellings — this
-// project's root, plus one cwd per other workspace on the machine — once for
-// every session file it finds. On a machine with a long history of unrelated
-// projects that was seconds per pass; with the memo it is one resolution per
-// distinct spelling. The cache holds what this process believes each spelling
-// means, which is the same guarantee the OS path cache gives: a directory
-// created mid-process is recognised from the next process on, not instantly.
-const identityCache = new Map();
-const IDENTITY_CACHE_LIMIT = 4096;
-
-function normalizeProjectIdentity(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  const cached = identityCache.get(value);
-  if (cached !== undefined) return cached;
-  let target = value;
-  try {
-    if (/^file:/i.test(target)) target = fileURLToPath(target);
-  } catch {
-    return null;
-  }
-  let resolved = path.normalize(path.resolve(target));
-  // Resolve junctions/symlinks when the path exists, while retaining the
-  // lexical fallback for native metadata that references a deleted path.
-  try { resolved = realpathSync.native(resolved); } catch {}
-  if (process.platform === "win32") resolved = resolved.toLowerCase();
-  if (identityCache.size >= IDENTITY_CACHE_LIMIT) identityCache.clear();
-  identityCache.set(value, resolved);
-  return resolved;
-}
-
 export function samePath(left, right) {
-  const normalizedLeft = normalizeProjectIdentity(left);
-  const normalizedRight = normalizeProjectIdentity(right);
+  const normalizedLeft = projectIdentity(left);
+  const normalizedRight = projectIdentity(right);
   return normalizedLeft !== null && normalizedLeft === normalizedRight;
 }
 
@@ -310,7 +281,7 @@ export function rewriteProjectRoot(content, projectRoot, options = {}) {
   // name this workspace, was the largest single cost of starting an agent.
   const marker = restore
     ? PROJECT_ROOT_TOKEN
-    : path.basename(normalizeProjectIdentity(projectRoot) ?? path.resolve(projectRoot));
+    : path.basename(projectIdentity(projectRoot) ?? path.resolve(projectRoot));
   if (!containsBytes(content, Buffer.from(marker, "utf8"), process.platform === "win32")) {
     return content;
   }
@@ -564,9 +535,12 @@ export function processAlive(pid) {
   }
 }
 
-// Shared state for concurrent avenic launches of one agent in one project.
+// Shared state for concurrent avenic launches of one agent in one project. The
+// key is the project's identity, not the spelling this caller happens to hold:
+// a launch recorded by the CLI under `C:\...` has to be visible to a host that
+// spells the same directory `c:\...`, or the two would run side by side.
 export function sessionLeasePath(agentId, projectRoot) {
-  const key = createHash("sha256").update(`${path.resolve(projectRoot)}\n${agentId}`).digest("hex").slice(0, 16);
+  const key = createHash("sha256").update(`${projectIdentity(projectRoot) ?? path.resolve(projectRoot)}\n${agentId}`).digest("hex").slice(0, 16);
   return path.join(os.tmpdir(), `avenic-launch-${key}`);
 }
 
@@ -629,6 +603,74 @@ export async function launchGroupState(agentId, projectRoot) {
   // The exit sequence ran to its end and put native storage back; the snapshot
   // is retained for the next launch to verify against, not to recover from.
   return existsSync(path.join(stateDir, "snapshot.clean")) ? "idle" : "interrupted";
+}
+
+// What every agent's launch group is doing, read from the same answer the
+// launch path itself reads. This is what a state stamp copies when a launch
+// starts or ends, so a watcher can see a transition without asking.
+async function launchStates(projectRoot) {
+  const states = {};
+  for (const agentId of Object.keys(AGENTS)) states[agentId] = await launchGroupState(agentId, projectRoot);
+  return states;
+}
+
+export const STATE_STAMP_SCHEMA_VERSION = 1;
+
+// A dashboard watches a project from the outside, so it needs one cheap answer
+// to "did anything move?" — small enough to read on every wake-up, and a
+// change to it must not mean a reason to rescan the project. This file is that
+// answer: a revision, what every launch group is doing, and how many
+// conversations the canonical store holds.
+//
+// It is deliberately *not* a second source of truth. The launch states are the
+// answer `launchGroupState` gives at the moment of the write, and a reader that
+// needs the truth asks for it — the stamp only says when asking is worthwhile.
+// The conversation count is a directory listing, never a scan of the store.
+export async function readStateStamp(projectRoot) {
+  try {
+    const stamp = JSON.parse(await readFile(stateStampFile(projectRoot), "utf8"));
+    return stamp !== null && typeof stamp === "object" ? stamp : null;
+  } catch {
+    return null;
+  }
+}
+
+async function canonicalCount(projectRoot) {
+  try {
+    const entries = await readdir(path.join(runtimePaths(projectRoot).sessionsRoot, "canonical"), { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).length;
+  } catch {
+    // No canonical store yet is a project with no conversations, not an error.
+    return 0;
+  }
+}
+
+/**
+ * Move the stamp, if what it says has changed. `launches` is re-derived here
+ * rather than passed in, so the file can never hold a state the launch path no
+ * longer agrees with; the active conversation is carried forward from the
+ * previous stamp unless the caller is the one that changed it — a launch
+ * transition neither knows nor touches which conversation is current, and
+ * saying nothing about it must not erase it.
+ */
+export async function refreshStateStamp(projectRoot, options = {}) {
+  const previous = await readStateStamp(projectRoot);
+  const active = options.active === undefined ? previous?.sessions?.active ?? null : options.active;
+  const stamp = {
+    schemaVersion: STATE_STAMP_SCHEMA_VERSION,
+    revision: (previous?.revision ?? 0) + 1,
+    updatedAt: new Date().toISOString(),
+    launches: await launchStates(projectRoot),
+    sessions: { count: await canonicalCount(projectRoot), active },
+  };
+  // The revision and the clock always move; what decides whether this is a
+  // change at all is everything else. A stamp rewritten with the same content
+  // would wake every watcher for nothing.
+  const meaningful = (value) => JSON.stringify({ ...value, revision: 0, updatedAt: null });
+  if (previous && meaningful(previous) === meaningful(stamp)) return previous;
+  const file = stateStampFile(projectRoot);
+  await writeFileAtomic(file, `${JSON.stringify(stamp, null, 2)}\n`);
+  return stamp;
 }
 
 let leaseMemberSequence = 0;
@@ -736,6 +778,9 @@ export async function releaseSessionLease(agentId, projectRoot, member, callback
       else await rm(cleanMarker, { force: true });
     }
   });
+  // The group moved: write it down where a watcher can see it without
+  // re-deriving the state itself.
+  await refreshStateStamp(projectRoot);
 }
 
 export async function acquireSessionLease(agentId, projectRoot, callbacks = {}) {
@@ -770,6 +815,8 @@ export async function acquireSessionLease(agentId, projectRoot, callbacks = {}) 
     await mkdir(path.join(stateDir, "pids"), { recursive: true });
     await writeFile(path.join(stateDir, "pids", member), "", { encoding: "utf8" });
   }));
+  // The first moment this project can be seen running from the outside.
+  await refreshStateStamp(projectRoot);
   return {
     member,
     stateDir,

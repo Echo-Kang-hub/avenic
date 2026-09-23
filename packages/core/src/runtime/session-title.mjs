@@ -1,4 +1,5 @@
 import { AGENTS, isAgentId } from "./agents.mjs";
+import { isControlEvent } from "./adapters/canonical.mjs";
 import { TOOL_BLOCKS, blockText, turnKind } from "./projection.mjs";
 
 // What a session is called.
@@ -36,6 +37,7 @@ export function collapseWhitespace(value) {
  */
 export function sessionSnippet(events, limit = SNIPPET_LIMIT) {
   for (const event of events ?? []) {
+    if (isControlEvent(event)) continue;
     if (turnKind(event) !== "user") continue;
     const blocks = Array.isArray(event?.content) ? event.content : [];
     const text = collapseWhitespace(

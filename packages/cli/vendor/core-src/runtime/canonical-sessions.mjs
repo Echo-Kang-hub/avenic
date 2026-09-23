@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-file.mjs";
 import { runtimePaths } from "./config.mjs";
+import { refreshStateStamp } from "./sessions.mjs";
+
 import { deriveState } from "./handoff.mjs";
 import { CONVERSATION_ROLES } from "./adapters/canonical.mjs";
 import { collapseWhitespace, isAutoTitle, mappedNativeSessionIds, resolveSessionTitle } from "./session-title.mjs";
@@ -31,10 +34,7 @@ function sessionDirectory(projectRoot, id) {
 }
 
 async function writeAtomic(file, value) {
-  const temporary = `${file}.tmp-${process.pid}-${randomUUID()}`;
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(temporary, value, { encoding: "utf8", mode: 0o600 });
-  await rename(temporary, file);
+  return writeFileAtomic(file, value, { mode: 0o600 });
 }
 
 async function readJson(file, fallback) {
@@ -109,6 +109,8 @@ export async function createCanonicalSession(projectRoot, input = {}) {
   await writeAtomic(path.join(directory, "events.jsonl"), "");
   await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(session.state, null, 2)}\n`);
   await writeAtomic(path.join(directory, "mappings.json"), `${JSON.stringify({ schemaVersion: 1, canonicalSessionId: id, projections: {} }, null, 2)}\n`);
+  // A conversation arrived: the count in the state stamp moves with it.
+  await refreshStateStamp(projectRoot);
   return { id, created: true };
 }
 
@@ -222,6 +224,8 @@ export async function appendCanonicalEvents(projectRoot, id, inputEvents) {
     lastEventId: allEvents.at(-1)?.id ?? null,
   };
   await writeAtomic(path.join(directory, "session.json"), `${JSON.stringify(session, null, 2)}\n`);
+  // The conversation grew: a watcher re-reads this one instead of the store.
+  await refreshStateStamp(projectRoot);
   return { added: additions.length, duplicate };
 }
 
@@ -239,6 +243,9 @@ export async function syncNativeMapping(projectRoot, id, mapping) {
   };
   const result = { schemaVersion: 1, canonicalSessionId: id, projections };
   await writeAtomic(path.join(sessionDirectory(projectRoot, id), "mappings.json"), `${JSON.stringify(result, null, 2)}\n`);
+  // Who took part in a conversation is part of what the dashboard lists, so a
+  // mapping move is a change worth waking for.
+  await refreshStateStamp(projectRoot);
   return result.projections[mapping.agentId];
 }
 

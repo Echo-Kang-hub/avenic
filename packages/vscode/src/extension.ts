@@ -16,6 +16,10 @@ import { markPerformance } from "./ui/performance.ts";
 import { invalidateSkillsSnapshot } from "./services/skills.ts";
 import { invalidateAgentStatusCache } from "./services/agents.ts";
 import { avenicCliVersion, cachedAvenicCliVersion } from "./services/agent-versions.ts";
+import { watchProjectState, type StateWatch } from "./services/state-watch.ts";
+import { runStateOf, type AgentId, type RunState } from "./dashboard/protocol.ts";
+import { reconcileOutcome, type ReconcileSeen } from "./dashboard/reconcile.ts";
+import { refreshStateStamp } from "@avenic/core";
 
 // VS Code 自己的动作，不是 Avenic 的：重新加载窗口是版本错配（原地升级后仍在跑旧代码）
 // 唯一真正能修好的那一步，所以它出现在失败通知里而不是被我们模仿一遍。
@@ -99,14 +103,69 @@ function startShell(context: vscode.ExtensionContext, launcher: LauncherView, ac
       showCliVersion();
     });
   };
+  // 项目自己会说：core 在每次启动、每次退出、每场会话变长时更新那个小 stamp，
+  // 这些事大多不是这个窗口做的（另一个终端里的 `avenic claude`、CLI 自己）。守着它，
+  // 「CLI 已经退出、面板还写着 Running」才不需要谁手动刷新一次。注意这条路上没有
+  // Skills 失效、也没有原生历史重读：一次退出不是一次 Skills 变了。
+  let followed: string | null = null;
+  let follow: StateWatch | null = null;
+  // 换项目换的是要看守的目录，不是「要看守」这件事本身：这条订阅只登记一次，
+  // dispose 停的是当下那一个 watcher。
+  context.subscriptions.push({ dispose: () => follow?.stop() });
+  const seen: ReconcileSeen = { count: null, active: null, launches: "" };
+  const followState = () => {
+    const current = root();
+    if (current === followed) return;
+    follow?.stop();
+    follow = null;
+    followed = current;
+    seen.count = null;
+    seen.active = null;
+    seen.launches = "";
+    if (current === null) return;
+    follow = watchProjectState({
+      projectRoot: current,
+      // 兜底：事件不来的平台上还有这一问。它读的只是那个小 stamp 的 mtime，不是项目。
+      pollMs: 1500,
+      onChange: () => { void reconcile(current); },
+    });
+  };
+  const reconcile = async (projectRoot: string): Promise<void> => {
+    // stamp 只是一声提醒；真相仍在 core 里。这一问既是读，也是对账——一个被强杀、
+    // 没有收尾的进程只有重新推导才看得见（它的租约还在，进程已经不在了）。
+    const stamp = await refreshStateStamp(projectRoot).catch(() => null);
+    if (stamp === null || projectRoot !== followed) return;
+    const runs = {} as Record<AgentId, RunState>;
+    for (const [id, state] of Object.entries(stamp.launches ?? {})) {
+      runs[id as AgentId] = runStateOf(state);
+    }
+    // 变的是哪一档由 reconcile.ts 判：会话列表变了重画，只有启动状态变了就只改胶囊。
+    const outcome = reconcileOutcome(seen, {
+      count: stamp.sessions?.count ?? 0,
+      active: stamp.sessions?.active ?? null,
+      runsKey: JSON.stringify(runs),
+    });
+    if (outcome.runsMoved) {
+      invalidateAgentStatusCache();
+      launcher.refresh();
+    }
+    if (outcome.panel === "refresh") DashboardPanel.current?.refresh();
+    else if (outcome.panel === "status") DashboardPanel.current?.status(runs);
+  };
   // 同步根解析：单根直接返回；多根/null 时经 T6 pickProjectRoot 引导用户选定（workspaceFolders 实时读取，避免激活期闭包过期）
   const resolveRoot = async (): Promise<string | null> => {
     const r = root();
     if (r !== null) return r;
     const picked = await pickProjectRoot([...(vscode.workspace.workspaceFolders ?? [])], context.workspaceState, async (candidates) => vscode.window.showQuickPick(candidates));
-    if (picked !== null) refresh(); // 选定后让入口行从「打开项目文件夹」提示刷新为真实数据
+    if (picked !== null) {
+      followState(); // 刚选定的那个项目，从这一刻起由它自己报变化
+      refresh(); // 选定后让入口行从「打开项目文件夹」提示刷新为真实数据
+    }
     return picked;
   };
+  // 换项目＝换一个要看守的目录：打开别的文件夹、或者多根里挑定一个，都从这里过一遍。
+  context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => { followState(); refresh(); }));
+  followState();
   registerDashboardCommands({ context, root, queue, refresh, activity, failure: failureUi });
   registerAgentsCommands(context, { queue, resolveRoot, refresh });
   registerCatalogCommands(context, { queue, refresh, resolveRoot });

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
   appendCanonicalEvents,
   readCanonicalSession,
   setActiveCanonicalSession,
+  syncNativeMapping,
 } from "../packages/core/src/index.mjs";
 import { ACCOUNT_PROJECT_AGENT, withClaudeProject } from "./helpers/session-fixture.mjs";
 
@@ -297,6 +298,98 @@ test("a long shared conversation is projected from its delta, not replayed", asy
   }, {
     sessions: 1,
     records: 6,
+    agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
+    historyMode: "shared",
+  });
+});
+
+// A real Codex run over a projected thread refused the request outright:
+//
+//   Invalid 'input[6].id': 'avenic_evt_0_afe7c6127a1'.
+//   Expected an ID that begins with 'msg'.
+//
+// The stand-in app server below accepts any id, so nothing in this file could
+// have noticed; the real provider is the one that says what a message id may
+// look like. The projection therefore has to write ids the provider accepts,
+// and keep enough of its own name in them that a capture still recognises its
+// own injections.
+test("an injected turn carries an id the provider accepts", async () => {
+  await withClaudeProject(async ({ projectRoot, sessionIds, runCli, environment, root }) => {
+    const injectLog = path.join(root, "codex-inject.jsonl");
+    const env = { ...environment, AVENIC_CODEX_INJECT_LOG: injectLog };
+    const canonicalId = `claude-${sessionIds[0]}`;
+    await setActiveCanonicalSession(projectRoot, canonicalId);
+
+    const run = runCli(["sessions", "continue", canonicalId, "--agent", "codex"], env);
+    assert.equal(run.status, 0, run.stderr);
+
+    const items = (await codexInjections(env)).flatMap((entry) => entry.items ?? []);
+    assert.ok(items.length >= 4, `the thread received the conversation (${items.length} items)`);
+    for (const item of items) {
+      assert.match(item.id, /^msg/, `an injected ${item.role} turn keeps an id the provider accepts (${item.id})`);
+    }
+    // What capture relies on: the id still says the turn was Avenic's own, or
+    // the next capture would read the projection back as work Codex did.
+    const injected = items.map((item) => item.id).join(" ");
+    assert.match(injected, /avenic/i, `an injected id still names its origin (${injected})`);
+  }, {
+    agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
+    historyMode: "shared",
+  });
+});
+
+// A thread projected before that rule was known holds ids the provider refuses,
+// and appending to it cannot repair it: every later turn would be rejected the
+// same way. Such a thread is not resumable — canonical history rebuilds it.
+test("a projection carrying the refused id shape is rebuilt, not resumed", async () => {
+  await withClaudeProject(async ({ projectRoot, codexHome, sessionIds, runCli, environment, root }) => {
+    const injectLog = path.join(root, "codex-inject.jsonl");
+    const env = { ...environment, AVENIC_CODEX_INJECT_LOG: injectLog };
+    const canonicalId = `claude-${sessionIds[0]}`;
+    await setActiveCanonicalSession(projectRoot, canonicalId);
+    // The shared conversation is built by the product's own import, the same
+    // way the fixture's other tests get one.
+    const listed = runCli(["sessions", "list"]);
+    assert.equal(listed.status, 0, listed.stderr);
+
+    // The thread the mapping names: a real rollout, written the way the
+    // pre-fix projection wrote one, with one of its injected turns in it.
+    const legacyThread = "thread-legacy-injected";
+    const rollout = path.join(codexHome, "sessions", "2026", "09", "23", `rollout-${legacyThread}.jsonl`);
+    await mkdir(path.dirname(rollout), { recursive: true });
+    await writeFile(rollout, [
+      JSON.stringify({ type: "session_meta", payload: { id: legacyThread, cwd: projectRoot, model_provider: "openai" } }),
+      JSON.stringify({ timestamp: "2026-09-23T00:00:01.000Z", type: "response_item", payload: {
+        id: "avenic_evt_0_0afe7c6127a1", type: "message", role: "user", content: [{ type: "input_text", text: "the conversation as it was sent" }],
+      } }),
+    ].join("\n") + "\n");
+    const mapped = await syncNativeMapping(projectRoot, canonicalId, {
+      agentId: "codex",
+      nativeSessionId: legacyThread,
+      canonicalRevision: null,
+      lastCanonicalEventId: (await readCanonicalSession(projectRoot, canonicalId)).events.at(-1)?.id ?? null,
+    });
+    assert.equal(mapped.nativeSessionId, legacyThread);
+    // The conversation has moved on since that thread was projected, so the
+    // continuation really has something to send it — otherwise "nothing was
+    // injected" would pass for the wrong reason.
+    await appendCanonicalEvents(projectRoot, canonicalId, [{
+      id: "claude:native-later:l1",
+      agent: "claude",
+      role: "user",
+      createdAt: "2026-09-23T00:00:09.000Z",
+      content: [{ type: "text", text: "and one thing since" }],
+    }]);
+
+    const run = runCli(["sessions", "continue", canonicalId, "--agent", "codex"], env);
+    assert.equal(run.status, 0, run.stderr);
+
+    const threads = (await codexInjections(env)).map((entry) => entry.threadId);
+    assert.ok(threads.length > 0, "the continuation projected the conversation somewhere");
+    assert.ok(!threads.includes(legacyThread), `the refused thread is not reused (${threads.join(", ")})`);
+    const after = await readCanonicalSession(projectRoot, canonicalId);
+    assert.notEqual(after.mappings.projections.codex.nativeSessionId, legacyThread, "the mapping now names the usable thread");
+  }, {
     agents: { claude: { ...ACCOUNT_PROJECT_AGENT }, codex: { ...ACCOUNT_PROJECT_AGENT } },
     historyMode: "shared",
   });

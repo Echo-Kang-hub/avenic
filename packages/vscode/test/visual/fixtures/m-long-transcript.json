@@ -1,0 +1,2067 @@
+{
+  "_provenance": {
+    "source": "Hand-transcribed from the reference design image (image.png at the repo root). NOT captured: test/visual/capture.mjs only produces b-fresh, c-native and e-full.",
+    "shape": "Mirrors protocol.ts's DashboardData, but every value is the reference's or invented to draw it — it is not what a project on disk produced.",
+    "transcribed-from-the-image": [
+      "version \"1.8.4\" — the reference footer's text. The footer names the Avenic CLI the reader is actually running (panel.ts passes cachedAvenicCliVersion()), and the CLI this repo produces is 1.8.4, so the string here is the shape a real host emits; the digits pin the build, not the machine's own answer",
+      "versionDetails.cli \"1.8.4\" / .extension \"0.6.0\" — the footer's title tooltip, composed from the same two answers a host passes; nothing measures it, because no reference box shows a tooltip",
+      "project {\"signal-desk\"} — invented for this derived fixture, as are the shared and native session rows, the activity rows and all 120 transcript turns. The reference's own project is not this file's, and no value here comes from a project on disk"
+    ],
+    "invented-to-draw-the-reference": "agents[].fields values and options, skills and pack names, hub spec/revision — carried over from the reference payload; the rows, activity and transcript named above are added by this fixture, which exists because it is the one payload whose conversation (120 turns) is longer than the browser's own newest-100 window, so both panes' scrollers and the panes' height are drawn from content rather than from three rows that happen to fit",
+    "gated-by": "shot.mjs renders this payload; compare.mjs measures it against fixtures/reference-geometry.json, whose refs come from the image itself (e.g. text.version's 74..151px run). The footer's text is gated as a pattern — \"Avenic v\" and a dotted number — never by those digits, which are live machine data",
+    "not-regenerated": "capture.mjs never writes this file, so a value here that the host cannot emit stays until someone decides what the footer should show"
+  },
+  "project": {
+    "name": "signal-desk",
+    "root": "signal-desk",
+    "configured": true,
+    "lastUpdated": "2026-09-19 10:06"
+  },
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "ready": true,
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "API (Project)",
+          "tone": "brand",
+          "icon": "account"
+        },
+        {
+          "label": "Config Source",
+          "kind": "value",
+          "value": ".claude/settings.local.json",
+          "tone": "muted",
+          "icon": "file-code"
+        },
+        {
+          "label": "Provider",
+          "kind": "value",
+          "value": "DeepSeek",
+          "tone": "plain",
+          "icon": "package",
+          "href": "https://example.invalid/provider"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "claude-sonnet-4",
+          "tone": "plain",
+          "icon": "symbol-structure",
+          "options": [
+            "claude-sonnet-4",
+            "claude-opus-4"
+          ]
+        },
+        {
+          "label": "Sub Agent Model",
+          "kind": "select",
+          "value": "claude-haiku-3.5",
+          "tone": "plain",
+          "icon": "symbol-parameter",
+          "options": [
+            "claude-haiku-3.5"
+          ]
+        },
+        {
+          "label": "Default Effort",
+          "kind": "select",
+          "value": "Medium",
+          "tone": "plain",
+          "icon": "dashboard",
+          "options": [
+            "Low",
+            "Medium",
+            "High"
+          ]
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 8,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config File",
+        "icon": "go-to-file"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "Claude",
+      "statusText": "Ready",
+      "run": "idle"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "ready": true,
+      "detail": null,
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Account (Project)",
+          "tone": "blue",
+          "icon": "account"
+        },
+        {
+          "label": "Account Status",
+          "kind": "status",
+          "value": "Signed in",
+          "tone": "green",
+          "icon": "unlock"
+        },
+        {
+          "label": "Account Scope",
+          "kind": "value",
+          "value": "Project (.agents/local/codex)",
+          "tone": "muted",
+          "icon": "file-directory"
+        },
+        {
+          "label": "Model",
+          "kind": "select",
+          "value": "GPT-5",
+          "tone": "plain",
+          "icon": "symbol-structure",
+          "options": [
+            "GPT-5",
+            "o4-mini"
+          ]
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 5,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open Config Folder",
+        "icon": "folder-opened"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "Codex",
+      "statusText": "Ready",
+      "run": "idle"
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "ready": true,
+      "detail": "OpenCode manages its own provider, authentication and model configuration. Avenic does not modify them.",
+      "fields": [
+        {
+          "label": "Authentication",
+          "kind": "badge",
+          "value": "Native (OpenCode UI)",
+          "tone": "purple",
+          "icon": "key"
+        }
+      ],
+      "sessions": {
+        "label": "Project",
+        "count": 3,
+        "tone": "brand"
+      },
+      "history": {
+        "label": "Shared",
+        "tone": "brand"
+      },
+      "configLink": {
+        "label": "Open OpenCode",
+        "icon": "link-external"
+      },
+      "actions": {
+        "launch": true,
+        "change": true
+      },
+      "short": "OpenCode",
+      "statusText": "Ready",
+      "run": "idle"
+    }
+  ],
+  "history": {
+    "mode": "shared",
+    "sharedCount": 24
+  },
+  "shared": {
+    "rows": [
+      {
+        "id": "sig-drain-order",
+        "title": "Trace the queue drain order",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "updated": "2026-09-19T10:05:00Z",
+        "relative": "3 hours ago",
+        "active": true,
+        "sync": {
+          "state": "current",
+          "running": true
+        }
+      },
+      {
+        "id": "sig-half-ack",
+        "title": "Half acknowledged batches",
+        "agents": [
+          "codex",
+          "opencode"
+        ],
+        "updated": "2026-09-19T08:40:00Z",
+        "relative": "5 hours ago",
+        "active": false,
+        "sync": {
+          "state": "stale",
+          "running": false
+        }
+      },
+      {
+        "id": "sig-reader-tickets",
+        "title": "Two readers on one ticket",
+        "agents": [
+          "claude",
+          "opencode"
+        ],
+        "updated": "2026-09-18T21:15:00Z",
+        "relative": "1 day ago",
+        "active": false,
+        "sync": {
+          "state": "current",
+          "running": false
+        }
+      },
+      {
+        "id": "sig-latency-note",
+        "title": "Measure the backlog in seconds",
+        "agents": [
+          "claude"
+        ],
+        "updated": "2026-09-18T17:02:00Z",
+        "relative": "1 day ago",
+        "active": false,
+        "sync": {
+          "state": "none",
+          "running": false
+        }
+      },
+      {
+        "id": "sig-ledger-copy",
+        "title": "Keep the ledger write behind the drain",
+        "agents": [
+          "codex"
+        ],
+        "updated": "2026-09-17T14:20:00Z",
+        "relative": "2 days ago",
+        "active": false,
+        "sync": {
+          "state": "current",
+          "running": false
+        }
+      },
+      {
+        "id": "sig-retry-clock",
+        "title": "Retry keeps the arrival clock",
+        "agents": [
+          "opencode"
+        ],
+        "updated": "2026-09-16T11:05:00Z",
+        "relative": "3 days ago",
+        "active": false,
+        "sync": {
+          "state": "current",
+          "running": false
+        }
+      }
+    ],
+    "total": 24
+  },
+  "native": {
+    "claude": {
+      "rows": [
+        {
+          "id": "sig-drain-order",
+          "title": "Drain order, read from the ledger",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2026-09-19T10:05:00Z",
+          "relative": "3 hours ago",
+          "active": true,
+          "sync": {
+            "state": "current",
+            "running": true
+          }
+        },
+        {
+          "id": "sig-reader-tickets",
+          "title": "Reader tickets, first pass",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2026-09-18T21:15:00Z",
+          "relative": "1 day ago",
+          "active": false,
+          "sync": {
+            "state": "current",
+            "running": false
+          }
+        },
+        {
+          "id": "sig-latency-note",
+          "title": "Backlog in seconds",
+          "agents": [
+            "claude"
+          ],
+          "updated": "2026-09-18T17:02:00Z",
+          "relative": "1 day ago",
+          "active": false,
+          "sync": {
+            "state": "stale",
+            "running": false
+          }
+        }
+      ],
+      "total": 11
+    },
+    "codex": {
+      "rows": [
+        {
+          "id": "sig-half-ack",
+          "title": "Half acked batches",
+          "agents": [
+            "codex"
+          ],
+          "updated": "2026-09-19T08:40:00Z",
+          "relative": "5 hours ago",
+          "active": false,
+          "sync": {
+            "state": "stale",
+            "running": false
+          }
+        },
+        {
+          "id": "sig-ledger-copy",
+          "title": "Ledger write ordering",
+          "agents": [
+            "codex"
+          ],
+          "updated": "2026-09-17T14:20:00Z",
+          "relative": "2 days ago",
+          "active": false,
+          "sync": {
+            "state": "current",
+            "running": false
+          }
+        }
+      ],
+      "total": 7
+    },
+    "opencode": {
+      "rows": [
+        {
+          "id": "sig-retry-clock",
+          "title": "The retry clock",
+          "agents": [
+            "opencode"
+          ],
+          "updated": "2026-09-16T11:05:00Z",
+          "relative": "3 days ago",
+          "active": false,
+          "sync": {
+            "state": "current",
+            "running": false
+          }
+        }
+      ],
+      "total": 4
+    }
+  },
+  "skills": {
+    "installed": [
+      {
+        "name": "code-reviewer",
+        "description": "Code review and improvement suggestions",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      },
+      {
+        "name": "test-writer",
+        "description": "Generate and run tests",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      },
+      {
+        "name": "docs-writer",
+        "description": "Write and maintain documentation",
+        "agents": [
+          "claude",
+          "codex",
+          "opencode"
+        ],
+        "enabled": true
+      }
+    ],
+    "installedTotal": 15,
+    "packs": [
+      {
+        "id": "core-workflow",
+        "name": "core-workflow",
+        "description": "Planning and review skills",
+        "installed": true,
+        "count": 6
+      },
+      {
+        "id": "release-kit",
+        "name": "release-kit",
+        "description": "Packaging and changelog helpers",
+        "installed": false,
+        "count": 4
+      }
+    ],
+    "packsTotal": 2
+  },
+  "hub": {
+    "spec": "acme/skill-hub#main",
+    "revision": "0123456789abcdef0123456789abcdef01234567",
+    "state": "current"
+  },
+  "activity": [
+    {
+      "time": "10:06",
+      "text": "Claude session started",
+      "tone": "green"
+    },
+    {
+      "time": "09:52",
+      "text": "Codex session continued",
+      "tone": "blue"
+    },
+    {
+      "time": "09:31",
+      "text": "Shared history imported",
+      "tone": "purple"
+    }
+  ],
+  "empty": null,
+  "version": "1.8.4",
+  "versionDetails": {
+    "cli": "1.8.4",
+    "extension": "0.6.0"
+  },
+  "transcript": {
+    "id": "sig-drain-order",
+    "title": "Trace the queue drain order",
+    "active": true,
+    "participants": [
+      "Claude",
+      "Codex",
+      "OpenCode"
+    ],
+    "updated": "2026-09-19T10:05:00Z",
+    "updatedRelative": "3 hours ago",
+    "eventCount": 168,
+    "sync": {
+      "state": "stale",
+      "label": "2 of 3 stale"
+    },
+    "turns": [
+      {
+        "id": "sig-001",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:30:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-002",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:30:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-003",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:31:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-004",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:32:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-005",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:33:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-006",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:33:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-007",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:34:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-008",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:35:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-009",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:36:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-010",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:36:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-011",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:37:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-012",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:38:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-013",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:39:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-014",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:39:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-015",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:40:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-016",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:41:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-017",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:42:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-018",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:42:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-019",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:43:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-020",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:44:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-021",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:45:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-022",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:45:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-023",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:46:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-024",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:47:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-025",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:48:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-026",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:48:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-027",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:49:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-028",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:50:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-029",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:51:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-030",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:51:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-031",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:52:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-032",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:53:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-033",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:54:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-034",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:54:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-035",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:55:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-036",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T08:56:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-037",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:57:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-038",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T08:57:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-039",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T08:58:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-040",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T08:59:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-041",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:00:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-042",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:00:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-043",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:01:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-044",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:02:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-045",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:03:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-046",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:03:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-047",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:04:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-048",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:05:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-049",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:06:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-050",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:06:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-051",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:07:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-052",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:08:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-053",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:09:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-054",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:09:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-055",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:10:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-056",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:11:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-057",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:12:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-058",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:12:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-059",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:13:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-060",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:14:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-061",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:15:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-062",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:15:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-063",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:16:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-064",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:17:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-065",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:18:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-066",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:18:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-067",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:19:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-068",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:20:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-069",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:21:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-070",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:21:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-071",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:22:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-072",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:23:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-073",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:24:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-074",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:24:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-075",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:25:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-076",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:26:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-077",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:27:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-078",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:27:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-079",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:28:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-080",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:29:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-081",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:30:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-082",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:30:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-083",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:31:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-084",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:32:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-085",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:33:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-086",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:33:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-087",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:34:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-088",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:35:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-089",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:36:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-090",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:36:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-091",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:37:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-092",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:38:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-093",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:39:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-094",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:39:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-095",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:40:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-096",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:41:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-097",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:42:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-098",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:42:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-099",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:43:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-100",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:44:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-101",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:45:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-102",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:45:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-103",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:46:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-104",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:47:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-105",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:48:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-106",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:48:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-107",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:49:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-108",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:50:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-109",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:51:00.000Z",
+        "text": "Why does the queue drain before the first write lands?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-110",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:51:45.000Z",
+        "text": "The drain reads the ledger once, so the write that follows it is the one that queues.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-111",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:52:30.000Z",
+        "text": "Can the desk keep two readers on the same ticket?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-112",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:53:15.000Z",
+        "text": "It can, but only if both readers take the same ticket snapshot.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-113",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:54:00.000Z",
+        "text": "Which pass decides the reply order?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-114",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:54:45.000Z",
+        "text": "The second pass sorts by arrival, then by the ledger line the desk wrote.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      },
+      {
+        "id": "sig-115",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:55:30.000Z",
+        "text": "Does the retry keep the original arrival time?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-116",
+        "kind": "agent",
+        "speaker": "Claude",
+        "agent": "claude",
+        "role": "assistant",
+        "at": "2026-09-19T09:56:15.000Z",
+        "text": "Yes — the arrival time is carried on the batch, not recomputed on retry.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Read",
+            "detail": "src/desk/queue.ts"
+          }
+        ],
+        "model": "claude-sonnet-4"
+      },
+      {
+        "id": "sig-117",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:57:00.000Z",
+        "text": "What happens when a batch is half acknowledged?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-118",
+        "kind": "agent",
+        "speaker": "Codex",
+        "agent": "codex",
+        "role": "assistant",
+        "at": "2026-09-19T09:57:45.000Z",
+        "text": "The unacknowledged half is re-offered on the next pass, not dropped.",
+        "tools": [],
+        "model": "gpt-5-codex"
+      },
+      {
+        "id": "sig-119",
+        "kind": "user",
+        "speaker": "You",
+        "agent": null,
+        "role": "user",
+        "at": "2026-09-19T09:58:30.000Z",
+        "text": "Should the backlog be measured in items or in seconds?",
+        "tools": [],
+        "model": null
+      },
+      {
+        "id": "sig-120",
+        "kind": "agent",
+        "speaker": "OpenCode",
+        "agent": "opencode",
+        "role": "assistant",
+        "at": "2026-09-19T09:59:15.000Z",
+        "text": "In seconds: an item count hides the case where one item is very slow.",
+        "tools": [
+          {
+            "kind": "call",
+            "name": "Grep",
+            "detail": "drainLedger"
+          }
+        ],
+        "model": "opencode/desk-1"
+      }
+    ],
+    "diagnostics": {
+      "warnings": [
+        "Codex projection is 12 events behind the shared history.",
+        "OpenCode projection points at an event this conversation no longer has."
+      ],
+      "notes": [
+        "Claude projection is current as of sig-116."
+      ]
+    }
+  },
+  "detail": true
+}

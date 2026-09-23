@@ -9,6 +9,7 @@ import { assertIdle } from "../ui/flows.ts";
 import { runProjectWizard } from "../ui/project-wizard.ts";
 import { quickPickHost } from "../ui/quickpick-wizard.ts";
 import { showError } from "./errors.ts";
+import { watchRun } from "./run-lifecycle.ts";
 import { withProgress } from "./progress.ts";
 
 export interface AgentDeps {
@@ -129,11 +130,10 @@ export function registerAgentsCommands(context: vscode.ExtensionContext, deps: A
       void vscode.window.showWarningMessage(definition.note);
     }
     const terminal = vscode.window.createTerminal({ name: definition.name, cwd: definition.cwd, env: definition.environment });
-    const closeListener = vscode.window.onDidCloseTerminal((closed) => {
-      if (closed !== terminal) return;
-      closeListener.dispose();
-      // 一次运行结束后，会话、投影和同步状态都变了：无论收尾成功还是失败，树视图
-      // 和仪表盘都该重新读一遍，而不是留着一份启动前的旧图。
+    // 一次运行结束在命令跑完的那一刻，不在标签页被关掉的那一刻：用户在 CLI 里退出、
+    // 终端留在提示符上，是这里最常见的样子。收尾之后会话、投影和同步状态都变了，
+    // 无论成功还是失败，树视图和仪表盘都该重新读一遍。
+    watchRun(vscode.window, terminal, definition.command, () => {
       void finishRun().catch((error) => showError(error)).finally(() => deps.refresh());
     });
     terminal.show();

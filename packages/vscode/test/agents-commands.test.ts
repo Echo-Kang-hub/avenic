@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, lstatSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,7 +64,9 @@ test("prepareAgentLaunch redirects the config root for a Project account and nev
       const api = await prepareAgentLaunch(dir, "claude");
       assert.equal(api.definition.cwd, dir);
       assert.equal(api.definition.command, "claude");
-      assert.ok(api.definition.name.includes("Claude Code"));
+      // 终端名字是 Avenic 自己的：Claude Code 扩展给它的终端起的名字就是 "Claude Code"，
+      // 重名会让用户在终端列表里分不清哪个终端里跑着哪个 Agent。
+      assert.match(api.definition.name, /^Avenic · Claude Code$/);
       assert.equal(api.definition.environment.CLAUDE_CONFIG_DIR, process.env.CLAUDE_CONFIG_DIR, "API 模式不得重定向配置根");
       assert.doesNotMatch(
         JSON.stringify(api.definition.environment),
@@ -86,6 +88,33 @@ test("prepareAgentLaunch redirects the config root for a Project account and nev
     });
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// P5 的不变量：Avenic 只给启动加生命周期，从不改变 VS Code 呈现 Agent 的方式。
+// 「另一个 VS Code 窗口里出现一个『正在使用』的 Agent CLI 终端」的来源是 Claude Code
+// 扩展自己——它用 `claude-vscode.terminal.open` 创建名为 "Claude Code" 的 transient 终端
+// （默认落在 ViewColumn.Beside），"window" 形态还会用 workbench.action.moveEditorToNewWindow
+// 把这个终端搬进新窗口，并在 onDidEndTerminalShellExecution 上销毁它（关掉＝杀掉里面的 Agent）。
+// 那是它的界面和它的命令空间；Avenic 既不调用，也不替它调用。
+test("a launch names its own terminal and never drives another extension's", async () => {
+  const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const sources: string[] = [];
+  const walk = async (directory: string) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isDirectory()) await walk(target);
+      else if (entry.name.endsWith(".ts") || entry.name.endsWith(".js")) sources.push(target);
+    }
+  };
+  await walk(path.join(pkgDir, "src"));
+  await walk(path.join(pkgDir, "media"));
+  assert.ok(sources.length > 0, "the scan must have looked at real files");
+  for (const file of sources) {
+    const source = await readFile(file, "utf8");
+    const relative = path.relative(pkgDir, file);
+    assert.equal(source.includes("claude-vscode."), false, `${relative} must not drive the Claude Code extension's own commands`);
+    assert.equal(source.includes("moveEditorToNewWindow"), false, `${relative} must not move terminals between windows`);
   }
 });
 

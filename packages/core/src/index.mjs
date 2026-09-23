@@ -121,7 +121,11 @@ export {
   samePath,
   sessionLeasePath,
   snapshotInto,
+  STATE_STAMP_SCHEMA_VERSION,
+  readStateStamp,
+  refreshStateStamp,
 } from "./runtime/sessions.mjs";
+export { stateStampFile } from "./runtime/project-paths.mjs";
 export { getSessionAdapter } from "./runtime/adapters/index.mjs";
 export {
   appendCanonicalEvents,

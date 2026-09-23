@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import { writeFileAtomic } from "./atomic-file.mjs";
 import { CREDENTIAL_FILE, getAgent } from "./agents.mjs";
 import { ensureModelConfiguration, modelConfigTarget, removeModelConfiguration } from "./model-config.mjs";
 import { agentHomeRoot, agentSessionsRoot, runtimePaths } from "./project-paths.mjs";
+import { refreshStateStamp } from "./sessions.mjs";
 import { ensureRuntimeGitignore, removeRuntimeGitignore } from "./gitignore.mjs";
 
 // One question per axis, and no axis answered by an implication of another:
@@ -46,10 +48,7 @@ async function writeJsonIfChanged(file, value) {
   if (existsSync(file) && (await readFile(file, "utf8")) === content) {
     return false;
   }
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(temporary, content, "utf8");
-  await rename(temporary, file);
+  await writeFileAtomic(file, content);
   return true;
 }
 
@@ -306,6 +305,10 @@ export async function setActiveCanonicalSession(projectRoot, canonicalSessionId)
   if (canonicalSessionId === null) delete state.runtime.activeCanonicalSessionId;
   else state.runtime.activeCanonicalSessionId = canonicalSessionId;
   await writeJsonIfChanged(state.paths.runtimeFile, state.runtime);
+  // Which conversation is current is what every session list marks, so the
+  // state stamp names it: a launch transition carries the previous one forward,
+  // and only this write knows the new one.
+  await refreshStateStamp(projectRoot, { active: canonicalSessionId });
   return canonicalSessionId;
 }
 

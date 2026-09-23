@@ -438,17 +438,31 @@ function buildPage(payload, fixture) {
         //     user and from scrollWidth, and this check exists to see through
         //     exactly that blanket.
         // The bottom edge is deliberately not reported: content under the fold is
-        // what scrolling is for. What lands here is painted where only a sideways
-        // page scroll could reach it, which this dashboard must never need.
+        // what scrolling is for — and so is content above the top edge when an
+        // ancestor scrolls, which is why the top edge is the one of the three that
+        // is asked whether anything can bring the box back. What lands here is
+        // painted where only a sideways page scroll could reach it, which this
+        // dashboard must never need.
+        // The top edge is not the left and right edges, and it is the one asked a
+        // second question. Sideways, the page has no scrollbar by design, so a box
+        // past either side edge is reachable only by a scroll this dashboard must
+        // never need and is a failure wherever it sits. Vertically, scrolling is the
+        // answer: a box above the window inside an ancestor that scrolls is content
+        // the reader scrolled past, and the same gesture brings it back — the
+        // Sessions conversation lands on its newest turn, so every earlier turn of a
+        // long one sits thousands of pixels above the top edge and none of them is a
+        // spill. A box above the top edge that no ancestor can scroll back is still
+        // reported (a strip positioned above the document), and so is one whose
+        // holding ancestor clips without scrolling: that box is cut off, not
+        // scrolled away, and the string naming the ancestor is what tells them apart.
         const spilledOut = (node) => {
           const box = node.getBoundingClientRect();
           if (box.width <= 0 || box.height <= 0) return null;
           const right = document.documentElement.clientWidth;
-          const why = [];
-          if (box.right > right + 1) why.push("right +" + Math.round(box.right - right));
-          if (box.left < -1) why.push("left " + Math.round(box.left));
-          if (box.top < -1) why.push("top " + Math.round(box.top));
-          if (why.length === 0) return null;
+          const sideways = box.right > right + 1 || box.left < -1;
+          const above = box.top < -1;
+          if (!sideways && !above) return null;
+          let scrollsY = false;
           let held = null;
           for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
             if (parent === document.body || parent === document.documentElement) break;
@@ -457,11 +471,17 @@ function buildPage(payload, fixture) {
             const clip = parent.getBoundingClientRect();
             const inside = clip.left - 1 <= box.left && clip.right + 1 >= box.right && clip.top - 1 <= box.top && clip.bottom + 1 >= box.bottom;
             if (inside) return null;
+            if (style.overflowY === "auto" || style.overflowY === "scroll") scrollsY = true;
             if (held === null) {
               const scrolls = [style.overflowX, style.overflowY].some((value) => value === "auto" || value === "scroll");
               held = (parent.className || parent.tagName) + (scrolls ? " (scrollable)" : " (overflow hidden)");
             }
           }
+          const why = [];
+          if (box.right > right + 1) why.push("right +" + Math.round(box.right - right));
+          if (box.left < -1) why.push("left " + Math.round(box.left));
+          if (above && !scrollsY) why.push("top " + Math.round(box.top));
+          if (why.length === 0) return null;
           return why.join(" ") + (held === null ? "" : " · held in by " + held);
         };
         // Every element in the page, once: a spill can be the container as easily
@@ -479,6 +499,15 @@ function buildPage(payload, fixture) {
         // size or theme. A screenshot shows that something looks wrong; these say
         // what, and they are the only checks the scenario payloads get — the
         // reference's own measurements belong to the reference fixture.
+        // One measurement, two verdicts. Whether the document is taller than the
+        // window is the page-level answer to "did this layout fill the window it
+        // was given": the Overview's rows are meant to reach the window's bottom
+        // edge, and a document that grew to 1022 in a 900-tall window has
+        // scrolled instead of filled. pageScrolls is the symptom, which is what
+        // the Sessions checks were written against; fits is the same fact
+        // stated as the promise, which is what a run that declares fits has to
+        // keep. Both come off this one read so they cannot disagree.
+        const pageScrolls = document.documentElement.scrollHeight > document.documentElement.clientHeight + 1;
         rects.checks = {
           // Nothing may push the page sideways: a row that overflows its box is
           // invisible in a rect dump and obvious here.
@@ -491,7 +520,16 @@ function buildPage(payload, fixture) {
           }).map((node) => node.getAttribute("data-icon")),
           // An icon whose box collapsed (no glyph and no width) shifts every label
           // after it; caught separately from a missing glyph.
+          //
+          // An element with nothing painted is not collapsed. A closed menu is
+          // display:none, and every box inside it is 0x0 by definition — flagging
+          // that would make the check ask for overlays to be drawn while they are
+          // shut. getClientRects() is empty exactly for that case: a box that is
+          // rendered but has collapsed to nothing still returns one rect, so the
+          // defect this check is for is still caught. (The contrast block below
+          // refuses unpainted nodes the same way, with its width test.)
           collapsed: [...document.querySelectorAll(".icon, .badge, .btn, .list-row, .field-row")].filter((node) => {
+            if (node.getClientRects().length === 0) return false;
             const box = node.getBoundingClientRect();
             return box.width < 2 || box.height < 2;
           }).map((node) => node.className + "[" + (node.getAttribute("data-icon") ?? "") + "]").slice(0, 10),
@@ -537,6 +575,42 @@ function buildPage(payload, fixture) {
               return { left: Math.round(box.left), top: +box.top.toFixed(1), bottom: +box.bottom.toFixed(1), cards: cards.map(rectOf) };
             }),
           })),
+          // The height half of the layout question. Every check above is about
+          // width or about ink, and none of them notices a two-pane page whose
+          // panes stop halfway down the content area and leave the background
+          // bare under them: the panes are the boxes that carry the surface, so
+          // a gap at their bottom edge is a strip of nothing.
+          //
+          // The Sessions browser is the one section that fills, so it is measured
+          // against #content's own bottom edge — not against the viewport, which
+          // the header and the reading line move — and each number is that edge
+          // minus the box's bottom: 0 is flush, positive is bare background, and
+          // negative is a pane that ran past the area that holds it. On every
+          // other destination the object says measured:false, which the caller
+          // must not read as "flush".
+          sessionsPanes: (() => {
+            const content = document.getElementById("content");
+            const browser = document.querySelector(".sessions-browser");
+            if (content === null || browser === null) return { measured: false, why: "no sessions browser on the page" };
+            const bottom = content.getBoundingClientRect().bottom;
+            const gap = (node) => (node === null ? null : +(bottom - node.getBoundingClientRect().bottom).toFixed(1));
+            return {
+              measured: true,
+              contentBottom: +bottom.toFixed(1),
+              browser: gap(browser),
+              list: gap(document.querySelector(".sessions-list-pane")),
+              view: gap(document.querySelector(".session-view")),
+            };
+          })(),
+          // The page-level half of that same question, as its own verdict: a
+          // layout that reaches the bottom edge by making the document taller
+          // than the window has not filled anything, it has scrolled.
+          pageScrolls,
+          // The same fact the other way up, for the runs that declare the layout
+          // has to fit: the matrix fails a fits: true run on it, and the
+          // reference fixture pins the same value through the structure table
+          // below as overflow.fits.
+          fits: !pageScrolls,
           // Controls a keyboard user cannot reach or read.
           unlabelledControls: [...document.querySelectorAll("button")].filter((node) => (node.textContent ?? "").trim() === "" && (node.getAttribute("aria-label") ?? "") === "" && (node.title ?? "") === "").length,
           // A strip of chips that switches what is listed under it is a tab
@@ -793,6 +867,12 @@ function buildPage(payload, fixture) {
           // side: the first is the symptom, the second names what did it.
           "overflow.page": document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1,
           "overflow.spilled": spilled.length,
+          // The vertical half of that verdict, and the reason this table carries
+          // its own copy: the reference window's render is exactly as tall as its
+          // viewport (scrollHeight 1024 in 1024), so pinning it here is what
+          // turns "the Overview fills the window" into a red gate at the size the
+          // design was drawn for, instead of only at the sizes a scenario picks.
+          "overflow.fits": rects.checks.fits,
           // The size of the set the clipped check measured, so a rename that
           // empties that set is a red gate rather than a silently vacuous check.
           "overflow.clippedCandidates": clippedTargets.length,

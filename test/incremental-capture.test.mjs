@@ -106,12 +106,23 @@ test("capture never rewrites the native session", async () => {
 // turn this project's bookkeeping into a per-session filesystem walk. The
 // precise contract — a repeated comparison never revisits the filesystem — is
 // asserted in session-adapter-contract.test.mjs; this ceiling only catches a
-// catastrophic regression (re-reading whole foreign transcripts, say).
+// catastrophic regression (re-reading whole foreign transcripts, say). It is
+// deliberately loose: even a pass with its cursor deleted, which re-discovers
+// all 1500 foreign sessions, was measured at ~550 ms of processor time, so the
+// ceiling is an order-of-magnitude net, not the cursor's guard.
 //
 // The ceiling is on the work the pass does, not on the clock it took: the test
 // runner runs several files at once, and a pass that waits for the processor
 // has not discovered more. The wall clock is still reported, because a pass
 // that takes seconds of it is worth seeing.
+//
+// One sample is not a measurement on a loaded host. The same pass that costs
+// ~190 ms of processor time alone was seen at ~1000 ms during a full suite run,
+// where file system filter drivers charge the suite's I/O to this process (the
+// wall clock moved by only 300 ms, so this was not a busy loop). The pass is
+// therefore run twice and the cheaper of the two is judged: a regression raises
+// both samples, so the net keeps its teeth, while a spike that belongs to the
+// host cannot fail the suite. Both samples are named when the net does trip.
 const FOREIGN_DISCOVERY_BUDGET_MS = 1000;
 
 test("discovery stays bounded when the machine holds a long foreign history", async () => {
@@ -119,17 +130,31 @@ test("discovery stays bounded when the machine holds a long foreign history", as
     assert.ok(foreignSessions >= 500, "the fixture must hold enough foreign sessions to matter");
     const adapter = getSessionAdapter("claude");
     await adapter.capture(projectRoot, { environment });
-    const started = process.hrtime.bigint();
-    const cpuBefore = process.cpuUsage();
-    const second = await adapter.capture(projectRoot, { environment });
-    const cpu = process.cpuUsage(cpuBefore);
-    const ms = (cpu.user + cpu.system) / 1000;
-    const wall = Number(process.hrtime.bigint() - started) / 1e6;
-    assert.equal(second.changed, false);
-    assert.equal(second.count, sessionIds.length);
+    const samples = [];
+    for (let pass = 0; pass < 2; pass += 1) {
+      const started = process.hrtime.bigint();
+      const cpuBefore = process.cpuUsage();
+      const second = await adapter.capture(projectRoot, { environment });
+      const cpu = process.cpuUsage(cpuBefore);
+      samples.push({
+        cpu: (cpu.user + cpu.system) / 1000,
+        user: cpu.user / 1000,
+        system: cpu.system / 1000,
+        wall: Number(process.hrtime.bigint() - started) / 1e6,
+        changed: second.changed,
+        count: second.count,
+      });
+    }
+    for (const sample of samples) {
+      assert.equal(sample.changed, false);
+      assert.equal(sample.count, sessionIds.length);
+    }
+    const cheapest = samples.reduce((best, sample) => (sample.cpu < best.cpu ? sample : best));
     assert.ok(
-      ms < FOREIGN_DISCOVERY_BUDGET_MS,
-      `re-discovery spent ${ms.toFixed(0)} ms of processor time (${wall.toFixed(0)} ms wall) over ${foreignSessions} foreign sessions (budget ${FOREIGN_DISCOVERY_BUDGET_MS} ms)`,
+      cheapest.cpu < FOREIGN_DISCOVERY_BUDGET_MS,
+      `re-discovery spent ${samples.map((sample) => `${sample.cpu.toFixed(0)} ms`).join(" then ")} of processor time ` +
+        `(cheapest user ${cheapest.user.toFixed(0)} · system ${cheapest.system.toFixed(0)}, ${cheapest.wall.toFixed(0)} ms wall) ` +
+        `over ${foreignSessions} foreign sessions (budget ${FOREIGN_DISCOVERY_BUDGET_MS} ms)`,
     );
   }, { sessions: 2, records: 4, otherWorkspaces: { projects: 60, sessions: 25 } });
 });

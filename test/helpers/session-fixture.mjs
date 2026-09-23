@@ -171,6 +171,16 @@ const nativeList = () => {
 // asks whether \`avenic claude\` hands Claude the same world \`claude\` sees.
 // Secret values are never recorded — only which names were present.
 const configDirValue = process.env.CLAUDE_CONFIG_DIR ?? null;
+// What the terminal said about itself. VS Code and the other terminal hosts
+// export these for the programs they run, and the official CLI reads some of
+// them (an IDE integration is entered through the IPC hook). Presence only,
+// never a value: the question is whether a launch keeps the terminal's own
+// words or swallows some of them on the way to the agent.
+const PRESENTATION = [
+  "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM", "WT_SESSION",
+  "VSCODE_INJECTION", "VSCODE_IPC_HOOK", "VSCODE_IPC_HOOK_CLI", "VSCODE_GIT_IPC_HANDLE",
+  "VSCODE_CWD", "VSCODE_PID", "VSCODE_NLS_CONFIG",
+];
 const configRoot = configDirValue ?? path.join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".claude");
 const observation = () => ({
   argv: process.argv.slice(2),
@@ -190,6 +200,8 @@ const observation = () => ({
     model: process.env.ANTHROPIC_MODEL ?? null,
     baseUrl: process.env.ANTHROPIC_BASE_URL ?? null,
   },
+  // Which of the terminal's own variables reached the agent (names only).
+  presentation: Object.fromEntries(PRESENTATION.map((name) => [name, process.env[name] !== undefined])),
   secretsSeen: Object.fromEntries(["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GITHUB_TOKEN"]
     .map((name) => [name, process.env[name] !== undefined])),
 });

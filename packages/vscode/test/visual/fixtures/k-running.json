@@ -99,7 +99,7 @@
       },
       "short": "Claude",
       "statusText": "Ready",
-      "run": "idle"
+      "run": "running"
     },
     {
       "id": "codex",
@@ -212,11 +212,7 @@
         ],
         "updated": "2025-09-20T20:30:00Z",
         "relative": "2 hours ago",
-        "active": true,
-        "sync": {
-          "state": "current",
-          "running": false
-        }
+        "active": true
       },
       {
         "id": "s-model-wizard",
@@ -227,11 +223,7 @@
         ],
         "updated": "2025-09-20T17:10:00Z",
         "relative": "5 hours ago",
-        "active": false,
-        "sync": {
-          "state": "stale",
-          "running": false
-        }
+        "active": false
       },
       {
         "id": "s-review-tests",
@@ -242,11 +234,7 @@
         ],
         "updated": "2025-09-19T21:05:00Z",
         "relative": "1 day ago",
-        "active": false,
-        "sync": {
-          "state": "current",
-          "running": false
-        }
+        "active": false
       },
       {
         "id": "s-ui-design",
@@ -256,11 +244,7 @@
         ],
         "updated": "2025-09-19T18:40:00Z",
         "relative": "1 day ago",
-        "active": true,
-        "sync": {
-          "state": "none",
-          "running": false
-        }
+        "active": true
       }
     ],
     "total": 12
@@ -276,11 +260,7 @@
           ],
           "updated": "2025-09-20T20:15:00Z",
           "relative": "2 hours ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         },
         {
           "id": "n-claude-2",
@@ -290,11 +270,7 @@
           ],
           "updated": "2025-09-19T22:00:00Z",
           "relative": "1 day ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         },
         {
           "id": "n-claude-3",
@@ -304,11 +280,7 @@
           ],
           "updated": "2025-09-18T19:30:00Z",
           "relative": "2 days ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         },
         {
           "id": "n-claude-4",
@@ -318,11 +290,7 @@
           ],
           "updated": "2025-09-17T16:20:00Z",
           "relative": "3 days ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         },
         {
           "id": "n-claude-5",
@@ -332,11 +300,7 @@
           ],
           "updated": "2025-09-16T11:00:00Z",
           "relative": "4 days ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         }
       ],
       "total": 8
@@ -351,11 +315,7 @@
           ],
           "updated": "2025-09-20T18:05:00Z",
           "relative": "4 hours ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         },
         {
           "id": "n-codex-2",
@@ -365,11 +325,7 @@
           ],
           "updated": "2025-09-19T20:12:00Z",
           "relative": "1 day ago",
-          "active": false,
-          "sync": {
-            "state": "stale",
-            "running": false
-          }
+          "active": false
         }
       ],
       "total": 5
@@ -384,11 +340,7 @@
           ],
           "updated": "2025-09-20T12:00:00Z",
           "relative": "10 hours ago",
-          "active": false,
-          "sync": {
-            "state": "current",
-            "running": false
-          }
+          "active": false
         }
       ],
       "total": 3

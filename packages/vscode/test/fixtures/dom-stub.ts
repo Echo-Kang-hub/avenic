@@ -111,6 +111,21 @@ export class StubNode {
   tabIndex = 0;
   onclick: (() => void) | null = null;
 
+  // 滚动几何。桩不排版，所以这三个数不会自己变：用例要给一个「有高度、已经滚过」
+  // 的盒子时，自己把它们铺上去（见 dashboard-behaviour 里的实时那两条）。页面只会
+  // 读它们、写 scrollTop，真实浏览器同样如此——写进一个不存在的属性才会让页面
+  // 在编辑器里悄悄不滚。
+  scrollTop = 0;
+  clientHeight = 0;
+  #scrollHeight: number | null = null;
+
+  // 没铺过高度的那一列：一个子节点算一格内容。像素在桩里本来就没有意义，但
+  // 「有内容」和「停在哪一头」是页面真的会读的两件事——页面把一列新画好的对话落在
+  // 最新那一轮上，靠的就是画完之后 scrollTop = scrollHeight 这一个写入；桩要是永远
+  // 回 0，这一个写入就退化成 0 = 0，那条断言会空过。
+  get scrollHeight(): number { return this.#scrollHeight ?? this.children.length; }
+  set scrollHeight(value: number) { this.#scrollHeight = value; }
+
   get classList(): { add: (...names: string[]) => void; remove: (...names: string[]) => void; toggle: (name: string, force?: boolean) => void; contains: (name: string) => boolean } {
     return {
       add: (...names: string[]) => this.setClasses([...this.classes(), ...names]),

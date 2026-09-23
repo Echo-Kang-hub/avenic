@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isControlEvent, spokenLocalCommand } from "./adapters/canonical.mjs";
 
 // One canonical conversation can be answered by several agents. This module
 // turns canonical events into the *shape* each agent can actually receive, and
@@ -90,7 +91,9 @@ function eventNativeSession(event, agentId) {
 
 export function blockText(block) {
   if (!block || typeof block !== "object") return "";
-  if (typeof block.text === "string") return block.text;
+  // A store an older version wrote still holds command envelopes as text; the
+  // person's own words are what comes out of them here, not the CLI's markup.
+  if (typeof block.text === "string") return spokenLocalCommand(block.text);
   if (block.type === "tool_use") {
     const name = block.name ?? "tool";
     const input = summarizeInput(block.input);
@@ -140,7 +143,10 @@ function clamp(value, limit) {
 // the history is ignored instead of guessed at — re-sending too much costs
 // tokens, sending too little loses the conversation.
 export function projectableEvents(events, { targetAgent, nativeSessionId = null, sinceEventId = null } = {}) {
-  const all = Array.isArray(events) ? events : [];
+  // Control records never travel: a store written by an older version still
+  // holds them, and handing one to the next agent is the mistake this filter
+  // exists to prevent (see adapters/canonical.mjs, the one rule).
+  const all = (Array.isArray(events) ? events : []).filter((event) => !isControlEvent(event));
   const cut = sinceEventId ? all.findIndex((event) => event?.id === sinceEventId) : -1;
   const delta = cut >= 0 ? all.slice(cut + 1) : all;
   const owned = new Set([].concat(nativeSessionId ?? []).filter(Boolean));
@@ -149,7 +155,10 @@ export function projectableEvents(events, { targetAgent, nativeSessionId = null,
 }
 
 function checkpointFor(events) {
-  const users = events.filter((event) => event.role === "user").map(eventText).filter(Boolean);
+  // Only what the person spoke becomes the goal or a request. A tool result
+  // filed under role "user" is the agent's machinery — reading it as the
+  // user's words is exactly the mistake this checkpoint must not repeat.
+  const users = events.filter((event) => turnKind(event) === "user").map(eventText).filter(Boolean);
   const tools = events.filter((event) => event.role === "tool").length;
   return {
     events: events.length,
@@ -254,12 +263,31 @@ export function renderBriefing(projection, { heading = "Avenic shared session" }
  * the assistant turn.
  *
  * An item's role follows the *speaker*, not the record: only the user's own
- * words become user messages, and another agent's turn — including the tool
- * traffic its transcript files under role "user" — arrives attributed to it.
+ * words become user messages, and another agent's turn — including its tool
+ * traffic — arrives attributed to it as a line the agent produced, never as
+ * the user's own words.
  */
-export function projectionItems(projection, { idPrefix = "avenic_evt_" } = {}) {
+// The id Avenic gives a turn it injects into another agent's thread. Every
+// item below is a message, and the Responses API refuses a message id that does
+// not begin with `msg` — a real Codex run over a projected thread answered
+//
+//   Invalid 'input[6].id': 'avenic_evt_0_afe7c6127a1'.
+//   Expected an ID that begins with 'msg'.
+//
+// — so the marker Avenic writes starts there and keeps its own name after it.
+// It is not decoration: capture reads these ids to tell a projection apart from
+// work the agent did, so the name has to survive.
+export const ITEM_ID_PREFIX = "msg_avenic_evt_";
+
+// What that prefix was before the rule was known. A thread carrying one of
+// these cannot be sent a turn at all and is rebuilt rather than resumed; the
+// records still have to be recognised, or an upgrade would capture Avenic's own
+// projection back as the agent's work.
+export const REFUSED_ITEM_ID_PREFIX = "avenic_evt_";
+
+export function projectionItems(projection, { idPrefix = ITEM_ID_PREFIX } = {}) {
   return projection.turns
-    .filter((turn) => turn.role === "user" || turn.role === "assistant")
+    .filter((turn) => turn.kind === "user" || turn.kind === "tool" || turn.role === "assistant")
     .map((turn, position) => {
       const asUser = turn.kind === "user";
       const foreign = !asUser && turn.agent !== projection.targetAgent;

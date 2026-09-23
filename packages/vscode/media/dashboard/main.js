@@ -21,7 +21,33 @@
     skillsTab: "installed",
     reading: false,
     readingTimer: null,
+    // Sessions 页自己那一份：看的是哪一半、搜什么、正在读哪一条、那一列画到了哪儿。
+    // 这些都是这一页的事，宿主不需要知道——除了落点（见 go）。
+    sessionsTab: "shared",
+    openId: null,
+    search: "",
+    turnsWindow: 100,
+    shownCount: 0,
+    view: "conversation",
+    listEl: null,
+    footEl: null,
+    transcriptEl: null,
+    viewEl: null,
+    menuEl: null,
+    factNodes: null,
+    newChip: null,
   };
+
+  // 一次启动跑着没跑着，是 core 的一句话，这里只是它的英文：没有第三档，「不确定」
+  // 不是一种状态——面板要么知道它在跑，要么知道它不在。idle 不说话（胶囊消失），
+  // 因为「没在跑」是默认，不是一条新闻。
+  const RUN_LABELS = { running: "Running", interrupted: "Interrupted" };
+
+  // 一段对话一次画多少轮：再往上滚可以够到更早的（载荷里给出来的那些）。
+  const TURN_PAGE = 100;
+  // 离底多近算「还在底部，新消息跟着走」，以及滚到顶的判定（这一列自己的圆角内不算）。
+  const NEAR_BOTTOM = 24;
+  const BOTTOM_SLOP = 4;
 
   /* ------------------------------------------------------------- helpers -- */
 
@@ -89,11 +115,14 @@
    * the request), and it made the next push of data drag the panel back to whichever
    * section the host had last sent, which is what turned a click on a session title
    * into a jump back to Overview. */
-  function go(section) {
+  function go(section, tab) {
     if (!sections.has(section)) return;
     state.section = section;
+    // Sessions 有两个落点（哪一半），所以这一条消息连「哪一半」一起说：这一页站在哪儿
+    // 是它自己的事，宿主知道自己被放在哪一页就够了。
+    if (section === "sessions" && tab !== undefined) state.sessionsTab = tab;
     render();
-    post({ type: "navigate", section });
+    post(tab === undefined ? { type: "navigate", section } : { type: "navigate", section, tab });
   }
 
   /* A strip of chips that switches the pane under it is a tab list, and painted
@@ -203,6 +232,49 @@
 
   /* --------------------------------------------------------- agent cards -- */
 
+  // 状态胶囊：跑着的时候有字，没跑的时候什么都没有（连空节点也不留——一棵总是
+  // 存在的空 span 会在 gap 里留下半个间隙）。
+  function runPill(agentId, run) {
+    const label = RUN_LABELS[run];
+    const pill = el("span", label ? "run-pill run-" + run : "run-pill");
+    pill.setAttribute("data-run-for", agentId);
+    if (label) pill.textContent = label;
+    return pill;
+  }
+
+  // 行上那枚说得更少：它说的是「参与这条会话的 agent 里有人正在跑」，是谁在下一个
+  // 徽章上。没在跑时它也留着（空的，CSS 藏起来）——后面来的状态要有个东西可改。
+  function rowRunPill(agents, running) {
+    const pill = el("span", running ? "run-pill run-running" : "run-pill");
+    pill.setAttribute("data-run-agents", (agents ?? []).join(" "));
+    if (running) pill.textContent = RUN_LABELS.running;
+    return pill;
+  }
+
+  // 胶囊上的字只有那两句（跑着、没跑完），别的状态什么都不说——空的那一枚由
+  // CSS 的 :empty 藏起来。
+  function setRun(pill, run) {
+    pill.className = RUN_LABELS[run] ? "run-pill run-" + run : "run-pill";
+    pill.textContent = RUN_LABELS[run] ?? "";
+  }
+
+  // 实时那一条：只有启动状态变了。整页重画会让人正在读的那一页跳一下，而这件事和
+  // 那一页无关——所以这里改的是那几枚胶囊，别的一个字都不动。
+  function paintRuns(runs) {
+    for (const [agentId, run] of Object.entries(runs ?? {})) {
+      const card = (state.data?.agents ?? []).find((agent) => agent.id === agentId);
+      if (card) card.run = run;
+      for (const pill of document.querySelectorAll('[data-run-for="' + agentId + '"]')) setRun(pill, run);
+    }
+    // Sessions 里的行说的是它自己的那几个参与者：谁在跑写在旁边的徽章上，行只说
+    // 「参与它的人里有谁正在跑」。页面上这一秒看得见的每一枚胶囊都在这两个循环里。
+    for (const pill of document.querySelectorAll("[data-run-agents]")) {
+      const working = (pill.getAttribute("data-run-agents") ?? "").split(" ").filter(Boolean)
+        .some((agentId) => runs?.[agentId] === "running");
+      setRun(pill, working ? "running" : "idle");
+    }
+  }
+
   // `brief` is the Configure section's cut of the same card: the answers a
   // project gave, without the machinery those answers produce.
   function agentCard(agent, { brief = false } = {}) {
@@ -223,6 +295,9 @@
     // "Not configured"), not this file's guess: the renderer cannot know why an
     // agent is unavailable, and inventing a reason is worse than repeating one.
     status.append(el("span", undefined, agent.statusText));
+    // Running 与「配好了」是两件事：能跑不代表正跑着，正跑着也不代表配置有问题。
+    // 所以是第二枚胶囊，出现与消失都由 core 的状态决定（见 paintRuns）。
+    status.append(runPill(agent.id, agent.run));
     id.append(status);
     head.append(id);
     head.append(el("div", "spacer"));
@@ -484,7 +559,9 @@
 
   function sharedCard(data) {
     const card = el("section", "card");
-    const head = cardHead({ sectionIcon: "share", title: "Shared Sessions", subtitle: "Available across all configured agents." });
+    // 概览上的这两张卡是 Sessions 页那两半的摘要，所以它们用同一套词：同两个标题、
+    // 同两句副标题——两张卡说的是两个列表，用两种叫法反而像四样东西。
+    const head = cardHead({ sectionIcon: "share", title: "Shared Sessions", subtitle: "Native sessions and projections for each agent." });
     head.append(el("div", "spacer"));
     if (data.history.mode === "shared") {
       // Nothing to continue means nothing to click: the host drops an action
@@ -503,7 +580,7 @@
     } else {
       head.append(button({ label: "Switch to Shared", icon: "history", size: "sm", variant: "brand", onClick: () => post({ type: "action", action: "switchHistory" }) }));
     }
-    head.append(button({ iconOnly: true, icon: "ellipsis", size: "sm", title: "All shared sessions", onClick: () => post({ type: "navigate", section: "sessions" }) }));
+    head.append(button({ iconOnly: true, icon: "ellipsis", size: "sm", title: "All shared sessions", onClick: () => go("sessions", "shared") }));
     card.append(head);
 
     const list = el("div", "list-box");
@@ -519,6 +596,7 @@
     card.append(listFoot(data, {
       label: `View All Shared Sessions (${data.shared.total})`,
       section: "sessions",
+      tab: "shared",
       shown: data.shared.rows.length,
       total: data.shared.total,
     }));
@@ -527,17 +605,20 @@
 
   /* 「View All」只在概览上是一句话：到了它指向的那一页，同一个链接就成了原地打转。
    * 取而代之的是那一页必须自己说清楚它列了多少条——一张只画前 50 行、却不说这个数
-   * 的列表，看起来和「总共就这么多」没有区别。 */
+   * 的列表，看起来和「总共就这么多」没有区别。
+   *
+   * 落点连「哪一半」一起说：Sessions 页有两半，只说「Sessions」的话，从 Agent 那一
+   * 张卡进去的人会落到共享那一半上。 */
   function listFoot(data, options) {
     const foot = el("div", options.compact ? "card-foot compact" : "card-foot");
-    if (!data.detail) foot.append(link(options.label, "chevron-right", () => go(options.section)));
+    if (!data.detail) foot.append(link(options.label, "chevron-right", () => go(options.section, options.tab)));
     else if (options.total > options.shown) foot.append(el("span", "foot-note", `Showing the newest ${options.shown} of ${options.total}.`));
     return foot;
   }
 
   function projectCard(data) {
     const card = el("section", "card");
-    const head = cardHead({ sectionIcon: "database", title: "Project Sessions", subtitle: "Isolated to this project." });
+    const head = cardHead({ sectionIcon: "database", title: "Agent Sessions", subtitle: "Independent histories for each agent." });
     head.append(el("div", "spacer"));
 
     // The agent tabs sit in the head, not on their own strip.
@@ -564,8 +645,9 @@
     card.append(list);
 
     card.append(listFoot(data, {
-      label: "View All Project Sessions",
+      label: "View All Agent Sessions",
       section: "sessions",
+      tab: "agent",
       compact: true,
       shown: rows.length,
       total: data.native[active]?.total ?? rows.length,
@@ -734,50 +816,423 @@
     return [agentGrid(data, true)];
   }
 
-  function sessionsSection(data) {
-    const nodes = [];
-    const row = el("div", "cards-row");
-    row.append(sharedCard(data));
-    row.append(projectCard(data));
-    nodes.push(row);
-    if (data.transcript) nodes.push(transcriptCard(data.transcript, data.history.mode));
-    return nodes;
+  /* -------------------------------------------------------- sessions page -- */
+  //
+  // Sessions 是这一页里唯一「读」的地方，所以它是两个窗格而不是两张卡片：左边一列
+  // 会话，右边它们其中一条的对话。列表那一帧只读元数据——名字、参与者、时间、跑着没有
+  // ——一段对话要等用户点开某一条才读。
+
+  /* 一条会话没有标题时，用短 id 而不是整串 uuid：存储的编号不是它的名字，印在一行
+   * 上就是把编号当成了名字。宿主那边已经这样回答了，这里再兜一次——载荷可以来自
+   * 任何一版宿主，而「永远不印 uuid」这条不归版本管。 */
+  function titleOf(row) {
+    if (row.title) return row.title;
+    const id = String(row.id ?? "");
+    const tail = id.includes(":") ? id.slice(id.indexOf(":") + 1) : id;
+    return tail.slice(0, 8);
   }
 
-  function transcriptCard(transcript, mode) {
-    const shared = mode === "shared";
-    const card = el("section", "card");
-    const head = cardHead({
-      sectionIcon: "file-text",
-      title: transcript.title,
-      // 一段对话是不是「三个 agent 共用的那一份」，取决于这个项目的设置。隔离模式
-      // 下把同一条会话说成共享历史，就是在替这个项目回答它没做的那个选择。
-      subtitle: shared ? "Shared history — the same conversation every agent sees." : "This project keeps its sessions isolated — read-only here.",
+  // 哪一个是「这一列在看的 agent」：用户点过的那个，否则第一个真的有会话的，再否则
+  // 第一个。概览的卡片和 Sessions 页说的是同一个选择，所以它只有一份。
+  function activeAgent(data) {
+    const chosen = state.agentTab ?? (data.agents ?? []).find((agent) => (data.native?.[agent.id]?.rows ?? []).length > 0)?.id;
+    return chosen ?? data.agents?.[0]?.id;
+  }
+
+  function sessionsSection(data) {
+    const browser = el("section", "sessions-browser");
+    const panes = el("div", "sessions-panes");
+    panes.append(sessionsListPane(data));
+    panes.append(sessionReader(data));
+    browser.append(panes);
+    return [browser];
+  }
+
+  function sessionsListPane(data) {
+    const shared = state.sessionsTab === "shared";
+    const pane = el("aside", "card sessions-list-pane");
+    pane.id = "sessions-list-pane";
+    pane.setAttribute("role", "tabpanel");
+    pane.setAttribute("aria-label", "Sessions");
+    // 产品词是这两个：Shared Sessions 是这个项目跨 agent 的那一份历史，Agent Sessions
+    // 是某个 agent 自己那份原生会话。两句话各自说清它列的是什么。
+    pane.append(cardHead({
+      sectionIcon: shared ? "share" : "database",
+      title: shared ? "Shared Sessions" : "Agent Sessions",
+      subtitle: shared ? "Native sessions and projections for each agent." : "Independent histories for each agent.",
+    }));
+
+    pane.append(tabStrip({
+      label: "Which history to list",
+      panelId: "sessions-list-pane",
+      active: state.sessionsTab,
+      tabs: [["shared", "Shared"], ["agent", "Agent"]],
+      // 换一半是这一页自己的事（它记着用户站在哪一半），顺带告诉宿主它现在停在哪儿。
+      onSelect: (key) => { if (key !== state.sessionsTab) go("sessions", key); },
+    }));
+
+    // 搜的是已经拿到的那一列，按标题与元数据过一遍：问宿主重新读一次盘不叫搜索。
+    const search = el("input", "session-search");
+    search.type = "search";
+    search.value = state.search;
+    search.placeholder = "Search sessions";
+    search.setAttribute("aria-label", "Search sessions");
+    search.addEventListener("input", () => { state.search = search.value; paintRows(); });
+    pane.append(search);
+
+    if (!shared) pane.append(agentStrip(data));
+
+    const list = el("div", "sessions-list");
+    list.id = "sessions-agent-list";
+    list.setAttribute("role", "tabpanel");
+    list.setAttribute("aria-label", shared ? "Shared sessions" : `Sessions for ${shortLabelOf(activeAgent(data))}`);
+    list.append(...listChildren(data));
+    pane.append(list);
+    state.listEl = list;
+
+    const foot = el("div", "sessions-foot");
+    pane.append(foot);
+    state.footEl = foot;
+    paintFoot();
+
+    // 两个词的区别要有一句话，否则「Agent Sessions」和「Session Storage」看起来
+    // 只是同一个东西的两种叫法。
+    pane.append(el("div", "sessions-note", "Agent Sessions are the ones an agent's own CLI can open; Session Storage is where Avenic keeps this project's copies."));
+    return pane;
+  }
+
+  // Agent 那一半列的是某一个 agent 自己的会话，所以它还要问是哪一个。这是换列内容
+  // 的开关，和上面那一条一样是标签组——画成芯片而角色上不是，读屏软件读到的是三枚
+  // 互不相干的按钮。
+  function agentStrip(data) {
+    const active = state.agentTab = activeAgent(data);
+    return tabStrip({
+      label: "Agents with sessions in this project",
+      panelId: "sessions-agent-list",
+      inline: true,
+      active,
+      // 短名：参考图的标签写的是「Claude (8)」，不是「Claude Code (8)」。
+      tabs: (data.agents ?? []).map((agent) => [agent.id, `${agent.short ?? agent.label} (${data.native?.[agent.id]?.total ?? 0})`]),
+      onSelect: (key) => { state.agentTab = key; render(); },
     });
-    // The active session is the one `avenic continue` picks up when nobody names
-    // a conversation, so marking it is a real action. On the session that is
-    // already active the button would only ask the user to confirm what holds.
-    // 隔离模式下 CLI 不提供这一项（它的菜单只在 shared 时列出「设为 Active」），
-    // 于是这里也不提供——一条点了会被拒绝的按钮不是功能。
-    if (shared && !transcript.active) {
-      head.append(el("div", "spacer"));
-      head.append(button({
+  }
+
+  function matchesSearch(row, needle) {
+    if (needle === "") return true;
+    // 一行是元数据：名字、参与者、时间。id 不在里面——按一个看不见的字段筛出来的行，
+    // 用户没有办法知道它为什么在这儿。
+    const haystack = [row.title, row.relative, ...(row.agents ?? []).map(shortLabelOf)].join(" ").toLowerCase();
+    return haystack.includes(needle);
+  }
+
+  // 这一列此刻列出来的那几条（搜索过了一遍）。
+  function listedRows(data) {
+    const shared = state.sessionsTab === "shared";
+    const source = shared ? (data.shared?.rows ?? []) : (data.native?.[activeAgent(data)]?.rows ?? []);
+    const needle = state.search.trim().toLowerCase();
+    return { shared, source, rows: source.filter((row) => matchesSearch(row, needle)) };
+  }
+
+  function listChildren(data) {
+    const { shared, source, rows } = listedRows(data);
+    if (rows.length > 0) return rows.map((row) => browserRow(row, { agents: shared }));
+    if (source.length > 0) return [emptyState("No session matches", `Nothing in this list has “${state.search.trim()}” in its title, its agents or its time.`)];
+    return [shared
+      ? emptyState("No shared sessions yet.", "Start an agent session and import it — the conversation shows up here, ready to continue.")
+      : emptyState("No sessions here yet.", `${shortLabelOf(activeAgent(data))} has no conversation in this project to continue.`)];
+  }
+
+  // 搜索和换 agent 都只动这一列：右边正在读的那一段不跟着动，读到的位置也就还在。
+  function paintRows() {
+    const list = state.listEl;
+    if (list === null || state.data === null) return;
+    list.replaceChildren(...listChildren(state.data));
+    paintFoot();
+  }
+
+  function paintFoot() {
+    const foot = state.footEl;
+    if (foot === null || state.data === null) return;
+    const { shared, rows } = listedRows(state.data);
+    const total = shared ? (state.data.shared?.total ?? 0) : (state.data.native?.[activeAgent(state.data)]?.total ?? 0);
+    foot.replaceChildren();
+    // 一张只画前几行、却不说这个数的列表，看起来和「总共就这么多」没有区别——搜索的
+    // 时候说的就是「筛出来的几条」。
+    if (total <= rows.length) return;
+    foot.append(el("span", "foot-note", state.search.trim() === ""
+      ? `Showing the newest ${rows.length} of ${total}.`
+      : `${rows.length} of ${total} sessions match.`));
+  }
+
+  function browserRow(row, options) {
+    const line = el("div", "session-row");
+    line.setAttribute("data-session", row.id);
+    // 正在读的那一条要说出来：这一页的高亮不只是一种颜色，读屏软件也要读到它。
+    if (state.openId === row.id) line.setAttribute("aria-current", "true");
+
+    const title = el("button", "row-title", titleOf(row));
+    title.type = "button";
+    title.title = titleOf(row);
+    title.addEventListener("click", () => post({ type: "action", action: "viewSession", id: row.id }));
+    line.append(title);
+
+    const meta = el("div", "row-meta");
+    // 两枚胶囊各说各的：Active 是这个项目的当前会话，「Running」是参与它的 agent 里
+    // 有人正在跑，「Stale」是这一份拷贝落后于共享历史了。合成一枚就会说错其中一件。
+    if (row.active) meta.append(el("span", "active-chip", "Active"));
+    meta.append(rowRunPill(row.agents, row.sync?.running === true));
+    if (row.sync?.state === "stale") meta.append(el("span", "stale-chip", "Stale"));
+    if (options.agents !== false) {
+      for (const agent of row.agents ?? []) meta.append(agentChip(agent, toneOfAgent(agent)));
+    }
+    meta.append(el("span", "row-time", row.relative));
+    line.append(meta);
+    return line;
+  }
+
+  /* ------------------------------------------------------------ the reader -- */
+
+  function sessionReader(data) {
+    const view = el("section", "card session-view");
+    const transcript = data.transcript;
+    if (!transcript) {
+      view.append(emptyState("Nothing is open yet", "Pick a session on the left and its conversation is read here."));
+      return view;
+    }
+
+    const head = el("div", "session-head");
+    const top = el("div", "session-head-top");
+    const titles = el("div", "session-titles");
+    titles.append(el("div", "session-title", titleOf(transcript)));
+    // 一段对话是不是「三个 agent 共用的那一份」，取决于这个项目的设置。隔离模式下把
+    // 同一条会话说成共享历史，就是在替这个项目回答它没做的那个选择。
+    titles.append(el("div", "session-sub", data.history.mode === "shared"
+      ? "Shared history — the same conversation every agent sees."
+      : "This project keeps its sessions isolated."));
+    top.append(titles);
+    top.append(el("div", "spacer"));
+
+    const actions = el("div", "session-actions");
+    actions.append(button({
+      label: "Continue",
+      icon: "play",
+      iconTone: "brand",
+      size: "sm",
+      onClick: () => post(Object.assign({ type: "action" }, continueAction(transcript))),
+    }));
+    // The active session is the one `avenic continue` picks up when nobody names a
+    // conversation, so marking it is a real action. 隔离模式下 CLI 不提供这一项
+    // （它的菜单只在 shared 时列出「设为 Active」），于是这里也不提供——一条点了会被
+    // 拒绝的按钮不是功能。
+    if (data.history.mode === "shared" && !transcript.active) {
+      actions.append(button({
         label: "Set as Active",
         icon: "check",
         size: "sm",
         onClick: () => post({ type: "action", action: "setActive", id: transcript.id }),
       }));
     }
-    card.append(head);
-    const body = el("div", "transcript");
-    for (const turn of transcript.turns ?? []) {
-      const node = el("div", "turn");
-      node.append(el("div", "turn-role", turn.role));
-      node.append(el("div", "turn-text", turn.text));
-      body.append(node);
+
+    // ⋯ 后面是这一页自己的两种读法：Raw 是这些轮的原样，Diagnostics 是这条会话的
+    // 投影说过什么。两者都在已到的载荷里——一个点了要等宿主回包的菜单项，等不到就是
+    // 死的，而这两个视图永远不会有第二条答案。
+    const menu = el("div", "session-menu");
+    menu.hidden = true;
+    menu.append(button({ label: "Raw", size: "sm", onClick: () => showView("raw") }));
+    menu.append(button({ label: "Diagnostics", size: "sm", onClick: () => showView("diagnostics") }));
+    actions.append(button({
+      iconOnly: true, size: "sm", icon: "ellipsis", title: "Session actions",
+      onClick: () => { menu.hidden = !menu.hidden; },
+    }));
+    actions.append(menu);
+    top.append(actions);
+    head.append(top);
+
+    const facts = el("div", "session-facts");
+    const fact = (label) => {
+      const value = el("span", "fact-value");
+      facts.append(el("div", "session-fact", label));
+      facts.append(value);
+      return value;
+    };
+    fact("Participants").textContent = (transcript.participants ?? []).join(", ");
+    const updated = fact("Updated");
+    const events = fact("Event count");
+    const sync = fact("Sync state");
+    paintFacts({ updated, events, sync }, transcript);
+    head.append(facts);
+    view.append(head);
+
+    state.factNodes = { updated, events, sync };
+    state.menuEl = menu;
+    const body = el("div", "session-view-body");
+    body.append(conversationBox(transcript));
+    state.viewEl = body;
+    view.append(body);
+    return view;
+  }
+
+  // 头部那几格是实时更新里唯一会变的东西：事件数、更新时间、同步状态。它们是同一批
+  // 节点，改的是字而不是重建——重建会让正在读的人丢掉位置。
+  function paintFacts(nodes, transcript) {
+    nodes.events.textContent = `${transcript.eventCount} events`;
+    nodes.updated.textContent = transcript.updatedRelative;
+    nodes.sync.textContent = transcript.sync?.label ?? "";
+  }
+
+  function continueAction(transcript) {
+    // Agent 那一半接着说的是那个 agent 自己的会话，共享那一半接着说的是共享历史。
+    if (state.sessionsTab === "agent") return { action: "continueNative", agent: activeAgent(state.data), id: transcript.id };
+    return { action: "continueShared", id: transcript.id };
+  }
+
+  function conversationBox(transcript) {
+    const box = el("div", "transcript");
+    box.tabIndex = 0;
+    paintTurns(box, transcript.turns ?? []);
+    // 往上滚就是「想看得更早」：到底之后把剩下的补上，不再向宿主多要一次载荷。补的
+    // 时候留住读者看的那一行——把内容接在上面会把正在读的那一段推下去。
+    box.addEventListener("scroll", () => {
+      if (box.scrollTop > BOTTOM_SLOP) return;
+      const all = state.data?.transcript?.turns ?? [];
+      if (state.shownCount >= all.length) return;
+      state.turnsWindow += TURN_PAGE;
+      const kept = box.scrollHeight - box.scrollTop;
+      paintTurns(box, all);
+      box.scrollTop = Math.max(0, box.scrollHeight - kept);
+    });
+    state.transcriptEl = box;
+    return box;
+  }
+
+  function paintTurns(box, turns) {
+    const shown = turns.slice(-state.turnsWindow);
+    state.shownCount = shown.length;
+    const nodes = [];
+    // 没画全部的时候要说出来：一列看起来完整的对话和一条被截断的，字面上没有区别。
+    if (turns.length > shown.length) nodes.push(el("div", "turn-note", `Showing the newest ${shown.length} of ${turns.length} turns.`));
+    for (const turn of shown) nodes.push(turnBlock(turn));
+    box.replaceChildren(...nodes);
+  }
+
+  function turnBlock(turn) {
+    const block = el("article", "turn");
+    const head = el("div", "turn-head");
+    // 说话的人是 core 定下的称呼：键盘前的人只有一个名字（You），别的是发话的那个
+    // agent。存在盘上的 role（user/assistant）是给程序看的词，不写在这一页上。
+    head.append(el("span", "turn-speaker", speakerOf(turn)));
+    if (turn.model) head.append(el("span", "turn-model", turn.model));
+    block.append(head);
+    if (turn.text) block.append(el("div", "turn-text", turn.text));
+    for (const tool of turn.tools ?? []) block.append(toolRow(tool));
+    return block;
+  }
+
+  function speakerOf(turn) {
+    if (turn.kind === "user") return "You";
+    return turn.speaker || shortLabelOf(turn.agent) || "Agent";
+  }
+
+  // 工具不是自己说话的人：它属于让它跑起来的那个 agent，所以它是那一轮下面的一行，
+  // 不是新的一轮——把它写成一条发言，就是把 agent 干的事放进了键盘前那个人的嘴里。
+  function toolRow(tool) {
+    const row = el("div", "tool-row");
+    row.append(el("span", "tool-verb", tool.kind === "call" ? "ran" : "returned"));
+    row.append(el("span", "tool-name", tool.name));
+    if (tool.detail) row.append(el("span", "tool-detail", `(${tool.detail})`));
+    return row;
+  }
+
+  function showView(kind) {
+    const transcript = state.data?.transcript;
+    const body = state.viewEl;
+    if (!transcript || !body) return;
+    state.view = kind;
+    if (state.menuEl) state.menuEl.hidden = true;
+    if (kind === "raw") {
+      state.transcriptEl = null;
+      body.replaceChildren(rawView(transcript));
+      return;
     }
-    card.append(body);
-    return card;
+    if (kind === "diagnostics") {
+      state.transcriptEl = null;
+      body.replaceChildren(diagnosticsView(transcript));
+      return;
+    }
+    // 回到对话：这一列重新画一遍，原来读到哪儿就没了——这是换一种读法的代价。
+    state.turnsWindow = TURN_PAGE;
+    body.replaceChildren(conversationBox(transcript));
+    landToNewest();
+  }
+
+  /* 一列刚画好的对话落在它的结尾。位置在重画里本来就丢了，丢的时候落在开头等于把
+   * 读的人送回一段他早读过的地方——一条长会话打开来看到的是第 100 轮之前的那一段，
+   * 而右边那颗「继续」按钮说的是最新的那一句。读的时候才会写这一下：画的时候这些
+   * 节点还没进文档，浏览器算不出高度（真实的 scrollHeight 要挂上去才有）。 */
+  function landToNewest() {
+    const box = state.transcriptEl;
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  function rawView(transcript) {
+    const box = el("div", "raw-view");
+    box.append(el("div", "view-note", "The turns this host sent, as they arrived — nothing added, nothing rewritten."));
+    // 载荷里只有语义上的那几轮：控制行与 CLI 自己的回显在宿主那侧就没进来，所以这里
+    // 不筛原始记录——它画的就是它拿到的。
+    for (const turn of transcript.turns ?? []) box.append(el("div", "raw-line", JSON.stringify(turn)));
+    return box;
+  }
+
+  function diagnosticsView(transcript) {
+    const box = el("div", "diagnostics-view");
+    const warnings = transcript.diagnostics?.warnings ?? [];
+    const notes = transcript.diagnostics?.notes ?? [];
+    box.append(el("div", "view-note", `Projection for this conversation: ${transcript.sync?.label ?? "unknown"}.`));
+    if (warnings.length === 0 && notes.length === 0) {
+      box.append(emptyState("Nothing to report", "No projection of this conversation has anything to say about it."));
+      return box;
+    }
+    for (const [tone, lines] of [["Warning", warnings], ["Note", notes]]) {
+      for (const text of lines) {
+        const row = el("div", "diagnostic-row");
+        row.append(el("span", "diagnostic-tone", tone));
+        row.append(el("span", "diagnostic-text", text));
+        box.append(row);
+      }
+    }
+    return box;
+  }
+
+  /* 新消息落在哪儿：读到一半的人不能被拽到底部，也不能什么都不说——屏幕下沿给一条
+   * 回去的路，点了才下去。本来就在底部的人跟着走，那才是「实时」。 */
+  function appendNewTurns(previous) {
+    const before = previous?.transcript;
+    const now = state.data?.transcript;
+    if (state.section !== "sessions" || state.transcriptEl === null || state.view !== "conversation") return false;
+    if (!before || !now || before.id !== now.id) return false;
+    const added = (now.turns ?? []).length - (before.turns ?? []).length;
+    if (added <= 0) return false;
+    // 前面那几轮必须是同一批：换了一段对话就整段重画，不能把新的一轮接到别人后面。
+    for (let index = 0; index < before.turns.length; index += 1) if (before.turns[index].id !== now.turns[index].id) return false;
+    // 窗口已经满了：重画一次，窗口跟着挪一位——多出来的那些本来就该从最上面掉出去。
+    if (state.shownCount + added > state.turnsWindow) return false;
+    const box = state.transcriptEl;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight <= NEAR_BOTTOM;
+    for (const turn of now.turns.slice(before.turns.length)) box.append(turnBlock(turn));
+    state.shownCount += added;
+    if (state.factNodes) paintFacts(state.factNodes, now);
+    if (atBottom) box.scrollTop = box.scrollHeight;
+    else if (state.newChip === null && box.querySelectorAll(".new-messages").length === 0) {
+      const chip = el("button", "new-messages", "New messages ↓");
+      chip.type = "button";
+      chip.addEventListener("click", () => {
+        box.scrollTop = box.scrollHeight;
+        chip.hidden = true;
+      });
+      box.append(chip);
+      state.newChip = chip;
+    }
+    return true;
   }
 
   function quickSection(data) {
@@ -851,6 +1306,19 @@
   function render() {
     const data = state.data;
     if (!data) return;
+    // 整页重画之后，上一帧留下的那些节点引用一个都不能用了：实时追加要落到这一帧
+    // 画出来的盒子上，否则新消息会加到一个已经不在页面上的地方。
+    state.listEl = null;
+    state.footEl = null;
+    state.transcriptEl = null;
+    state.viewEl = null;
+    state.menuEl = null;
+    state.factNodes = null;
+    state.newChip = null;
+    state.view = "conversation";
+    state.turnsWindow = TURN_PAGE;
+    state.shownCount = 0;
+    if (data.transcript) state.openId = data.transcript.id;
     renderHeader(data);
     for (const item of nav.querySelectorAll(".nav-item")) {
       const active = item.getAttribute("data-section") === state.section;
@@ -890,6 +1358,7 @@
       quick: quickSection,
     };
     for (const node of (renderers[state.section] ?? overviewSection)(data)) content.append(node);
+    landToNewest();
   }
 
   // The sections the shell actually offers, read off the template: the host can
@@ -917,10 +1386,14 @@
     if (!message || typeof message !== "object") return;
     if (message.type === "data") {
       stopReading();
+      const previous = state.data;
       state.data = message.payload;
       state.error = null;
       if (message.section) state.section = message.section;
-      render();
+      // 正在读的那一段又长了一轮：接在它后面，而不是把整页重画一遍——重画会把读到的
+      // 位置、左边那一列的选择、还有输入框里打到一半的字一起抹掉。
+      if (!appendNewTurns(previous)) render();
+      else if (message.payload?.transcript) state.openId = message.payload.transcript.id;
     } else if (message.type === "navigate") {
       // The host naming a landing place ("Sessions" opens the panel on the
       // sessions section) is a local move: no answer is owed back.
@@ -928,6 +1401,9 @@
         state.section = message.section;
         render();
       }
+    } else if (message.type === "status") {
+      // 一次启动的开始或结束：这不需要重读项目，也不该重画页面。
+      paintRuns(message.runs);
     } else if (message.type === "error") {
       stopReading();
       state.error = typeof message.message === "string" ? message.message : "Unknown error";

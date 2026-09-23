@@ -490,7 +490,9 @@ button {
 /* The reference's two gaps differ: 13px under the Agent Configuration panel,
  * 9px between the two lower rows. */
 /* The panel starts 11px below the header rule (measured y85 against a rule at 73). */
-.content { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 9px; padding-top: 11px; }
+/* `relative` 只为一件事：给「占满内容区」的那一页一个定位祖先（见 .sessions-browser）。
+ * 别处没有绝对定位的孩子，所以这条不改任何现有布局。 */
+.content { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 9px; padding-top: 11px; }
 
 .content > .section:first-child { margin-bottom: 4px; }
 
@@ -704,6 +706,13 @@ button {
 
 .badge .icon { font-size: 12px; }
 
+/* 启动状态胶囊：跑着是绿的，没跑完就消失的那次是琥珀的（那一次要人做点什么）。
+ * idle 的那一枚是空节点，不画任何东西——「没在跑」是默认，不是一条新闻。 */
+.run-pill { display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px; border-radius: var(--av-radius-pill); border: 1px solid transparent; font-size: 11.5px; }
+.run-pill:empty { display: none; }
+.run-running { background: var(--av-badge-green-bg); border-color: var(--av-badge-green-line); color: var(--av-badge-green-fg); }
+.run-interrupted { background: var(--av-brand-tint); border-color: var(--av-brand-line); color: var(--av-brand-text); }
+
 /* ------------------------------------------------------------ card rows -- */
 
 /* The reference's right column is ~5% wider than the left (measured 606 / 636
@@ -724,10 +733,33 @@ button {
 
 /* The row that closes the page takes the room the two rows above it left: the
  * reference's Overview is full to the bottom edge, and how full it is cannot
- * depend on how many rows the project's lists happen to hold. `flex-shrink: 0`
- * is deliberate — a row that ran out of room keeps its content's height and lets
- * the page scroll, rather than being squashed and spilling its own cards. */
-.cards-row.bottom-row { flex: 1 0 auto; }
+ * depend on how many rows the project's lists happen to hold.
+ *
+ * flex-shrink was 0 here for one round, on the reasoning that a squashed row
+ * spills its own cards — which is true of a row whose lists cannot scroll, and
+ * the two lists in this row are scroll containers now (see .list-box and
+ * .activity-list). Shrink is 1 and the floor is the row's own min-content, so
+ * the row can give back room it is not given, and never less than Quick Actions
+ * (six buttons in a grid of fixed rows) plus the cards' own heads and feet.
+ *
+ * The ceiling is a cap, because the promise is "full", not "grows without
+ * limit": at 2560x1440 the leftover below this row is some 890px, and a Skills
+ * list stretched over that is a row of items above a screen of empty border.
+ * Measured before the cap: the row was 671.8px tall at 2560x1440 and 631.8 at
+ * 1491x1400. 560px is a little over twice the reference's own 254px content
+ * height, so the cap only starts to bite on windows taller than about 1700px.
+ *
+ * What shrink does *not* reach yet: the shell above it is content-sized
+ * (#root's min-height: 100vh is a floor, not a ceiling), so a window shorter
+ * than the page still scrolls the document rather than squeezing this row. At
+ * 1600x900 that is 1022px of document in a 900px window. Removing it needs a
+ * definite shell height and a zero-minimum track here, and that state was built
+ * and measured on 2026-09-23: it fits 1600x900 exactly and costs two visible
+ * things — the Agent Configuration panel gives up the 122px instead (it is the
+ * one flex item with no floor, and its last three field rows get cut off), and
+ * this row collapses to a 2px sliver at 1366x768 and in the folded layout.
+ * test/visual/matrix.mjs carries that measurement beside the 16:9 runs. */
+.cards-row.bottom-row { flex: 1 1 auto; min-height: min-content; max-height: min(560px, 62vh); }
 
 /* A column of cards that shares its height with the card beside it: the last card
  * is the one that eats what the column has left over, so the leftover is card
@@ -735,7 +767,13 @@ button {
  * bottom edge — rather than a gap of page background below a short card. */
 .stack { display: flex; flex-direction: column; gap: 8px; min-width: 0; height: 100%; }
 
-.stack > .card:last-child { flex: 1 0 auto; }
+/* The other end of the row's stretch: grow 1 is what makes the leftover in the
+ * column card surface rather than a gap of page background under a short card.
+ * Shrink 1 and a floor of 0 are for the case the row is given less room than its
+ * content: this is the one card that can give it back, with the activity list
+ * below scrolling instead. See .cards-row.bottom-row for when the browser does
+ * and does not ask for that. */
+.stack > .card:last-child { flex: 1 1 auto; min-height: 0; }
 
 .card { background: var(--av-surface); border: 1px solid var(--av-border); border-radius: var(--av-radius); overflow: hidden; display: flex; flex-direction: column; }
 
@@ -784,12 +822,22 @@ button {
 .row-list { display: flex; flex-direction: column; }
 
 /* The list is a box, not a stack of full-bleed rows: the reference insets it 15px
- * from both card edges and draws its own border and radius around the rows. */
+ * from both card edges and draws its own border and radius around the rows.
+ *
+ * It is also the part of a card that can be given less room without losing
+ * anything: a list too long for the box it sits in scrolls, and this box is what
+ * would shrink first if a card ever had to give height back (see
+ * .cards-row.bottom-row for when the browser asks for that). Only the vertical
+ * axis scrolls: x stays clipped, so rows cannot bleed out of the box's own
+ * radius at any width. */
 .list-box {
   margin: 0 var(--av-list-inset);
   border: 1px solid var(--av-border-soft);
   border-radius: var(--av-radius-sm);
   overflow: hidden;
+  overflow-y: auto;
+  flex: 0 1 auto;
+  min-height: 0;
   display: flex; flex-direction: column;
 }
 
@@ -1019,6 +1067,14 @@ button {
   grid-template-columns: minmax(0, 279fr) minmax(0, 312fr);
   column-gap: 18px;
   padding: 0 13px 9px;
+  /* Entries scroll inside the card for the same reason the Skills list does:
+     this is the last card of the bottom row, so it is the one that would give
+     that row its height back if the row were given less room (see
+     .cards-row.bottom-row). */
+  overflow: hidden;
+  overflow-y: auto;
+  flex: 0 1 auto;
+  min-height: 0;
 }
 
 .activity-row { display: flex; align-items: center; gap: 10px; padding: 0 12px 0 4px; height: 28px; font-size: 12.5px; min-width: 0; }
@@ -1066,13 +1122,227 @@ button {
 
 .reading .icon { font-size: 15px; color: var(--av-text-dim); }
 
-.transcript { border-top: 1px solid var(--av-border-soft); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+/* 一段对话自己就是一个会滚的盒子：它拿窗格里剩下的高度，超出的部分在自己内部滚，
+ * 所以右边的窗格永远不把页面撑高。 */
+.transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 
 .turn { display: flex; flex-direction: column; gap: 4px; }
 
 .turn-role { font-size: 11.5px; color: var(--av-text-muted); text-transform: none; }
 
 .turn-text { font-size: 12.5px; color: var(--av-text-body); white-space: pre-wrap; }
+
+/* -------------------------------------------------------------- sessions -- */
+
+/* Sessions 是这一页里唯一要占满高度的地方：左边一列会话、右边一段对话，两个窗格
+ * 各自滚自己的，页面本身一个像素都不滚（滚页面会把标题栏也滚走，而读者正要边读边
+ * 用它）。所以从内容区到窗格，整条链路上每一层都得让出高度：min-height: 0 一路
+ * 传下去，最后落在两个 overflow 上。 */
+/* 「占满内容区」的一半是高度，而高度不能靠 min-height 说出来：这一页的轮次比窗口长是
+ * 常态，只要浏览框留在文档流里，一百轮的高度就顺着 .content 的 auto 高度一路传上去，
+ * 把文档撑成几千像素——两栏各自的滚动条永远不会出现，先出现的是页面的那条。所以它按
+ * 内容区自己的边定位：11px 是 .content 的 padding-top，也就是其它分区的第一张卡片开始
+ * 的那条线，剩下的高度就是「内容区剩多少」。 */
+.sessions-browser {
+  position: absolute; inset: 11px 0 0 0;
+  display: flex; flex-direction: column;
+}
+
+.sessions-panes {
+  flex: 1 1 auto; min-height: 0;
+  display: grid;
+  /* 左列是量出来的（参考图的列表宽 320–360），右列拿剩下的全部——一段对话需要的是
+   * 宽度，不是一列固定的数字。 */
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  /* 那一行必须能缩到比内容矮：auto 的行高会跟着 50 条会话、100 轮对话长上去，而这两样
+   * 本来就该由左栏和对话区各自的滚动条来装。 */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 12px;
+}
+
+.sessions-list-pane, .session-view { min-height: 0; display: flex; flex-direction: column; }
+
+.sessions-list-pane { padding-bottom: 0; }
+
+/* 搜索框与列表之间不留白：它们是一件事的两半。 */
+.session-search {
+  margin: 0 var(--av-list-inset) 8px;
+  height: 30px; padding: 0 10px;
+  border-radius: var(--av-radius-sm);
+  border: 1px solid var(--av-border);
+  background: var(--av-surface-hi);
+  color: var(--av-text-body);
+  font: inherit; font-size: 12.5px;
+}
+
+.session-search::placeholder { color: var(--av-text-muted); }
+
+/* 这一列是唯一会自己滚的：条数不封顶，窗格封顶。 */
+.sessions-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 var(--av-list-inset) 8px; }
+
+.sessions-foot { padding: 6px var(--av-list-inset); }
+.sessions-foot:empty { display: none; }
+
+.sessions-foot .foot-note { color: var(--av-text-muted); font-size: 12px; }
+
+/* 「Agent Sessions 与 Session Storage 是两件事」那一句：两个词各自都像是「会话」的
+ * 又一种叫法，不说清它们不一样，用户就会以为看见了同一个东西的两份拷贝。 */
+.sessions-note {
+  border-top: 1px solid var(--av-border-soft);
+  margin-top: auto;
+  padding: 8px var(--av-list-inset) 9px;
+  color: var(--av-text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* 一行是一条会话的元数据：名字在上面，其余在一行里。行自己不是按钮——名字才是，
+ * 一枚徽章或一个时间点上都挂一个点开会话的点击区，那是误点的来源。 */
+.session-row {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 7px 8px;
+  border-radius: var(--av-radius-sm);
+  min-width: 0;
+}
+
+.session-row:hover { background: var(--av-surface-hi); }
+
+.session-row[aria-current="true"] { background: var(--av-brand-soft); }
+
+/* 正在读的那一条还要一条边：只靠底色的话，两个相邻的行在深色背景上看起来一样。 */
+.session-row[aria-current="true"] .row-title { color: var(--av-brand-text); }
+
+.session-row .row-title {
+  font-size: 13px; color: var(--av-text-body); text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.session-row .row-title:hover { color: var(--av-text); text-decoration: underline; text-underline-offset: 2px; }
+
+.session-row .row-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+
+.session-row .row-time { margin-left: auto; color: var(--av-text-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+
+/* Active、Running、Stale 三枚：说三件不同的事，所以是三枚小胶囊而不是一枚。 */
+.active-chip, .stale-chip {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border-radius: var(--av-radius-pill);
+  border: 1px solid var(--av-border);
+  font-size: 11px;
+}
+
+.active-chip { background: var(--av-badge-green-bg); border-color: var(--av-badge-green-line); color: var(--av-badge-green-fg); }
+
+.stale-chip { background: var(--av-brand-tint); border-color: var(--av-brand-line); color: var(--av-brand-text); }
+
+/* --------------------------------------------------------------- reader -- */
+
+.session-head { padding: 11px 14px 10px; display: flex; flex-direction: column; gap: 9px; border-bottom: 1px solid var(--av-border-soft); }
+
+.session-head-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+
+.session-head-top .spacer { flex: 1; }
+
+.session-titles { display: flex; flex-direction: column; min-width: 0; }
+
+.session-title { font-size: 15px; font-weight: 700; color: var(--av-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.session-sub { font-size: 12px; color: var(--av-text-muted); }
+
+.session-actions { display: flex; align-items: center; gap: 6px; position: relative; }
+
+/* ⋯ 打开的那两项是这一页自己的读法，所以它们悬在头部上，不把头部撑开。 */
+.session-menu {
+  position: absolute; top: 100%; right: 0; z-index: 2;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 148px; padding: 4px;
+  background: var(--av-surface-hi);
+  border: 1px solid var(--av-border);
+  border-radius: var(--av-radius-sm);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.session-menu[hidden] { display: none; }
+
+.session-menu .btn { justify-content: flex-start; }
+
+/* 头部的那四格：谁在说、什么时候、说了多少、和原生会话对没对上账。两列，值那一列
+ * 拿剩下的宽度并自己省略——一段参与者名单比这一格长是常有的事。 */
+.session-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; }
+
+.session-fact { color: var(--av-text-label); font-size: 12px; }
+
+.fact-value { color: var(--av-text-body); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.session-view-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+/* 读到一半来新消息时，屏幕下沿给一条回去的路；点了才下去，或者本来就在底部时自动
+ * 跟上。 */
+.new-messages {
+  position: sticky; bottom: 0; align-self: center;
+  margin-top: 6px;
+  height: 26px; padding: 0 12px;
+  border-radius: var(--av-radius-pill);
+  border: 1px solid var(--av-brand-line);
+  background: var(--av-brand-tint);
+  color: var(--av-brand-text);
+  font-size: 12px;
+}
+
+.new-messages[hidden] { display: none; }
+
+/* 「更早的那些还在下面」：一条被截断的对话看起来和一条完整的没有区别，所以要写出来。 */
+.turn-note { color: var(--av-text-muted); font-size: 11.5px; border-bottom: 1px dashed var(--av-border); padding-bottom: 6px; }
+
+.turn-head { display: flex; align-items: baseline; gap: 8px; }
+
+/* 说话的人是这一页读起来的骨架：键盘前的人和某个 agent 说的话要一眼分得开。 */
+.turn-speaker { font-size: 12px; font-weight: 600; color: var(--av-text-label); }
+
+.turn-model { font-family: var(--av-font-mono); font-size: 11px; color: var(--av-text-muted); margin-left: auto; }
+
+/* 工具行：它属于发起它的那一轮，所以缩进一格、等宽、比正文小一号——读起来是那一轮的
+ * 脚注，不是又一个人说的话。 */
+.tool-row {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  margin: 2px 0 0 10px; padding-left: 9px;
+  border-left: 2px solid var(--av-border);
+  font-family: var(--av-font-mono); font-size: 11.5px;
+  min-width: 0;
+}
+
+.tool-verb { color: var(--av-text-muted); }
+
+.tool-name { color: var(--av-text-label); }
+
+.tool-detail { color: var(--av-text-muted); overflow-wrap: anywhere; }
+
+/* Raw 与 Diagnostics：两种读法各有自己的壳，但都不是另一段对话。 */
+.raw-view, .diagnostics-view { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; }
+
+.view-note { color: var(--av-text-muted); font-size: 11.5px; }
+
+/* 一行 JSON 可能很长：它在这一格里面折行，不把页面撑宽。 */
+.raw-line { font-family: var(--av-font-mono); font-size: 11.5px; color: var(--av-text-body); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.diagnostic-row { display: flex; gap: 8px; align-items: baseline; }
+
+.diagnostic-tone { flex: none; width: 62px; color: var(--av-text-muted); font-size: 11.5px; }
+
+.diagnostic-text { color: var(--av-text-body); font-size: 12px; overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------- sessions narrow -- */
+
+/* 两个窗格并排需要宽度：低于 ~1024 左列就没有一行的元数据能放得下（名字、徽章、时间
+ * 挤在一起，时间是最先掉下去的那个）。这时候左列窄一档，而不是让它去压右边那段对话。 */
+@media (max-width: 1100px) {
+  .sessions-panes { grid-template-columns: minmax(0, 260px) minmax(0, 1fr); }
+}
+
+/* 再窄就摞起来：上下两半，各占一半高度——并排的话两边都读不成。 */
+@media (max-width: 760px) {
+  .sessions-panes { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1.4fr); }
+}
 
 .skeleton { display: flex; flex-direction: column; gap: 12px; }
 

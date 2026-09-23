@@ -3,15 +3,18 @@ import path from "node:path";
 import {
   agentCardRows,
   agentLabel,
+  formatSessionDiagnostics,
   listCanonicalSessionRecords,
   readCanonicalSession,
   readCanonicalSessionRecord,
   runtimePaths,
   shortTimestamp,
+  transcriptSummary,
+  transcriptTurns,
   unmanagedSkillNames,
-  type CanonicalEvent,
   type CanonicalSessionRecord,
   type InstallStatus,
+  type NativeSessionMapping,
   type Pack,
   type StatusAgent,
   type StatusModel,
@@ -19,7 +22,7 @@ import {
 import { projectStatus } from "../services/agents.ts";
 import { defaultSpec, packsFor } from "../services/catalog.ts";
 import { describeSkill, installedPackIds, readSkillsSnapshot } from "../services/skills.ts";
-import { AGENT_IDS, type ActivityRow, type AgentCard, type AgentId, type BadgeTone, type DashboardData, type FieldRow, type PackRow, type SessionRow, type SkillRow } from "./protocol.ts";
+import { AGENT_IDS, runStateOf, type ActivityRow, type AgentCard, type AgentId, type BadgeTone, type DashboardData, type FieldRow, type PackRow, type RunState, type SessionRow, type SessionSync, type SkillRow, type Transcript, type TranscriptTurn } from "./protocol.ts";
 
 // 仪表盘的数据组装（无 vscode import，因此测试不需要编辑器）：面板上每一格都取自
 // core 的同一份答案 —— `avenic status` 的那张模型、core 的会话记录、core 的 Skill
@@ -114,6 +117,7 @@ function agentCard(row: StatusAgent, historyMode: StatusModel["project"]["histor
     label: row.displayName,
     short: agentLabel(id),
     ready,
+    run: runStateOf(row.history.sync),
     statusText: ready
       ? "Ready"
       : !row.available
@@ -156,28 +160,73 @@ async function lastUpdated(projectRoot: string, sessionUpdatedAt: string | null)
   return shortTimestamp(newest);
 }
 
-function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: boolean, now: number): SessionRow {
+// 标题为空时才轮得到 id，而且只取一小段、不拼 agent 的名字：`claude bee6f9b7`
+// 看起来像一句人话，其实仍然只是一串编号——把编号打扮成名字比露出编号更坏。
+function shortId(id: string): string {
+  const separator = id.indexOf(":");
+  return (separator === -1 ? id : id.slice(separator + 1)).slice(0, 8);
+}
+
+// 一条投影跟不跟得上 canonical 历史。判据与 core 的 transcript.mjs 里那一份逐字
+// 相同（先看有没有投影，再看它指向的最后一条事件是不是这条会话的最后一条）：那一份
+// 要读整段事件日志才算得出来，而一列会话的角标不该为了一个词去读几十兆对话。
+function mappingState(mapping: NativeSessionMapping | undefined, lastEventId: string | null): SessionSync["state"] {
+  if (typeof mapping?.nativeSessionId !== "string") return "none";
+  if (!mapping.lastCanonicalEventId) return "stale";
+  return mapping.lastCanonicalEventId === lastEventId ? "current" : "stale";
+}
+
+function sessionRow(record: CanonicalSessionRecord, agents: AgentId[], active: boolean, now: number, sync: SessionSync): SessionRow {
   const updated = typeof record.updatedAt === "string" ? record.updatedAt : null;
   return {
     id: record.id,
-    // core 的标题解析保证这里不是 uuid（原生名 → 首条用户发言 → 短 id）。
-    title: typeof record.title === "string" && record.title ? record.title : record.id,
+    // core 的标题解析保证这里不是 uuid（原生名 → 首条用户发言 → 短 id）；万一它空着，
+    // 兜底的也必须是短 id，而不是一行工程编号。
+    title: typeof record.title === "string" && record.title ? record.title : shortId(record.id),
     agents,
     updated: updated ?? "",
     relative: relativeTime(updated, now),
     active,
+    sync,
   };
 }
 
-// 谁参与了这条会话：答案在原生映射里，而映射与事件日志分开存放 —— 问「谁参与」
-// 不该以读一整段对话为代价。
-async function participants(projectRoot: string, id: string): Promise<AgentId[]> {
+// 谁参与了这条会话、以及投影跟不跟得上：两个答案在同一份映射里，而映射与事件日志
+// 分开存放 —— 问「谁参与、同步到哪」不该以读一整段对话为代价。
+//
+// `running` 说的是这一行上的某个 agent 正在跑，不是「这条对话正在被写」：core 的
+// 启动组只知道某个 agent 在这个项目里跑着，不知道它跟哪一条会话说话，面板不替它
+// 编一个更具体的说法。
+async function participation(
+  projectRoot: string,
+  id: string,
+  lastEventId: string | null,
+  runs: Record<AgentId, RunState>,
+): Promise<{ agents: AgentId[]; projections: Record<string, NativeSessionMapping>; sync: SessionSync }> {
   try {
     const { mappings } = await readCanonicalSessionRecord(projectRoot, id);
-    return AGENT_IDS.filter((agent) => typeof mappings.projections?.[agent]?.nativeSessionId === "string");
+    const projections = mappings.projections ?? {};
+    const agents = AGENT_IDS.filter((agent) => typeof projections[agent]?.nativeSessionId === "string");
+    return {
+      agents,
+      projections,
+      sync: {
+        state: syncAcross(agents.map((agent) => projections[agent]), lastEventId),
+        running: agents.some((agent) => runs[agent] === "running"),
+      },
+    };
   } catch {
-    return [];
+    // 读不到映射（会话被删、权限变了）不是「没有参与者」以外的事：这一行照旧列出来，
+    // 只是它说不出自己归谁。
+    return { agents: [], projections: {}, sync: { state: "none", running: false } };
   }
+}
+
+// 一条会话可能同时投给两个 agent：只要有一个的拷贝落后了，这一行就该说出来。
+function syncAcross(mappings: Array<NativeSessionMapping | undefined>, lastEventId: string | null): SessionSync["state"] {
+  const states = mappings.map((mapping) => mappingState(mapping, lastEventId)).filter((state) => state !== "none");
+  if (states.length === 0) return "none";
+  return states.every((state) => state === "current") ? "current" : "stale";
 }
 
 // 一个 Skill 落在哪些 agent 手里：先问它是否受管（未受管的 Skill 不在任何 agent 的
@@ -241,6 +290,7 @@ function unopenedCards(): AgentCard[] {
     label: agentLabel(id),
     short: agentLabel(id),
     ready: false,
+    run: "idle",
     statusText: "No project open",
     detail: null,
     fields: [{ label: "Authentication", kind: "badge", value: "Not chosen", tone: "muted", icon: "key" }],
@@ -297,15 +347,26 @@ export async function buildDashboardData(
   const records = await listCanonicalSessionRecords(projectRoot);
   const listed = records.slice(0, limit);
   const activeId = status.history.active;
+  // 一次启动的状态：每行都要问「这一行上的 agent 正跑着吗」，所以先算一遍。
+  const runs = {} as Record<AgentId, RunState>;
+  for (const agent of status.agents) runs[agent.id as AgentId] = runStateOf(agent.history.sync);
   // 映射每行只读一次：共享卡与各 agent 的分卡问的是同一件事。
   const sharedRows: SessionRow[] = [];
   const byAgent = new Map<AgentId, SessionRow[]>(AGENT_IDS.map((id) => [id, []]));
   for (const record of listed) {
-    const agents = await participants(projectRoot, record.id);
+    const lastEventId = typeof record.lastEventId === "string" ? record.lastEventId : null;
+    const { agents, projections, sync } = await participation(projectRoot, record.id, lastEventId, runs);
     const active = record.id === activeId;
-    sharedRows.push(sessionRow(record, agents, active, now));
-    // Project Sessions：这条会话归哪几个 agent，就同时出现在哪几张分卡里。
-    for (const agent of agents) byAgent.get(agent)?.push(sessionRow(record, [], active, now));
+    sharedRows.push(sessionRow(record, agents, active, now, sync));
+    // Agent Sessions：这条会话归哪几个 agent，就同时出现在哪几张分卡里。分卡上这一行
+    // 的同步说的是「那一个 agent 的投影」，所以只问它自己那一份映射 —— 同一份映射，
+    // 不再读第二遍盘。
+    for (const agent of agents) {
+      byAgent.get(agent)?.push(sessionRow(record, [], active, now, {
+        state: syncAcross([projections[agent]], lastEventId),
+        running: runs[agent] === "running",
+      }));
+    }
   }
 
   const snapshot = await readSkillsSnapshot("project", projectRoot, environment).catch(() => null);
@@ -346,7 +407,7 @@ export async function buildDashboardData(
     // 三态照抄，不压成布尔：落后于远端的那份缓存不是「已同步」。
     hub: { spec: status.skills.hub.spec, revision: status.skills.hub.revision, state: status.skills.hub.cache },
     activity: (options.activity ?? []).slice(0, ACTIVITY_LIMIT),
-    transcript: options.transcriptId ? await readTranscript(projectRoot, options.transcriptId, activeId) : null,
+    transcript: options.transcriptId ? await readTranscript(projectRoot, options.transcriptId, activeId, now) : null,
     empty: status.project.configured ? null : "This project has no Avenic configuration yet.",
   };
 }
@@ -357,16 +418,43 @@ function emptyRows(): { rows: SessionRow[]; total: number } {
 
 // 打开一条会话＝这一次推送里带上它的对话。事件在手，标题也按同一条规则取：打开
 // 之后标题和列表里那一行必须是同一个名字，否则用户会以为自己打开错了。
-const TURN_LIMIT = 40;
+//
+// 读多少轮：阅读器一屏看最新 100 轮，再往上滚可以够到更早的那些，所以宿主读的必须
+// 比 100 多一截，否则「往上滚」够到的是载荷的边，而不是这段对话的开头。200 是一个
+// 页宽的量级——一条比这更长的会话，页面会说出它没读到的那些轮，而不是假装这就是全部。
+const TURN_LIMIT = 200;
 
-async function readTranscript(projectRoot: string, id: string, activeId: string | null): Promise<DashboardData["transcript"]> {
+async function readTranscript(projectRoot: string, id: string, activeId: string | null, now: number): Promise<DashboardData["transcript"]> {
   try {
-    const { session, events } = await readCanonicalSession(projectRoot, id);
+    const { session, events, mappings } = await readCanonicalSession(projectRoot, id);
+    // 轮次、说话人、标题全部交给 core：CLI 的 `sessions show` 与这一页读的是同一份
+    // 判断（谁说的、哪些是工具、哪几条是控制行），两个宿主不会各说各的。
+    const summary = transcriptSummary(session, events, { mappings });
+    const turns: TranscriptTurn[] = transcriptTurns(events, { limit: TURN_LIMIT }).map((turn) => ({
+      id: turn.id,
+      kind: turn.kind,
+      speaker: turn.speaker,
+      agent: turn.agent === null ? null : (AGENT_IDS as readonly string[]).includes(turn.agent) ? (turn.agent as AgentId) : null,
+      role: turn.role,
+      at: turn.at ?? null,
+      text: turn.text,
+      tools: (turn.tools ?? []).map((tool) => ({ kind: tool.kind, name: tool.name, detail: tool.detail ?? "" })),
+      model: turn.model ?? null,
+    }));
+    // 投影里记着导入时读不懂的那些行（损坏的记录、截断的尾巴）。它们不是错误日志，
+    // 是「这份对话是从什么里面读出来的」——所以照 core 的说法原样带上，不自己解释。
+    const projections = Object.values(mappings?.projections ?? {});
     return {
       id,
-      title: displaySessionTitle(session, id),
+      title: summary.title,
       active: id === activeId,
-      turns: events.slice(0, TURN_LIMIT).map((event) => ({ role: event.role, text: textOf(event) })),
+      participants: summary.agents.map((agent) => agentLabel(agent)),
+      updated: summary.updatedAt ?? null,
+      updatedRelative: relativeTime(summary.updatedAt, now),
+      eventCount: summary.events,
+      sync: transcriptSync(summary.projections),
+      turns,
+      diagnostics: formatSessionDiagnostics(projections.flatMap((mapping) => mapping.diagnostics ?? [])),
     };
   } catch {
     // 会话读不到（被删了、目录权限变了）不是面板的失败：那一格空着，列表照旧。
@@ -374,19 +462,13 @@ async function readTranscript(projectRoot: string, id: string, activeId: string 
   }
 }
 
-function displaySessionTitle(session: { title?: unknown }, id: string): string {
-  return typeof session.title === "string" && session.title ? session.title : id;
-}
-
-// 一轮话说到底在说什么：文本块直接连起来，非文本块（工具调用）只留它的名字——
-// 概览不是阅读器，看不懂的部分不该被编成一句话。
-function textOf(event: CanonicalEvent): string {
-  const parts: string[] = [];
-  for (const block of event.content ?? []) {
-    if (block.type === "text" && typeof block.text === "string") parts.push(block.text);
-    else if (typeof block.name === "string") parts.push(`[${block.name}]`);
-  }
-  return parts.join(" ").trim();
+// 这条对话同步到什么程度：投影是 core 给的（它读了事件日志，比列表那一格更准），
+// 这一页只说一句话——全都跟上了就是 Synced，有一个落后就说清几个落后。
+function transcriptSync(projections: Array<{ state: string }>): Transcript["sync"] {
+  const current = projections.filter((projection) => projection.state === "current").length;
+  if (projections.length === 0) return { state: "none", label: "No native session yet" };
+  if (current === projections.length) return { state: "current", label: "Synced" };
+  return { state: "stale", label: current === 0 ? "Stale" : `${projections.length - current} of ${projections.length} stale` };
 }
 
 export type { DashboardData, BadgeTone };

@@ -93,3 +93,101 @@ export function canonicalBlocks(content) {
 export function eventTimestamp(value) {
   return timestamp(value);
 }
+
+// ── The conversation boundary ────────────────────────────────────────────────
+//
+// A native transcript is not a conversation: a CLI writes its own machinery
+// into the same file — local-command envelopes, caveats, meta records — and
+// the API files a tool's answer under the user's role. The rules below are the
+// one place that tells the user's own words apart from transport, so every
+// reader (the transcript view, the cross-agent projection, titles) answers the
+// same way instead of each filtering for itself.
+
+// What a CLI wraps around a local command it ran for itself. These records
+// document the CLI's own machinery; nobody said them out loud.
+const LOCAL_COMMAND_MARKERS = [
+  "<local-command-caveat>",
+  "<local-command-stdout>",
+  "<command-name>",
+  "<command-message>",
+  "<command-args>",
+];
+
+// A bare local command typed at the CLI's prompt, with no words of its own.
+// An argumented line (`/goal …`, `/review the diff`) is the person speaking.
+const BARE_LOCAL_COMMAND = /^\/(clear|compact|resume|login|logout|status|model|config|help)$/;
+
+// The elements a CLI wraps around a local command it ran for itself. What the
+// person wrote sits inside `<command-args>`; the envelope around it is the
+// CLI's own paperwork and never anybody's words.
+const COMMAND_ARGS_ELEMENT = /<command-args>([\s\S]*?)<\/command-args>/g;
+const LOCAL_COMMAND_ELEMENTS = /<(local-command-caveat|local-command-stdout|command-name|command-message|command-args)>([\s\S]*?)<\/\1>/g;
+
+/**
+ * What the person said in a local-command record: the arguments they typed and
+ * anything they wrote outside the envelope — empty when the record is the CLI
+ * talking to itself. Text carrying no envelope comes back unchanged.
+ */
+export function spokenLocalCommand(text) {
+  if (typeof text !== "string" || !LOCAL_COMMAND_MARKERS.some((marker) => text.includes(marker))) return text;
+  const spoken = text.matchAll(COMMAND_ARGS_ELEMENT);
+  const args = [...spoken].map((match) => match[1]).join("\n");
+  return `${text.replace(LOCAL_COMMAND_ELEMENTS, " ")}\n${args}`.trim();
+}
+
+function messageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((part) => typeof part?.text === "string").map((part) => part.text).join("\n");
+}
+
+/**
+ * Whether a native record is the CLI talking to itself. Only the user's side
+ * can be a control record: an assistant explaining `<command-name>` is
+ * answering, not logging a command.
+ */
+export function isLocalCommandRecord(role, content) {
+  if (role !== "user") return false;
+  const text = messageText(content).trim();
+  if (!text) return false;
+  // An envelope is transport only when nothing of the person's survived it. A
+  // `/goal …` whose arguments are the words that started the whole session is
+  // the person speaking, and dropping it deletes the session's reason to exist.
+  if (LOCAL_COMMAND_MARKERS.some((marker) => text.includes(marker))) return !spokenLocalCommand(text);
+  return BARE_LOCAL_COMMAND.test(text);
+}
+
+/**
+ * The same rule, asked of a canonical event rather than a native record.
+ *
+ * A store written by an older version still holds the records that version
+ * accepted, and it keeps the record it was made from — so the CLI's own meta
+ * mark is still readable, and everything else is read from the role and the
+ * content. Readers apply this one instead of filtering for themselves.
+ */
+export function isControlEvent(event) {
+  if (event?.extensions?.claude?.record?.isMeta === true) return true;
+  return isLocalCommandRecord(event?.role, event?.content);
+}
+
+/**
+ * A native record as a conversation event, or null when it is not one.
+ *
+ * Transport with nothing to say never enters the timeline: a record marked as
+ * meta, a local-command envelope, a thinking-only assistant record (the
+ * reasoning is model-internal and dropped, leaving nothing else), an empty
+ * message. A record whose content is only a tool's answer is the agent's own
+ * machinery and takes the tool role, whatever role the API filed it under.
+ */
+export function normalizedRecord({ role, content, control = false }) {
+  if (control) return null;
+  const blocks = canonicalBlocks(content)
+    // The envelope comes off here, once: what is stored is what the person
+    // said, and no reader has to know the CLI's markup to read it.
+    .map((block) => (block?.type === "text" && typeof block.text === "string" ? { ...block, text: spokenLocalCommand(block.text) } : block))
+    .filter((block) => block.type !== "text" || block.text.trim() !== "");
+  if (blocks.length === 0) return null;
+  const toolOnly = !blocks.some((block) => block.type === "text" || block.type === "tool_use")
+    && blocks.some((block) => block.type === "tool_result");
+  return { role: role === "user" && toolOnly ? "tool" : role, blocks };
+}

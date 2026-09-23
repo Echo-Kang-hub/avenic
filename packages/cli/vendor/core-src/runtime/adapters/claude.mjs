@@ -16,7 +16,7 @@ import {
   snapshotInto,
   syncDirectory,
 } from "../sessions.mjs";
-import { canonicalBlocks, eventTimestamp, isConversationRole, nativeEventId, parseJsonLines } from "./canonical.mjs";
+import { eventTimestamp, isConversationRole, isLocalCommandRecord, nativeEventId, normalizedRecord, parseJsonLines } from "./canonical.mjs";
 import { NATIVE_BUDGET, PROJECTION_KIND, buildProjection, renderBriefing } from "../projection.mjs";
 
 export const agentId = "claude";
@@ -32,12 +32,21 @@ export function toCanonical(content, options = {}) {
   const events = records.flatMap((record, index) => {
     const role = record.message?.role;
     if (!isConversationRole(role)) return [];
+    const normalized = normalizedRecord({
+      role,
+      content: record.message.content,
+      // `isMeta` is Claude Code's own mark for a record it wrote to carry
+      // machinery; the local-command envelopes are the same thing without the
+      // mark. Neither is something the user said.
+      control: record.isMeta === true || isLocalCommandRecord(role, record.message.content),
+    });
+    if (!normalized) return [];
     return [{
       id: nativeEventId(agentId, nativeSessionId, record.uuid, index, record),
       agent: agentId,
-      role,
+      role: normalized.role,
       createdAt: eventTimestamp(record.timestamp),
-      content: canonicalBlocks(record.message.content),
+      content: normalized.blocks,
       model: record.message.model,
       provider: "anthropic",
       extensions: { claude: { record, message: record.message } },

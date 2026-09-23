@@ -1,4 +1,5 @@
 import { readCanonicalSession } from "./canonical-sessions.mjs";
+import { isControlEvent } from "./adapters/canonical.mjs";
 import { TOOL_BLOCKS, agentLabel, blockText, eventAgent, turnKind } from "./projection.mjs";
 import { mappedNativeSessionIds, resolveSessionTitle } from "./session-title.mjs";
 
@@ -60,6 +61,9 @@ function toolFromEvent(event) {
 export function transcriptTurns(events, { limit = 0 } = {}) {
   const turns = [];
   for (const event of events ?? []) {
+    // A control record is transport, whether it was captured this round or is
+    // still sitting in the store from before this rule existed.
+    if (isControlEvent(event)) continue;
     const agent = eventAgent(event);
     const role = event?.role;
     if (role === "tool") {

@@ -22,7 +22,7 @@ import {
   nativeEventId,
   parseJsonLines,
 } from "./canonical.mjs";
-import { isInjectedRecord, openCodexAppServer, startCodexThread, injectCodexItems } from "../codex-app-server.mjs";
+import { isInjectedRecord, isRefusedInjection, openCodexAppServer, startCodexThread, injectCodexItems } from "../codex-app-server.mjs";
 import { buildProjection, projectionItems, NATIVE_BUDGET, PROJECTION_KIND } from "../projection.mjs";
 
 export const agentId = "codex";
@@ -111,7 +111,8 @@ export async function projectCanonical(projectRoot, { session, events, mapping =
   // thread that continues it. The mapping keeps naming the session Avenic saw,
   // and both are excluded from the delta: the target already produced those
   // turns either way.
-  const mapped = stored ? await resolveResumableSession(projectRoot, stored, options) : null;
+  const resolved = stored ? await resolveResumableSession(projectRoot, stored, options) : null;
+  const mapped = resolved && await holdsRefusedInjection(projectRoot, resolved, options) ? null : resolved;
   const owned = [...new Set([stored, mapped].filter(Boolean))];
   // What the thread being resumed already holds. The mapping records the last
   // canonical event it was given, so everything up to it — the turns Avenic
@@ -177,6 +178,20 @@ export async function projectCanonical(projectRoot, { session, events, mapping =
   } finally {
     await client.close();
   }
+}
+
+// A thread that already holds a turn with an id the provider refuses cannot be
+// sent another one: every request over it is rejected before the model sees it,
+// and appending cannot repair the ids already in its history. Such a thread is
+// not resumable — canonical history rebuilds it, and the rollout Avenic stops
+// using is left where Codex put it. This is one read of the same rollout the
+// capture on this path reads anyway, and only when a mapping exists.
+async function holdsRefusedInjection(projectRoot, nativeSessionId, options) {
+  const { nativeSessions } = locations(projectRoot, options.environment);
+  const match = (await matchingRollouts(nativeSessions, projectRoot)).find((item) => item.id === nativeSessionId);
+  if (!match) return false;
+  const content = await readFile(path.join(nativeSessions, match.relative), "utf8");
+  return parseJsonLines(content, agentId).some((record) => isRefusedInjection(record));
 }
 
 // Reads one mapped rollout. No private files are written by the continuation

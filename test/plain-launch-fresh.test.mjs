@@ -83,6 +83,43 @@ test("three plain launches are three conversations, all of them discoverable", a
   }, { sessions: 2, records: 4 });
 });
 
+test("a plain launch is a new conversation whose /resume can still see the project's own", async () => {
+  await withClaudeProject(async ({ projectRoot, nativeFile, nativeRoot, launchAsync }) => {
+    const runIds = [
+      "bbbb0000-0000-4000-8000-000000000001",
+      "bbbb0000-0000-4000-8000-000000000002",
+    ];
+    for (const id of runIds) {
+      const run = await launchAsync(["claude"], {
+        AVENIC_AGENT_WRITE: JSON.stringify({ file: nativeFile(id), records: 4, sleepMs: 0 }),
+      });
+      const { status } = await run.completion;
+      assert.equal(status, 0, run.output());
+    }
+    // After the exits, native storage holds none of them: the project does.
+    for (const id of runIds) {
+      assert.equal(existsSync(nativeFile(id)), false, "a finished run's session must not stay in native storage");
+    }
+
+    // The next plain launch is still a new conversation — but the official
+    // CLI's own `/resume`, inside that conversation, must list what this
+    // project holds. The probe is written the instant the agent starts, so
+    // this is the shelf `/resume` reads, not the one the exit rebuilds.
+    const next = await launchAsync(["claude"], { AVENIC_AGENT_NATIVE_LIST: nativeRoot });
+    const { status } = await next.completion;
+    assert.equal(status, 0, next.output());
+    // This run writes nothing of its own, so the probe still holds what it
+    // recorded at spawn.
+    const spawnTime = await next.probe();
+    assert.deepEqual(argvOf(spawnTime), [], "showing the project's conversations is not resuming one of them");
+    assert.deepEqual(
+      (spawnTime?.native ?? []).filter((name) => name.startsWith("bbbb")).sort(),
+      [`${runIds[0]}.jsonl`, `${runIds[1]}.jsonl`],
+      "the agent's own /resume must find the conversations this project saved",
+    );
+  }, { sessions: 2, records: 4 });
+});
+
 test("an explicit continuation is the one thing that resumes", async () => {
   await withClaudeProject(async ({ projectRoot, sessionIds, runCli, root }) => {
     const synced = runCli(["sessions", "sync"]);

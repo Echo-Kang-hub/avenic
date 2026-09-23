@@ -47,6 +47,20 @@
 // tab instead of the labelled one — which goes red with "the pane on screen is
 // the Installed (0) tab, not the Official Registry tab that was clicked".
 //
+// The height check added on 2026-09-23 — the two panes' bottom edges against
+// the content area's own — was watched fail on both of its halves, because the
+// two ways a browser can fail to fill are different failures. Taking
+// `position: absolute` back off `.sessions-browser` (the rule that keeps a
+// 120-turn page from growing the document) leaves the run red with "the page
+// scrolls vertically (6017 > 1024)": the panes still measure flush, because the
+// content area grew with them, and only the page-level verdict notices. Moving
+// that same box's bottom inset to 40px leaves it red with "the browser stops
+// 40px short of the bottom of the content area (which ends at 1014)" — measured
+// on all three boxes, the browser and the two panes. The collapsed check's
+// unpainted-node guard was watched in the same sitting: collapsing a painted
+// control (`.session-actions .btn`, height 0) still names both of them
+// ("btn btn-sm icon-brand[]", "btn btn-sm btn-icon[]"), so the guard skips the
+// closed menu without skipping a collapse a reader can see.
 // The time budgets are the panel's promise — a shell inside 100ms, real data
 // inside 300ms — and a render costs a quarter of each (about 20-27ms), so a red
 // here means re-run before chasing: a loaded machine can spend 100ms on a page
@@ -75,8 +89,17 @@ mkdirSync(outDir, { recursive: true });
 // only way to see the wait indicator: a read that answers inside half a second
 // must not draw it.
 const RUNS = [
-  ["a-reference", 1491, 1024, "dark"],
+  // The reference size, gated as a promise rather than only as a picture: this
+  // window's document is exactly as tall as its viewport (scrollHeight 1024 in
+  // 1024), which is what "the Overview is full to the bottom edge" means in
+  // numbers. `fits` is declared here so a change that pushed the reference's own
+  // render past its window goes red at the size the design was drawn for.
+  ["a-reference", 1491, 1024, "dark", { fits: true }],
   ["a-reference", 1491, 1024, "light"],
+  // The one state the reference cannot show: a launch that is running right now.
+  // `a-reference` is the idle half of the pair — same payload, no pill — so the
+  // two renders are a before/after of the card, not two different projects.
+  ["k-running", 1491, 1024, "dark"],
   ["e-full", 1491, 1024, "dark"],
   ["e-full", 1491, 1024, "light"],
   ["b-fresh", 1491, 1024, "dark"],
@@ -87,6 +110,33 @@ const RUNS = [
   ["b-fresh", 1024, 768, "dark"],
   ["a-reference", 720, 600, "dark"],
   ["c-native", 720, 600, "dark"],
+  // 高窗口是这一轮要修的那一格：内容比窗口矮时，底下一排卡片会停在半空、留一大片
+  // 背景——1440 高、1491 宽的窗口正是报告里说的那种「高高的 VS Code」。两列各自的
+  // 最后一张卡必须贴到列的底边（检查在上面那一段，容差 2px），所以加这一个尺寸就等于
+  // 把「占满」这句话变成可以失败的检查。
+  ["a-reference", 1491, 1400, "dark"],
+  ["e-full", 1491, 1400, "dark"],
+  // 16:9 windows, which is what a maximised editor window actually is. The
+  // 1600x900 window is rendered but its fit is deliberately not gated, and that
+  // is a measurement rather than a missing check: the reference's own content
+  // needs 1022px there (header 74 + the Agent Configuration panel 396.1 + the two
+  // card rows 255 and 254 + the gaps and gutters), so the page scrolls 122px. The
+  // mechanism that removes those 122px was built and measured on 2026-09-23 and
+  // needs more than the four rules this round added: a definite shell height
+  // (#root { height: 100vh } instead of min-height, so the rows have something to
+  // shrink against) plus a zero-minimum track on .cards-row. That state fits a
+  // 900px window exactly, and costs two visible things: the Agent Configuration
+  // panel loses height instead of the rows (396.1px of content in a 274px box,
+  // its last three field rows cut off, because it is the one flex item with no
+  // floor), and the bottom row collapses to a 2px sliver on a 1366x768 window and
+  // in the folded layout, where the deficit is larger than anything the rows can
+  // give back. 1366x768 is absent for that reason, the same one the fit gate
+  // below records: a size that cannot fit by construction gets no gate.
+  ["a-reference", 1600, 900, "dark"],
+  ["a-reference", 1920, 1080, "dark", { fits: true }],
+  // The tall window the cap exists for: 62vh and 560px meet here, and the bottom
+  // row stops at the cap instead of stretching over the 890px of leftover.
+  ["a-reference", 2560, 1440, "dark", { fits: true, cap: 560 }],
   ["a-reference", 1491, 1024, "dark", { reading: true }],
   ["b-fresh", 1024, 768, "light", { reading: true }],
   ["a-reference", 1491, 1024, "dark", { keyboard: true }],
@@ -99,6 +149,19 @@ const RUNS = [
   ["a-reference", 1491, 1024, "light", { section: "skills" }],
   ["a-reference", 1491, 1024, "dark", { section: "quick" }],
   ["a-reference", 1024, 768, "dark", { section: "sessions" }],
+  // The Sessions browser is the one destination with a height to keep, so it is
+  // rendered at both sizes the panel has to fill without a page-level scroll,
+  // and at both of its halves: `k-running` and `a-reference` only ever show the
+  // Shared tab, and the Agent half is the other list the same page draws —
+  // including its own agent strip, whose counts come from the payload's
+  // per-agent totals. The long transcript is the newest-100-of-120 cut (the
+  // fixture holds 120 turns — the note it draws counts them off the payload,
+  // so the number here has to come from the fixture too), which is the one
+  // render where the turn note and the pane's own scroller are both on screen
+  // at once.
+  ["m-long-transcript", 1491, 1024, "dark", { section: "sessions" }],
+  ["m-long-transcript", 1024, 768, "dark", { section: "sessions" }],
+  ["a-reference", 1491, 1024, "light", { section: "sessions", tab: "Agent" }],
   ["e-full", 1491, 1024, "light", { section: "agents" }],
   // The states a payload can be in that the reference screenshot says nothing
   // about, because it is only ever one project on one machine: the project's
@@ -140,6 +203,12 @@ const runName = ([payload, width, height, theme, options = {}]) =>
 // (image y747 vs y748), which is the drawing's own edge error, so the bound is
 // twice that: it accepts a sub-pixel rounding and refuses a card that grew a row.
 const GRID_TOL = 2;
+
+// How far the Sessions browser's panes may miss the content area's own bottom
+// edge, in either direction. Two pixels is the same sub-pixel allowance the
+// grid gate gives a card edge; anything more is a visible strip of bare
+// background under the panes, which is the thing the check exists to see.
+const PANE_TOL = 2;
 
 const rows = [];
 const failures = [];
@@ -317,6 +386,71 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
   if (options.tab && checks.tab !== options.tab) {
     problems.push(`the pane on screen is the ${checks.tab} tab, not the ${options.tab} tab that was clicked`);
   }
+  // The Sessions browser's height, which is the one thing no other check here
+  // can state: "the page has no horizontal overflow" is true of a page whose
+  // panes end a third of the way down. Only a Sessions run has the browser on
+  // screen, so this is gated where it is measured rather than on every render —
+  // and a dump that does not carry the measurement at all is a failure, not a
+  // skip, because a check that is absent passes every run it is absent from.
+  // The page-level promise, gated where a run declares it. An Overview whose
+  // rows have grown past the window's bottom edge has not filled the window, it
+  // has scrolled — the same defect the screenshot shows as a bare strip of
+  // background, one step further along. It is per-run because whether a page can
+  // fit depends on the window as well as on the layout: a folded 720x600 window
+  // holds more content than room by construction, and a gate that fired there
+  // would have to be loosened until it stopped meaning anything. A dump with no
+  // `fits` in it is a failure rather than a skip, the same way an empty set is:
+  // a check that is absent passes every run it is absent from.
+  if (options.fits) {
+    if (checks.fits === undefined) {
+      problems.push("the geometry dump has no fits — shot.mjs produced an older shape");
+    } else if (!checks.fits) {
+      problems.push(`the page does not fit its window: document ${geometry.viewport.scrollH} in a ${geometry.viewport.clientH} viewport, ${geometry.viewport.scrollH - geometry.viewport.clientH}px past the bottom edge`);
+    }
+  }
+  // The other half of "full", and the reason the two are gated separately: a row
+  // that stretches to reach a tall window's bottom edge has to stop somewhere.
+  // The bottom row's own content is 254px at the reference width, and on a
+  // 1440-tall window the leftover is ~890px -- a Skills list stretched over that
+  // is a row of items above a screen of empty border. The cap itself lives in
+  // style.css (.cards-row.bottom-row's max-height); what is declared here is that
+  // a run is a size where it is reachable, because only a window tall enough to
+  // reach it can measure it.
+  if (typeof options.cap === "number") {
+    const edges = checks.rowEdges ?? [];
+    const last = edges[edges.length - 1];
+    if (last === undefined) {
+      problems.push("the geometry dump has no rowEdges — shot.mjs produced an older shape");
+    } else {
+      const tallest = Math.max(...last.columns.map((column) => +(column.bottom - column.top).toFixed(1)));
+      if (tallest > options.cap + GRID_TOL) {
+        problems.push(`the bottom row is ${tallest}px tall, past the ${options.cap}px cap — the row is stretching into the window instead of stopping at its maximum`);
+      }
+    }
+  }
+  if (options.section === "sessions") {
+    const panes = checks.sessionsPanes;
+    if (panes === undefined) {
+      problems.push("the geometry dump has no sessionsPanes — shot.mjs produced an older shape");
+    } else if (!panes.measured) {
+      problems.push(`the two panes' bottom edges could not be measured: ${panes.why}`);
+    } else {
+      const boxes = [["the browser", panes.browser], ["the list pane", panes.list], ["the conversation pane", panes.view]];
+      for (const [what, gap] of boxes) {
+        if (gap === null) problems.push(`${what} is not on the page`);
+        // A null gap is the pane missing, which the line above has already said:
+        // reporting it twice as "ran 0px past" would name a measurement nobody took.
+        else if (Math.abs(gap) > PANE_TOL) {
+          problems.push(`${what} ${gap > 0 ? `stops ${gap}px short of` : `runs ${-gap}px past`} the bottom of the content area (which ends at ${panes.contentBottom})`);
+        }
+      }
+    }
+    if (checks.pageScrolls === undefined) {
+      problems.push("the geometry dump has no pageScrolls — shot.mjs produced an older shape");
+    } else if (checks.pageScrolls) {
+      problems.push(`the page scrolls vertically (${geometry.viewport.scrollH} > ${geometry.viewport.clientH}) — a browser that grows the document has not filled the area it was given`);
+    }
+  }
   // Roles make a tab strip describable; only the arrow key makes it usable.
   if (options.keyboard) {
     const keys = checks.tabKeyboard ?? { ran: false, why: "the probe never ran" };
@@ -367,9 +501,14 @@ for (const [payload, width, height, theme, options = {}] of RUNS) {
 // candidates: a full run of this matrix measures this many two-column rows.
 // A row that folded, a class that was renamed, a selector that stopped matching
 // — each of them empties part of that set, and an empty set fails nothing.
-const GRID_ROWS_FLOOR = 25;
+// The floor is a property of the run, so a filtered run gets a proportionally
+// smaller one: `--only k-running` renders one payload and legitimately measures
+// two rows. What the floor exists to catch — every Overview folding to a single
+// column at every width, so the gate passes by seeing nothing — is still caught,
+// because it is a per-run count either way.
+const GRID_ROWS_FLOOR = only === null ? 25 : 2;
 if (gridRows < GRID_ROWS_FLOOR) {
-  failures.push(`the grid gate measured ${gridRows} two-column row(s), not the ${GRID_ROWS_FLOOR} this matrix is made of — rows it cannot see are rows it cannot fail`);
+  failures.push(`the grid gate measured ${gridRows} two-column row(s), not the ${GRID_ROWS_FLOOR} this run should show — rows it cannot see are rows it cannot fail`);
 }
 
 const width = Math.max(...rows.map((row) => row.name.length));

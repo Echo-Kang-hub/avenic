@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isControlEvent, spokenLocalCommand } from "./adapters/canonical.mjs";
 
 const HANDOFF_SCHEMA_VERSION = 1;
 // Keep rehydration prompts bounded even when a legacy project has thousands
@@ -8,7 +9,7 @@ const MAX_TRANSCRIPT_EVENTS = 12;
 const MAX_EVENT_TEXT = 1_200;
 
 function text(event) {
-  return (event.content ?? []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim();
+  return spokenLocalCommand((event.content ?? []).filter((part) => part?.type === "text").map((part) => part.text).join("\n").trim());
 }
 
 function compact(value) {
@@ -16,8 +17,11 @@ function compact(value) {
 }
 
 export function deriveState(events) {
-  const users = events.filter((event) => event.role === "user").map(text).filter(Boolean);
-  const assistants = events.filter((event) => event.role === "assistant").map(text).filter(Boolean);
+  // What the CLI wrote for itself is not a goal and not a task: a store an
+  // older version wrote still holds those records (see adapters/canonical.mjs).
+  const spoken = (events ?? []).filter((event) => !isControlEvent(event));
+  const users = spoken.filter((event) => event.role === "user").map(text).filter(Boolean);
+  const assistants = spoken.filter((event) => event.role === "assistant").map(text).filter(Boolean);
   return {
     schemaVersion: HANDOFF_SCHEMA_VERSION,
     goal: users[0] ?? null,
@@ -43,6 +47,7 @@ export function buildHandoff({ session, events, targetAgent, lastCanonicalEventI
   // recent semantic transcript so legacy projects cannot exceed CLI/context
   // limits during first bootstrap.
   const transcript = delta.slice(-MAX_TRANSCRIPT_EVENTS)
+    .filter((event) => !isControlEvent(event))
     .map((event) => `- ${event.role}: ${compact(text(event))}`)
     .filter((line) => !line.endsWith(": "));
   const markdown = [
