@@ -65,6 +65,16 @@ export const TEXT = {
   "run.interrupted": { en: "Interrupted", zh: "已中断" },
   "cli.missing": { en: "Avenic CLI not on PATH", zh: "PATH 里没有 Avenic CLI" },
   "cli.extension-version": { en: "VS Code extension {version}", zh: "VS Code 扩展 {version}" },
+  // — 活动栏那一行（视图树）。它先于一切出现在窗口里，所以它上面的字也得跟着编辑器的
+  // 语言走：中文编辑器里那一行是「Open Dashboard · 打开面板」，别的语言里只有前半。
+  // 四行里的 Sessions 说的就是侧栏那一句（同一个词、同一个意思），所以它用 nav.sessions；
+  // 其余三行的名字是各自的命令名，各有一条自己的键。
+  "launcher.dashboard": { en: "Open Dashboard", zh: "打开面板" },
+  "launcher.dashboard-note": { en: "Avenic: the whole project state in one panel.", zh: "Avenic：这个项目的全部状态都在一块面板里。" },
+  "launcher.configure": { en: "Configure Project", zh: "配置项目" },
+  "launcher.sessions-note": { en: "Every conversation this project's agents have had.", zh: "这个项目的每个 Agent 说过的每一段对话。" },
+  "launcher.skills": { en: "Install Skills", zh: "安装 Skill" },
+  "launcher.skills-note": { en: "Add Packs from the configured Hub.", zh: "从配置好的 Hub 里装 Pack。" },
 
   // — 宿主自己弹的那一场面：QuickPick、进度、通知。这些地方一句话只说一半（见 rowLabel
   // 与 sentence），英文那一半是每个非中文编辑器看到的全部，所以它必须自己站得住：不能依赖

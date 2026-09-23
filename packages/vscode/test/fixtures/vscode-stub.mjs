@@ -223,10 +223,18 @@ function display(value) {
   return typeof value === "string" ? value : text(value);
 }
 
+// 活动栏上挂着的树。真编辑器会自己向提供者要每一行再画出来；这个桩不画，所以它只把
+// 提供者记下来——「那一行现在长什么样」由调用方自己问（`getChildren()`），问到的就是
+// 用户会看到的字。
+export const treeViews = [];
+
 export const window = {
   activeTextEditor: undefined,
   visibleTextEditors: [],
-  createTreeView(viewId, options) { return { viewId, ...options, dispose() {} }; },
+  createTreeView(viewId, options) {
+    treeViews.push({ viewId, ...options });
+    return { viewId, ...options, dispose() {} };
+  },
   registerWebviewViewProvider(viewType, provider) { return { viewType, provider, dispose() {} }; },
   createWebviewPanel(viewType, title, column, options) {
     const panel = {

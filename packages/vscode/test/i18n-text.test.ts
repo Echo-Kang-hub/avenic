@@ -154,6 +154,9 @@ test("the host speaks through the table, never in its own words", async () => {
   const patterns = [
     /(?:show(?:Warning|Information|Error)Message|\.record|withProgress)\(\s*["`]/g,
     /show(?:QuickPick|InputBox)\([\s\S]{0,300}?(?:title|prompt):\s*["`]/g,
+    // 视图树上的行没有动词：那一行自己就是一个控件，字写在构造它的那一个调用里。
+    // 少了这一条，活动栏可以整句英文地留在中文编辑器里——它编译得过，也过得了别的闸门。
+    /(?:^|[^\w.$])item\(\s*["`]/g,
   ];
   const offenders: string[] = [];
   const walk = async (dir: string): Promise<void> => {

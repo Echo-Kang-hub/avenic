@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { importProjectSessions, listCanonicalSessions } from "@avenic/core";
 import { extensionBuildOptions } from "../build-options.mjs";
-import { en, zh } from "../src/i18n/text.ts";
+import { both, en, rowLabel, zh, type TextKey } from "../src/i18n/text.ts";
 import { initialize } from "../src/services/agents.ts";
 import { DASHBOARD_OPEN_FAILED } from "../src/views/dashboard-failure.ts";
 import { testEnv, withAgentHomes } from "./helpers.ts";
@@ -59,7 +59,7 @@ const EFFECT_KINDS = ["message", "prompt", "terminal", "webview", "external", "o
 type EffectKind = (typeof EFFECT_KINDS)[number];
 
 interface Effect {
-  kind: EffectKind;
+  kind: EffectKind | "row";
   level?: string;
   text?: string;
   prompt?: string;
@@ -71,6 +71,10 @@ interface Effect {
   viewType?: string;
   target?: string;
   id?: string;
+  /** 树上的一行（`kind: "row"`）：编辑器渲染活动栏时会看到的字。 */
+  viewId?: string;
+  label?: string;
+  tooltip?: string;
 }
 
 interface Answers {
@@ -122,6 +126,11 @@ interface Control {
    * 在等它」——等待是看得见的，只要它够慢。
    */
   bin?: Record<string, string>;
+  /**
+   * 向扩展挂上的树要一次行。桩宿主不渲染活动栏，而那一行是整个扩展的门面——所以
+   * 「它现在写着什么」要显式问一次（真编辑器渲染时做的就是这一步）。
+   */
+  rows?: true;
 }
 
 // One entry per command in the manifest. `says` is the reason, in the control's
@@ -190,6 +199,7 @@ interface Plan {
   message?: object;
   after?: string;
   awaitTerminal?: true;
+  rows?: true;
   projectRoot: string;
   stateRoot: string;
 }
@@ -297,7 +307,7 @@ async function buildArtifact() {
   await writeFile(loader, [
     `import { activate } from ${JSON.stringify(outfile)};`,
     `import { readFile } from "node:fs/promises";`,
-    `import { registered, Uri, ExtensionMode, env, effects, outputLines, sendToPanels, setAnswers, workspace } from "vscode";`,
+    `import { registered, Uri, ExtensionMode, env, effects, outputLines, sendToPanels, setAnswers, workspace, treeViews } from "vscode";`,
     `const plan = JSON.parse(await readFile(process.argv[2], "utf8"));`,
     `const state = { get: () => undefined, update: async () => {}, keys: () => [] };`,
     `const context = {`,
@@ -326,6 +336,14 @@ async function buildArtifact() {
     `activate(context);`,
     `await settle();`,
     `const before = effects.length;`,
+    // 树上要一次行。真编辑器渲染活动栏时做的就是这一步——桩宿主里没有别人会做。
+    `if (plan.rows === true) {`,
+    `  for (const view of treeViews) {`,
+    `    for (const row of view.treeDataProvider.getChildren() ?? []) {`,
+    `      effects.push({ kind: "row", viewId: view.viewId, label: String(row.label), tooltip: String(row.tooltip), command: row.command?.command });`,
+    `    }`,
+    `  }`,
+    `}`,
     `setAnswers(plan.answers);`,
     `const startedAt = Date.now();`,
     `let thrown = null;`,
@@ -374,7 +392,7 @@ async function invoke(control: Control): Promise<Invocation> {
   const run = await sandbox();
   const { activation } = await builtArtifact();
   const projectRoot = control.fixture === "configured" ? (await configuredProject()).project : run.project;
-  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, after: control.after, awaitTerminal: control.awaitTerminal, projectRoot, stateRoot: run.state };
+  const plan: Plan = { id: control.id, open: control.open, answers: control.answers ?? {}, language: control.language, message: control.message, after: control.after, awaitTerminal: control.awaitTerminal, rows: control.rows, projectRoot, stateRoot: run.state };
   const planFile = path.join(run.root, "plan.json");
   await writeFile(planFile, JSON.stringify(plan));
   for (const [name, content] of Object.entries(control.bin ?? {})) {
@@ -532,4 +550,40 @@ test("the editor's own language reaches the words the host puts on screen", asyn
   const reason = answered.effects.map(describe).join(" | ");
   assert.ok(reason.includes(zh("sessions.no-successor")), `中文编辑器里这句理由得是中文（${zh("sessions.no-successor")}），实际说的是：${reason}`);
   assert.equal(reason.includes(en("sessions.no-successor")), false, `中文编辑器里不该出现英文那一半：${reason}`);
+});
+
+// 活动栏那一行是整个扩展的门面：窗口一开它就在。它上面的字也是宿主说的话——中文编辑器
+// 里那一行得说中文，和别的界面一样。桩宿主不渲染树，所以这条自己走一遍编辑器会做的那
+// 一步：向扩展挂上的树要一次行，看用户会看到什么。
+//
+// 四行的标签与提示语各自钉在词表的一个键上：写死的字与表里的字在这里是不同的字符串，
+// 所以这一条问的不是「有没有中文」，而是「说的是不是这一句」。
+test("the activity-bar rows speak the editor's language like everything else", async () => {
+  const NO_FOLDER_LABELS: TextKey[] = ["launcher.dashboard", "launcher.configure", "nav.sessions", "launcher.skills"];
+  const WITH_PROJECT_LABELS = NO_FOLDER_LABELS.filter((key) => key !== "launcher.configure");
+  const NOTES: TextKey[] = ["launcher.dashboard-note", "launcher.sessions-note", "launcher.skills-note"];
+  const rows = async (open: Control["open"], language?: string) => {
+    const { effects, thrown, ms } = await invoke({ id: "avenic.dashboard.open", open, effect: "webview", rows: true, language });
+    assert.equal(thrown, null, `这一次点击把异常抛到了命令体外（${ms}ms）`);
+    const drawn = effects.filter((effect) => effect.kind === "row");
+    assert.ok(drawn.length > 0, `活动栏那一行没有画出来：${effects.map(describe).join(" | ")}`);
+    return drawn;
+  };
+  const labelsOf = (drawn: Effect[]) => drawn.map((row) => String(row.label));
+
+  // 英文编辑器：标签就是词表里的英文那一半，一个字都不多、不少。
+  const english = await rows("project");
+  assert.deepEqual(labelsOf(english), WITH_PROJECT_LABELS.map((key) => en(key)), `英文编辑器里活动栏说的是：${labelsOf(english).join(" | ")}`);
+  // 中文编辑器：同一个键，换的只是显示的那一半——英文那半仍然是主标签。
+  const chinese = await rows("project", "zh-cn");
+  assert.deepEqual(labelsOf(chinese), WITH_PROJECT_LABELS.map((key) => rowLabel("zh-cn", key)), `中文编辑器里活动栏说的是：${labelsOf(chinese).join(" | ")}`);
+  assert.equal(labelsOf(chinese).some((text) => text.includes(zh("nav.sessions"))), true, `中文那一半得在：${labelsOf(chinese).join(" | ")}`);
+  assert.equal(labelsOf(english).some((text) => text.includes(zh("nav.sessions"))), false, `英文编辑器里不该出现中文那一半：${labelsOf(english).join(" | ")}`);
+  // 提示语在两种语言下都是两半都在（悬停的那一句不跟着界面语言变），而且它就是词表里那一句。
+  for (const drawn of [english, chinese]) {
+    assert.deepEqual(drawn.map((row) => String(row.tooltip)), NOTES.map((key) => both(key)), `提示语该是词表里那一句：${drawn.map((row) => String(row.tooltip)).join(" | ")}`);
+  }
+  // 没打开文件夹时多出来的那一行（Configure Project）说的是同一个词表里的名字。
+  const closed = await rows("empty");
+  assert.deepEqual(labelsOf(closed), NO_FOLDER_LABELS.map((key) => en(key)), `没有文件夹时活动栏说的是：${labelsOf(closed).join(" | ")}`);
 });
