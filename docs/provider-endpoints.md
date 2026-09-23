@@ -12,14 +12,42 @@ one preset per agent), never as a second settings format of its own.
 
 | Provider | Base URL | Model list | Notes |
 |---|---|---|---|
-| DeepSeek | `https://api.deepseek.com/anthropic` | `GET /models`, Bearer | OpenAI format is `https://api.deepseek.com` |
-| OpenRouter | `https://openrouter.ai/api` | `GET /api/v1/models`, public | `ANTHROPIC_API_KEY` must be set **empty** |
-| Moonshot / Kimi | `https://api.moonshot.ai/anthropic` | `GET /v1/models`, Bearer | |
-| Zhipu GLM | `https://api.z.ai/api/anthropic` (intl) · `https://open.bigmodel.cn/api/anthropic` (CN) | unverified | |
-| Qwen / DashScope | `https://dashscope.aliyuncs.com/apps/anthropic` (CN) · `https://coding.dashscope.aliyuncs.com/apps/anthropic` | not on the Anthropic endpoint | "Do not end the base URL with `/v1/`" |
-| MiniMax | `https://api.minimax.io/anthropic` (intl) · `https://api.minimax.cn/anthropic` (CN) | `GET /anthropic/v1/models`, `X-Api-Key` | |
-| SiliconFlow | `https://api.siliconflow.com/` (intl) · `https://api.siliconflow.cn/` (CN) | `GET /v1/models`, Bearer | bare origin, no `/anthropic` segment |
-| LiteLLM (self-hosted) | the proxy root, no `/v1` | `GET /v1/models` | |
+| DeepSeek | `https://api.deepseek.com/anthropic` | `https://api.deepseek.com/models`, Bearer | OpenAI format is `https://api.deepseek.com`. Answers 401 for *every* path without a credential, so a status code here says nothing about whether a route exists |
+| OpenRouter | `https://openrouter.ai/api` | `https://openrouter.ai/api/v1/models`, public | `ANTHROPIC_API_KEY` must be set **empty** |
+| Moonshot / Kimi | `https://api.moonshot.ai/anthropic` | `https://api.moonshot.ai/v1/models`, Bearer | Rooted at the host: `…/anthropic/v1/models` is a 404 |
+| Zhipu GLM | `https://api.z.ai/api/anthropic` (intl) · `https://open.bigmodel.cn/api/anthropic` (CN) | `https://api.z.ai/api/anthropic/v1/models`, Bearer | Answers HTTP 200 for paths that do not exist; a failure arrives as `{code,msg,success}` in the body |
+| Qwen / DashScope | `https://dashscope.aliyuncs.com/apps/anthropic` (CN) · `https://coding.dashscope.aliyuncs.com/apps/anthropic` | none on the Anthropic endpoint | "Do not end the base URL with `/v1/`" |
+| MiniMax | `https://api.minimax.io/anthropic` (intl) · `https://api.minimax.cn/anthropic` (CN) | `https://api.minimax.io/anthropic/v1/models`, `X-Api-Key` | Rooted at the host, not under the Anthropic base |
+| SiliconFlow | `https://api.siliconflow.com/` (intl) · `https://api.siliconflow.cn/` (CN) | `https://api.siliconflow.com/v1/models`, Bearer | bare origin, no `/anthropic` segment |
+| LiteLLM (self-hosted) | the proxy root, no `/v1` | `<root>/v1/models` | The root is the user's, so the only list here is a path joined to it |
+
+**A model list is a full URL.** Joining a base URL to a path is how a working
+provider becomes a 404: Moonshot's and MiniMax's lists hang off the host, not off
+the Anthropic-format base, and `https://api.deepseek.com/anthropic/models` and
+`https://api.deepseek.com/models` are two different routes that happen to answer
+the same way. Only a proxy the user runs gets a joined path, because its root is
+theirs to name.
+
+### How these were checked (2026-09-24, no credential sent)
+
+Plain unauthenticated `GET`s, status code only, with one calibration request per
+host — a path that certainly does not exist — because "route exists" is only
+readable against that baseline:
+
+| Host | bogus path | real list path | reading |
+|---|---|---|---|
+| api.moonshot.ai | 404 | 401 `/v1/models` | route exists; the path under `/anthropic` is the 404 |
+| api.minimax.io | 404 | 401 `/anthropic/v1/models` | route exists, rooted at the host |
+| api.siliconflow.com | 404 | 401 `/v1/models` | route exists |
+| api.deepseek.com | 401 | 401 `/models` | **no signal** — this gateway authenticates before it routes |
+| api.z.ai | 200 | 200 + `{"code":1001,…}` | **no signal** — this gateway answers 200 for anything |
+| openrouter.ai | — | 200 + `{"data":[…]}` | public list, `data[].id` shape confirmed |
+| dashscope.aliyuncs.com | 404 | 404 | no list on the Anthropic endpoint |
+
+No key was sent with any of these, and nothing here was verified by spending a
+request. Two hosts answer with a status code that carries no information, which
+is why the classifier in `model-catalog.mjs` treats a body that is not a list as
+unreadable rather than trusting a code.
 
 ## Environment and settings
 
@@ -71,9 +99,11 @@ rate limit, `500` server, `529` overloaded.
 
 - `developers.openai.com` returns 403 from this network, so Codex config keys are
   cited from OpenAI's own repository source rather than the rendered page.
-- Zhipu/GLM has no `/models` path in its OpenAPI spec; Qwen states the Anthropic
-  endpoint has no `/v1/models`; SiliconFlow's docs never use the words
-  "Anthropic-compatible".
+- Zhipu/GLM publishes no `/models` path in its OpenAPI spec, so the route above
+  was found by probe rather than by page: it answers, and it answers with the
+  vendor's own auth error. Qwen states the Anthropic endpoint has no `/v1/models`
+  and the probe agrees (404 against a 404 baseline); SiliconFlow's docs never use
+  the words "Anthropic-compatible".
 - `api.minimaxi.com` and a `dashscope-intl` claude-code-proxy host appear in no
   official doc.
 - No authenticated call was made to any provider: no key was used, and nothing
