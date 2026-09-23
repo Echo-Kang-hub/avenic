@@ -40,6 +40,28 @@ export function runStateOf(run: string): RunState {
   return "idle";
 }
 
+/**
+ * 一次分区切换要不要重新读盘——宿主与页面之间这条契约的另一半。
+ *
+ * 两件事各说各的：深页的清单（会话、Skill）与浅页拿的不是同一份（概览最近几条，
+ * 清单页 50 条），手上那份深浅不对就得换；而中心、钩子、设置这三页的数据只在它们
+ * 正在被看的时候才组装（centerAgent、hooksScope、about 在别的页上是 null），所以
+ * 「落上这一页」本身就是一个要读的理由。判错的两种代价差得很远：多读一次是几百
+ * 毫秒，少读一次是一张空页。
+ */
+const DEEP_SECTIONS = new Set<DashboardSection>(["sessions", "skills"]);
+const ON_DEMAND_SECTIONS = new Set<DashboardSection>(["center", "hooks", "settings"]);
+
+/** 这一页要的是不是更深的那一份载荷。 */
+export function payloadDetailFor(section: DashboardSection): boolean {
+  return DEEP_SECTIONS.has(section);
+}
+
+export function needsSectionData(section: DashboardSection, payloadDetail: boolean, entering: boolean): boolean {
+  if (payloadDetailFor(section) !== payloadDetail) return true;
+  return entering && ON_DEMAND_SECTIONS.has(section);
+}
+
 export type FieldRow = {
   label: string;
   kind: "badge" | "value" | "select" | "status";

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
-import { isWebviewMessage, type ActivityRow, type AgentId, type CenterDraft, type CenterResult, type DashboardAction, type DashboardSection, type HookScope, type HooksResult, type RunState, type StatusMessage } from "./protocol.ts";
+import { isWebviewMessage, needsSectionData, payloadDetailFor, type ActivityRow, type AgentId, type CenterDraft, type CenterResult, type DashboardAction, type DashboardSection, type HookScope, type HooksResult, type RunState, type StatusMessage } from "./protocol.ts";
 import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
 import type { AboutOptions } from "../services/about.ts";
 import { textScript } from "../i18n/text.ts";
@@ -13,11 +13,6 @@ import { buildDashboardData } from "./state.ts";
 // 这一层只做四件事：把模板注入成 HTML（图标与脚本都经 asWebviewUri，CSP 里没有
 // 远程来源）、把 core 的数据推给 webview、把用户动作交给命令层、记住当前分区。
 // 它自己不做任何判断，也不持有任何状态。
-
-/** 会列出「一整份清单」的分区：它们的载荷要更长，概览只要最近几条。 */
-function deep(section: DashboardSection): boolean {
-  return section === "sessions" || section === "skills";
-}
 
 export interface DashboardPanelDeps {
   root: () => string | null;
@@ -196,14 +191,10 @@ export class DashboardPanel {
     if (message.type === "navigate") {
       const entering = message.section !== this.section;
       this.section = message.section;
-      // 一页有多深是宿主给的（概览是最近 5 条，清单页是 50 条），所以翻页要重取这一页
-      // 的那一份；已经是对的那一份就不重复读盘。面板先用手上这份画出来，深的这份到了
-      // 再接上——一次读盘不该挡住一次点击。
-      //
-      // 钩子与设置这两页的数据只在它们自己的屏幕上组装（与中心同一个道理：为画三行字
-      // 去读 agent 的原生文件是不该付的代价），所以落上这两页必须问一次，否则到的是一张
-      // 空页 —— 空页比一次读盘坏得多。
-      if (deep(this.section) !== this.payloadDetail || (entering && (this.section === "hooks" || this.section === "settings"))) void this.sendData();
+      // 要不要重读这一页是协议的一条判断（深页的清单不一样，中心/钩子/设置的数据
+      // 只在它们自己那一页上组装，见 needsSectionData），面板只负责执行它。面板先用手上
+      // 这份画出来，新的一份到了再接上——一次读盘不该挡住一次点击。
+      if (needsSectionData(this.section, this.payloadDetail, entering)) void this.sendData();
       return;
     }
     this.deps.dispatch(message);
@@ -245,7 +236,7 @@ export class DashboardPanel {
     this.sending = this.sending.then(async () => {
       if (this.disposed) return;
       const section = this.landing ?? this.section;
-      const detail = deep(section);
+      const detail = payloadDetailFor(section);
       const landing = this.landing;
       this.landing = null;
       try {

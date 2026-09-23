@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { HOOK_POLICY, configureProject, finishLaunch, importProjectSessions, joinLaunchGroup, sessionLeasePath, setActiveCanonicalSession, type AgentInstallation } from "@avenic/core";
 import { fillApiConfiguration } from "./api-config.ts";
 import { buildDashboardData } from "../src/dashboard/state.ts";
-import { isWebviewMessage, runStateOf } from "../src/dashboard/protocol.ts";
+import { isWebviewMessage, needsSectionData, payloadDetailFor, runStateOf } from "../src/dashboard/protocol.ts";
 import { initialize, invalidateAgentStatusCache, projectStatus } from "../src/services/agents.ts";
 import { defaultSpec, packsFor, select, sync } from "../src/services/catalog.ts";
 import { installPacks } from "../src/services/skills.ts";
@@ -443,6 +443,27 @@ test("protocol guard accepts the dashboard's messages and drops everything else"
   assert.ok(!isWebviewMessage({ type: "command", command: "shell.open" }));
   assert.ok(!isWebviewMessage({ type: "report", message: "all good" }));
   assert.ok(!isWebviewMessage(null));
+});
+
+// 落上一页要不要重读盘，是这条契约的另一半：中心、钩子、设置这三页的数据只在它们
+// 自己那一页上组装（其余时候那些格是 null），深页的清单浅页画不了、反过来也一样。
+// 判错的两种代价差得很远——多读一次是几百毫秒，少读一次是一张空页。从概览走进模型
+// 配置正是后一种：手上一帧里 center 是 null，不重读就永远画不出那张表单。
+test("landing on a page whose data is built nowhere else always reads once", () => {
+  for (const section of ["center", "hooks", "settings"] as const) {
+    assert.equal(needsSectionData(section, false, true), true, `落上 ${section} 必须读一次`);
+    // 同一页上的重画（别处推来一帧数据）不该再读一次。
+    assert.equal(needsSectionData(section, false, false), false);
+  }
+  assert.equal(needsSectionData("center", true, true), true, "手上那份是深页的时候也要换回来");
+  // 深页与浅页拿的不是同一份：两个方向都要换。
+  assert.equal(needsSectionData("sessions", false, true), true);
+  assert.equal(needsSectionData("sessions", true, false), false, "已经在深页上就不重读");
+  assert.equal(needsSectionData("overview", true, false), true, "从深页退回浅页也重读");
+  assert.equal(needsSectionData("overview", false, false), false, "点已经在的那一页不做无谓的重扫");
+  assert.equal(payloadDetailFor("sessions"), true);
+  assert.equal(payloadDetailFor("skills"), true);
+  assert.equal(payloadDetailFor("center"), false);
 });
 
 test("skills installed into a shared target report every agent that receives them", async () => {
