@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import { agentSessionsRoot, runtimePaths } from "../config.mjs";
 import { loadCursors, saveCursors } from "../cursors.mjs";
 import { hashContent, listFiles, samePath, syncDirectory } from "../sessions.mjs";
-import { spawnExecutableSync } from "../process.mjs";
+import { spawnExecutableChild, spawnExecutableSync } from "../process.mjs";
 import { eventTimestamp, isConversationRole, nativeEventId } from "./canonical.mjs";
 import { createHash } from "node:crypto";
 import { PROJECTION_KIND, PROJECTION_SCHEMA_VERSION } from "../projection.mjs";
@@ -243,16 +244,131 @@ export async function discoverNativeSession(projectRoot, options = {}) {
   return eligible[0].id;
 }
 
+// How long a projection waits for OpenCode to offer a name before continuing
+// under one of its own. A server that is going to answer does so within about a
+// second, cold; anything slower is a build that cannot be asked.
+const MINT_TIMEOUT_MS = 10_000;
+const MINT_POLL_MS = 200;
+
+function freeLoopbackPort() {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.on("error", () => resolve(null));
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+// One asking of the server for a session. A session is named when it is made
+// and an import never renames one, so the name has to travel with the asking.
+async function askForSessionId(port, projectRoot, title) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(title ? { directory: projectRoot, title } : { directory: projectRoot }),
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return typeof body?.id === "string" && body.id ? body.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ask OpenCode to name a session.
+ *
+ * The provider console decodes the id a session is created under: a name
+ * Avenic invented is refused when the user runs it — in the console's own
+ * words, "OpenCode's free tier can only be used from within OpenCode" — while
+ * one OpenCode minted runs. `serve` is the one surface that creates a session
+ * without a model call, and `POST /session` names one without doing anything
+ * else, which is exactly what a projection needs. The server is stopped along
+ * with the projection: it is a way to ask a question, not a daemon.
+ */
+async function mintSessionId(projectRoot, title, options = {}) {
+  const port = await freeLoopbackPort();
+  if (!port) return null;
+  let child;
+  try {
+    child = spawnExecutableChild("opencode", ["serve", "--port", String(port)], {
+      cwd: projectRoot,
+      env: options.environment ?? process.env,
+      stdio: ["ignore", "ignore", "ignore"],
+      spawn: options.spawn,
+    });
+  } catch {
+    return null;
+  }
+  let exited = false;
+  child.once?.("exit", () => { exited = true; });
+  try {
+    const deadline = Date.now() + MINT_TIMEOUT_MS;
+    while (!exited && Date.now() < deadline) {
+      const id = await askForSessionId(port, projectRoot, title);
+      if (id) return id;
+      await new Promise((resolve) => setTimeout(resolve, MINT_POLL_MS));
+    }
+    return null;
+  } finally {
+    try {
+      if (child.terminateTree) child.terminateTree();
+      else child.kill?.();
+    } catch { /* the question is over; a process already gone is not a failure */ }
+  }
+}
+
+// The name a projection already gave this session, read back from the payload
+// Avenic wrote for it. The mapping normally carries it, but the mapping can be
+// lost on its own, and losing it must not manufacture a second conversation.
+async function projectedName(projectRoot, canonicalSessionId) {
+  try {
+    const payload = JSON.parse(await readFile(projectionFile(projectRoot, canonicalSessionId), "utf8"));
+    const id = payload?.info?.id;
+    return typeof id === "string" && id ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The name the projected session will carry, plus anything the user should
+ * hear about how it got it. A projection being updated keeps the name it
+ * already has, a session already projected keeps the name it was given, and
+ * everything else is named by OpenCode — with a derived id as the last resort,
+ * said out loud rather than quietly.
+ */
+async function nameSession(projectRoot, canonical, options = {}) {
+  if (options.nativeSessionId) return { nativeSessionId: options.nativeSessionId, diagnostics: [] };
+  const known = await projectedName(projectRoot, canonical.id);
+  if (known) return { nativeSessionId: known, diagnostics: [] };
+  const minted = await mintSessionId(projectRoot, canonical.title, options);
+  if (minted) return { nativeSessionId: minted, diagnostics: [] };
+  return {
+    nativeSessionId: nativeId("ses", canonical.id),
+    diagnostics: [{
+      code: "derived_session_id",
+      message: "OpenCode could not be asked for a session id; the session is projected under an id derived from the shared session.",
+    }],
+  };
+}
+
 // Project a canonical conversation through OpenCode's supported export/import
-// CLI. The native id is deterministic, so re-running the projection updates
-// the same OpenCode session instead of manufacturing another conversation.
+// CLI. The session's name is OpenCode's to give and is kept across projections,
+// so re-running the projection updates the same OpenCode session instead of
+// manufacturing another conversation.
 export async function writeCanonical(projectRoot, canonical, options = {}) {
   if (!canonical || typeof canonical !== "object" || typeof canonical.id !== "string" || !Array.isArray(canonical.events)) {
     throw new Error("OpenCode canonical projection requires an id and events");
   }
+  const naming = await nameSession(projectRoot, canonical, options);
   const projected = fromCanonical(canonical.events, {
     canonicalSessionId: canonical.id,
-    nativeSessionId: options.nativeSessionId,
+    nativeSessionId: naming.nativeSessionId,
     title: canonical.title,
     directory: projectRoot,
     agent: options.agent,
@@ -260,12 +376,13 @@ export async function writeCanonical(projectRoot, canonical, options = {}) {
     version: options.version,
   });
   const nativeSessionId = projected.data.info.id;
+  const diagnostics = [...naming.diagnostics, ...projected.diagnostics];
   const payload = `${JSON.stringify(projected.data, null, 2)}\n`;
   const nativeRevision = hashContent(payload);
   const sessions = matchingSessions(projectRoot, options);
   if (sessions.some((session) => session.id === nativeSessionId)
     && options.mapping?.canonicalRevision === options.canonicalRevision) {
-    return { nativeSessionId, nativeRevision, diagnostics: projected.diagnostics, imported: false };
+    return { nativeSessionId, nativeRevision, diagnostics, imported: false };
   }
   const file = projectionFile(projectRoot, canonical.id);
   await mkdir(path.dirname(file), { recursive: true });
@@ -274,7 +391,7 @@ export async function writeCanonical(projectRoot, canonical, options = {}) {
   if (!matchingSessions(projectRoot, options).some((session) => session.id === nativeSessionId)) {
     throw new Error(`OpenCode import did not expose projected session ${nativeSessionId}`);
   }
-  return { nativeSessionId, nativeRevision, diagnostics: projected.diagnostics, imported: true };
+  return { nativeSessionId, nativeRevision, diagnostics, imported: true };
 }
 
 export function resumeArguments(nativeSessionId) {

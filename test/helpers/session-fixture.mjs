@@ -250,15 +250,19 @@ process.exit(0);
  * interactive CLI itself (`--session`, `--prompt`) — because OpenCode is the
  * only agent whose launches are also its storage API.
  */
-async function writeOpenCodeCli(bin, stateFile, logFile) {
+async function writeOpenCodeCli(bin, stateFile, logFile, contextFile) {
   await mkdir(bin, { recursive: true });
   const target = path.join(bin, "opencode.mjs");
-  await writeFile(target, `import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+  await writeFile(target, `import { createServer } from "node:http";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 const log = ${JSON.stringify(logFile)};
 const state = () => JSON.parse(readFileSync(${JSON.stringify(stateFile)}, "utf8"));
 const save = (value) => writeFileSync(${JSON.stringify(stateFile)}, \`\${JSON.stringify(value, null, 2)}\\n\`);
 const [command, ...rest] = process.argv.slice(2);
 appendFileSync(log, \`\${[command, ...rest].join(" ")}\\n\`);
+// Where this invocation was started, and what its environment said about it.
+// OpenCode answers the second, so the two have to agree.
+appendFileSync(${JSON.stringify(contextFile)}, \`\${JSON.stringify({ argv: [command, ...rest].join(" "), cwd: process.cwd(), pwd: process.env.PWD ?? null })}\\n\`);
 // The official interactive CLI. Avenic starts it with --session to continue a
 // projected session, or with --prompt to start a fresh one from a handoff.
 if (command?.startsWith("--")) {
@@ -292,12 +296,17 @@ if (command === "export") {
   process.exit(0);
 }
 // A projection is created by OpenCode itself: importing the envelope makes the
-// session real, exactly as it does on a machine whose OpenCode accepted it.
+// session real, exactly as it does on a machine whose OpenCode accepted it. An
+// import of a session that already exists updates it instead of doubling it,
+// and leaves the name alone — the name is the mint's business, not the
+// import's.
 if (command === "import") {
   const current = state();
   const payload = JSON.parse(readFileSync(rest[0], "utf8"));
   const created = Date.now();
-  current.sessions.push({ id: payload.info.id, title: payload.info.title, created, updated: created, directory: payload.info.directory ?? process.cwd() });
+  const at = current.sessions.findIndex((session) => session.id === payload.info.id);
+  if (at === -1) current.sessions.push({ id: payload.info.id, title: payload.info.title, created, updated: created, directory: payload.info.directory ?? process.cwd() });
+  else current.sessions[at] = { ...current.sessions[at], updated: created };
   current.exports[payload.info.id] = JSON.stringify(payload);
   save(current);
   process.exit(0);
@@ -306,7 +315,44 @@ if (command === "debug" && rest[0] === "config") {
   process.stdout.write(JSON.stringify(state().config ?? { $schema: "https://opencode.ai/config.json" }));
   process.exit(0);
 }
-process.exit(0);
+// The server API is OpenCode's only surface that creates a session without a
+// model call, and the id it returns there is the one the provider console
+// accepts: the command answers POST /session with a freshly named session and
+// otherwise stays up, the way a server does.
+if (command === "serve") {
+  if (state().failServe) {
+    process.stderr.write("Error: serve is not available\\n");
+    process.exit(1);
+  }
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      if (request.method !== "POST" || request.url !== "/session") {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      const current = state();
+      const asked = JSON.parse(body || "{}");
+      const id = "ses_minted_" + (current.sessions.length + 1);
+      const created = Date.now();
+      // A session is named when it is created, and a request that asks for no
+      // name gets the one OpenCode makes up.
+      const title = asked.title ?? "New session - " + new Date(created).toISOString();
+      current.sessions.push({ id, title, created, updated: created, directory: asked.directory ?? process.cwd() });
+      current.exports[id] = JSON.stringify({ id, messages: [] });
+      save(current);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id }));
+    });
+  });
+  server.listen(Number(rest[rest.indexOf("--port") + 1]), "127.0.0.1");
+  // A server outlives the request that started it. If the caller forgets to
+  // stop it, this keeps a failing test from hanging the whole suite.
+  setTimeout(() => process.exit(0), 10_000);
+}
+if (command !== "serve") process.exit(0);
 `);
   if (process.platform === "win32") {
     await writeFile(path.join(bin, "opencode.cmd"), `@echo off\r\n"${process.execPath}" "${target}" %*\r\n`);
@@ -347,9 +393,10 @@ export async function withOpenCodeProject(run, options = {}) {
   const bin = path.join(root, "bin");
   const stateFile = path.join(root, "opencode-state.json");
   const logFile = path.join(root, "opencode-invocations.log");
+  const contextFile = path.join(root, "opencode-contexts.jsonl");
   await mkdir(home, { recursive: true });
   await mkdir(path.join(projectRoot, ".agents"), { recursive: true });
-  await writeOpenCodeCli(bin, stateFile, logFile);
+  await writeOpenCodeCli(bin, stateFile, logFile, contextFile);
 
   const inheritedPath = process.env.PATH ?? process.env.Path ?? "";
   const environment = {
@@ -412,6 +459,16 @@ export async function withOpenCodeProject(run, options = {}) {
       state.failContinue = true;
       await writeState();
     },
+    /** An OpenCode build whose server API is missing or will not start. */
+    async failServe() {
+      state.failServe = true;
+      await writeState();
+    },
+    /** The sessions OpenCode's own server created, with the names it was asked for. */
+    async mintedSessions() {
+      const rows = JSON.parse(await readFile(stateFile, "utf8").catch(() => "{}")).sessions ?? [];
+      return rows.filter((session) => String(session.id).startsWith("ses_minted_")).map((session) => ({ id: session.id, title: session.title }));
+    },
     /** The session the next fresh `--prompt` launch should create. */
     async setNextSessionId(id) {
       state.nextSessionId = id;
@@ -422,12 +479,21 @@ export async function withOpenCodeProject(run, options = {}) {
       return (await readFile(logFile, "utf8").catch(() => "")).split("\n").filter(Boolean);
     },
 
-    /** Run the real CLI in this project with the fixture environment. */
-    runCli(argumentsList, overrides = {}) {
+    /** Where each invocation was started, and what its PWD said about it. */
+    async runContexts() {
+      return (await readFile(contextFile, "utf8").catch(() => ""))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+
+    /** Run the real CLI in this project with the fixture environment. A cwd is a
+     * shell's `cd`: it moves PWD with it, because that is what a shell does. */
+    runCli(argumentsList, overrides = {}, { cwd = projectRoot } = {}) {
       return spawnSync(
         process.execPath,
         [path.join(packageRoot, "packages", "cli", "scripts", "skills.mjs"), ...argumentsList],
-        { cwd: projectRoot, env: { ...environment, ...overrides }, encoding: "utf8" },
+        { cwd, env: { ...environment, ...overrides, PWD: cwd }, encoding: "utf8" },
       );
     },
 
