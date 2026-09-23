@@ -13,6 +13,19 @@
 
 (function () {
   const vscode = acquireVsCodeApi();
+
+  // 页面上每一个字都来自宿主注入的同一张表（`{{text}}` 那个 script）。英文是主标签，
+  // 中文是它的另一半：英文界面里中文待在 tooltip 和 aria 里，中文界面里它才浮出来
+  // 变成可见的第二行。表里没有的键不猜，直接把键名写出来——屏幕上一个 nav.sesions
+  // 比一句没人写过的中文更容易被看见、被修掉。它排在最前面，因为下面每一句都要用它。
+  const AVENIC_TEXT = globalThis.AVENIC_TEXT ?? {};
+  const TEXT = AVENIC_TEXT.text ?? {};
+  const ZH_VISIBLE = AVENIC_TEXT.zhVisible === true;
+  const T = (key) => TEXT[key]?.en ?? key;
+  const ZH = (key) => TEXT[key]?.zh ?? "";
+  const PAIR = (key) => (ZH(key) ? `${T(key)} / ${ZH(key)}` : T(key));
+  const TF = (key, values) => Object.entries(values).reduce((sentence, [name, value]) => sentence.replaceAll(`{${name}}`, String(value)), T(key));
+
   const state = {
     data: null,
     error: null,
@@ -41,7 +54,7 @@
   // 一次启动跑着没跑着，是 core 的一句话，这里只是它的英文：没有第三档，「不确定」
   // 不是一种状态——面板要么知道它在跑，要么知道它不在。idle 不说话（胶囊消失），
   // 因为「没在跑」是默认，不是一条新闻。
-  const RUN_LABELS = { running: "Running", interrupted: "Interrupted" };
+  const RUN_LABELS = { running: T("run.running"), interrupted: T("run.interrupted") };
 
   // 一段对话一次画多少轮：再往上滚可以够到更早的（载荷里给出来的那些）。
   const TURN_PAGE = 100;
@@ -56,6 +69,32 @@
     if (className !== undefined) node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
+  }
+
+  /**
+   * 一个键画到一个节点上：主标签永远是英文，中文两种去向——中文界面里追加成可见的
+   * 第二半，其余界面里进 tooltip 与无障碍名。同一句话因此只有一处写它。
+   */
+  function label(node, key) {
+    node.textContent = T(key);
+    node.setAttribute("title", PAIR(key));
+    if (ZH_VISIBLE) node.append(el("span", "zh", ZH(key)));
+    return node;
+  }
+
+  /**
+   * 静态外壳：模板里的英文字就是词表里的英文字（有测试盯着这两半一致），所以这里
+   * 只补中文那一半与无障碍名。首帧仍然由模板给出，脚本不参与。
+   */
+  function paintShell() {
+    for (const node of document.querySelectorAll("[data-text]")) {
+      const key = node.getAttribute("data-text");
+      if (node.children.length === 0) node.textContent = T(key);
+      node.setAttribute("title", PAIR(key));
+      if (ZH_VISIBLE && node.querySelector(".zh") === null) node.append(el("span", "zh", ZH(key)));
+    }
+    for (const node of document.querySelectorAll("[data-aria]")) node.setAttribute("aria-label", PAIR(node.getAttribute("data-aria")));
+    for (const node of document.querySelectorAll("[data-title]")) node.setAttribute("title", PAIR(node.getAttribute("data-title")));
   }
 
   function icon(name, extraClass) {
@@ -1244,18 +1283,18 @@
   const nav = document.getElementById("nav");
 
   function renderHeader(data) {
-    document.getElementById("project-title").textContent = data.project.name ? `Project: ${data.project.name}` : "No project open";
+    document.getElementById("project-title").textContent = data.project.name ? TF("shell.project-line", { name: data.project.name }) : T("shell.no-project");
     document.getElementById("project-root").textContent = data.project.root ?? "—";
     const pill = document.getElementById("configured-pill");
     const configuredLabel = document.getElementById("configured-label");
     if (data.project.configured) {
       pill.classList.remove("warn");
-      configuredLabel.textContent = "Avenic Configured";
+      configuredLabel.textContent = T("shell.configured");
     } else {
       pill.classList.add("warn");
-      configuredLabel.textContent = "Not Configured";
+      configuredLabel.textContent = T("shell.not-configured");
     }
-    document.getElementById("last-updated").textContent = data.project.lastUpdated ? `Last updated: ${data.project.lastUpdated}` : "";
+    document.getElementById("last-updated").textContent = data.project.lastUpdated ? TF("shell.last-updated", { at: data.project.lastUpdated }) : "";
     const reconfigure = document.getElementById("reconfigure-button");
     // 标题栏问的是「这个项目怎么配」，答案里没有某一个 agent：那三个各有自己的
     // Change，在卡片上。
@@ -1272,7 +1311,7 @@
     version.textContent = data.version ? `Avenic v${data.version}` : "Avenic";
     const details = data.versionDetails;
     const title = details
-      ? `${details.cli ? `Avenic CLI ${details.cli}` : "Avenic CLI not on PATH"}${details.extension ? ` · VS Code extension ${details.extension}` : ""}`
+      ? `${details.cli ? `Avenic CLI ${details.cli}` : T("cli.missing")}${details.extension ? ` · ${TF("cli.extension-version", { version: details.extension })}` : ""}`
       : "";
     const line = document.getElementById("version-line");
     if (title) line.setAttribute("title", title);
@@ -1326,21 +1365,21 @@
       const line = el("div", "reading");
       line.setAttribute("role", "status");
       line.append(icon("refresh"));
-      line.append(el("span", undefined, "Reading the project…"));
+      line.append(el("span", undefined, T("shell.reading")));
       content.append(line);
     }
     if (state.error) {
-      content.append(emptyState("Could not read the project", state.error));
+      content.append(emptyState(T("shell.read-failed"), state.error));
       return;
     }
     if (data.empty) {
       // 「没打开项目」与「项目还没配置」是两种状态，下一步也不一样：没有目录可写的
       // 时候，「初始化」要打开的那场问答一步都走不下去。
       const opened = data.project.root !== null;
-      const box = emptyState(opened ? "Avenic is not set up here" : "No project folder is open", data.empty);
+      const box = emptyState(opened ? T("shell.not-set-up") : T("shell.no-folder"), data.empty);
       box.append(opened
-        ? button({ label: "Initialize Avenic", variant: "primary", onClick: () => post({ type: "action", action: "initialize" }) })
-        : button({ label: "Open Folder", variant: "primary", onClick: () => post({ type: "action", action: "openProject" }) }));
+        ? button({ label: T("shell.initialize"), variant: "primary", onClick: () => post({ type: "action", action: "initialize" }) })
+        : button({ label: T("shell.open-folder"), variant: "primary", onClick: () => post({ type: "action", action: "openProject" }) }));
       content.append(box);
       return;
     }
@@ -1406,5 +1445,8 @@
     }
   });
 
+  // 首帧由模板给出（英文），这里只是把同一张表的另一半补上：中文界面里可见，其它
+  // 界面里进 tooltip 与无障碍名。数据还没到，所以这一步不碰任何要等数据的东西。
+  paintShell();
   post({ type: "ready" });
 })();

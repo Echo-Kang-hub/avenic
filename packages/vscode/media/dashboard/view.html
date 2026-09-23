@@ -9,30 +9,32 @@
 </head>
 <body>
   <div id="root">
-    <!-- The shell is static so the first paint never waits for data. -->
+    <!-- The shell is static so the first paint never waits for data. Its words are
+         the table's (`data-text`), and the English in the markup is the same
+         English the table holds — the page reads before the script does. -->
     <aside class="sidebar">
       <div class="side-brand">
         <img class="side-brand-mark" src="{{iconUri}}" alt="" />
         <div class="side-brand-text">
           <span class="side-brand-name">AVENIC</span>
-          <span class="side-brand-tag">AI Workflows. Yours.</span>
+          <span data-text="brand.tagline" class="side-brand-tag">AI Workflows. Yours.</span>
         </div>
       </div>
-      <nav class="side-nav" id="nav" aria-label="Avenic sections">
-        <button class="nav-item active" data-section="overview" aria-current="page"><span class="icon" data-icon="layout"></span>Overview</button>
-        <button class="nav-item" data-section="configure"><span class="icon" data-icon="gear"></span>Configure</button>
-        <button class="nav-item" data-section="agents"><span class="icon" data-icon="robot"></span>Agents</button>
-        <button class="nav-item" data-section="sessions"><span class="icon" data-icon="comment"></span>Sessions</button>
-        <button class="nav-item" data-section="skills"><span class="icon" data-icon="sparkle"></span>Skills</button>
-        <button class="nav-item" data-section="quick"><span class="icon" data-icon="rocket"></span>Quick Actions</button>
+      <nav class="side-nav" id="nav" aria-label="Avenic sections" data-aria="nav.aria">
+        <button class="nav-item active" data-section="overview" aria-current="page"><span class="icon" data-icon="layout"></span><span class="label" data-text="nav.overview">Overview</span></button>
+        <button class="nav-item" data-section="configure"><span class="icon" data-icon="gear"></span><span class="label" data-text="nav.configure">Configure</span></button>
+        <button class="nav-item" data-section="agents"><span class="icon" data-icon="robot"></span><span class="label" data-text="nav.agents">Agents</span></button>
+        <button class="nav-item" data-section="sessions"><span class="icon" data-icon="comment"></span><span class="label" data-text="nav.sessions">Sessions</span></button>
+        <button class="nav-item" data-section="skills"><span class="icon" data-icon="sparkle"></span><span class="label" data-text="nav.skills">Skills</span></button>
+        <button class="nav-item" data-section="quick"><span class="icon" data-icon="rocket"></span><span class="label" data-text="nav.quick">Quick Actions</span></button>
       </nav>
       <div class="side-foot">
         <div class="side-sep"></div>
-        <button class="nav-item" data-action="openDocs"><span class="icon" data-icon="book"></span>Documentation</button>
-        <button class="nav-item" data-action="openSettings"><span class="icon" data-icon="gear"></span>Settings</button>
+        <button class="nav-item" data-action="openDocs"><span class="icon" data-icon="book"></span><span class="label" data-text="nav.documentation">Documentation</span></button>
+        <button class="nav-item" data-action="openSettings"><span class="icon" data-icon="gear"></span><span class="label" data-text="nav.settings">Settings</span></button>
         <div class="side-meta">
           <div class="side-version" id="version-line"><span id="version">Avenic</span></div>
-          <div class="side-ready"><span class="dot"></span><span id="ready-label">Ready</span></div>
+          <div class="side-ready"><span class="dot"></span><span id="ready-label" data-text="shell.ready">Ready</span></div>
         </div>
       </div>
     </aside>
@@ -41,15 +43,15 @@
       <header class="proj-header">
         <div class="proj-id">
           <h1 class="proj-title" id="project-title">Project</h1>
-          <button class="proj-path" id="project-path" type="button" title="Reveal this project in the file manager"><span id="project-root">—</span><span class="icon path-go" data-icon="chevron-right"></span></button>
+          <button class="proj-path" id="project-path" type="button" data-title="shell.project-path-title" title="Reveal this project in the file manager"><span id="project-root">—</span><span class="icon path-go" data-icon="chevron-right"></span></button>
         </div>
         <div class="header-status">
           <span class="pill" id="configured-pill"><span class="icon" data-icon="check"></span><span id="configured-label">Avenic Configured</span></span>
           <span class="header-note" id="last-updated"></span>
         </div>
         <div class="header-actions">
-          <button class="btn" id="refresh-button"><span class="icon" data-icon="refresh"></span>Refresh</button>
-          <button class="btn btn-primary" id="reconfigure-button"><span class="icon" data-icon="settings-gear"></span>Reconfigure</button>
+          <button class="btn" id="refresh-button"><span class="icon" data-icon="refresh"></span><span class="label" data-text="shell.refresh">Refresh</span></button>
+          <button class="btn btn-primary" id="reconfigure-button"><span class="icon" data-icon="settings-gear"></span><span class="label" data-text="shell.reconfigure">Reconfigure</span></button>
         </div>
       </header>
       <div class="content" id="content">
@@ -60,7 +62,8 @@
       </div>
     </main>
   </div>
-  <noscript>The dashboard needs JavaScript to read the project.</noscript>
+  <noscript data-text="shell.noscript">The dashboard needs JavaScript to read the project.</noscript>
+  <script nonce="{{nonce}}">{{text}}</script>
   <script nonce="{{nonce}}" src="{{mainJs}}"></script>
 </body>
 </html>

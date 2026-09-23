@@ -107,6 +107,29 @@ test("a View All link turns the page itself, and tells the host where it went", 
   assert.deepEqual(lastPosted(rendered, "navigate"), { type: "navigate", section: "sessions", tab: "shared" }, "同时把落点告诉宿主，下一次推送才不会把页面拽回去");
 });
 
+test("the shell says it in English first, and in Chinese too only where the editor is Chinese", async () => {
+  const { source, sections } = await page();
+  // 模板里的静态标签：英文写在标记里，键挂在 data-text 上，脚本按同一张表补另一半。
+  const seed = (document: StubDocument): void => {
+    sidebar(sections)(document);
+    const label = document.createElement("span");
+    label.className = "label";
+    label.setAttribute("data-text", "nav.sessions");
+    label.textContent = "Sessions";
+    document.getElementById("nav").append(label);
+  };
+  const english = renderDataMessage(await payload(), source, { seed });
+  const spanEn = english.byId.get("nav")?.querySelectorAll("[data-text]")[0];
+  assert.equal(spanEn?.textContent, "Sessions", "英文是主标签，哪一种界面都不换");
+  assert.equal(spanEn?.getAttribute("title"), "Sessions / 会话", "非中文界面里中文在 tooltip 与无障碍名里等着");
+  assert.equal(spanEn?.querySelectorAll(".zh").length, 0, "非中文界面不把第二半挤进这一行");
+
+  const chinese = renderDataMessage(await payload(), source, { seed, chinese: true });
+  const spanZh = chinese.byId.get("nav")?.querySelectorAll("[data-text]")[0];
+  assert.equal(spanZh?.textContent, "Sessions会话", "中文界面里两半都在，英文仍然在前");
+  assert.equal(spanZh?.querySelectorAll(".zh")[0]?.textContent, "会话");
+});
+
 test("skipping to a section from the sidebar tells the host the same thing", async () => {
   const { source, sections } = await page();
   const rendered = renderDataMessage(await payload(), source, { seed: sidebar(sections) });

@@ -1365,3 +1365,10 @@ button {
   .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--av-border-soft); }
   .side-foot { margin-top: 12px; }
 }
+
+/* The weaker half of a bilingual pair. It is shown only where the editor itself
+ * is Chinese; everywhere else the same sentence waits in the tooltip, so the
+ * canonical English label never has to share a line with it. Muted and smaller
+ * on purpose: it is the second half, not a second label. */
+.zh { color: var(--av-text-muted); font-size: 11px; margin-left: 6px; font-weight: 400; }
+.nav-item .label { display: inline-flex; align-items: baseline; }

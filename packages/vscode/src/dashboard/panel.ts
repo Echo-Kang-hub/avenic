@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as vscode from "vscode";
 import { isWebviewMessage, type ActivityRow, type AgentId, type DashboardAction, type DashboardSection, type RunState, type StatusMessage } from "./protocol.ts";
 import { cachedAvenicCliVersion } from "../services/agent-versions.ts";
+import { textScript } from "../i18n/text.ts";
 import { buildDashboardData } from "./state.ts";
 
 // 仪表盘面板：编辑器区里的一个 webview，内部侧栏切换分区。整块界面就是参考图，
@@ -163,6 +164,9 @@ export class DashboardPanel {
       .replaceAll("{{cspSource}}", webview.cspSource)
       .replaceAll("{{mainJs}}", uri(media("dashboard", "main.js")))
       .replaceAll("{{style}}", uri(media("dashboard", "style.css")))
+      // 词表随页面一起到：webview 是 classic script，import 不了模块，而它也不该
+      // 自己再写一遍中文。英文是主标签，中文按编辑器的语言决定露不露面。
+      .replaceAll("{{text}}", textScript(vscode.env.language))
       // 品牌图标随扩展一起打包，经 asWebviewUri 读同一个副本：运行时没有开发机路径。
       .replaceAll("{{iconUri}}", uri(media("avenic.png")));
   }

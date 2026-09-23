@@ -54,10 +54,11 @@ test("the footer's version is the CLI's, and the tooltip names both versions", a
   assert.match(js, /`Avenic v\$\{data\.version\}`/);
   assert.match(js, /data\.version \? .* : "Avenic"/s);
   assert.match(html, /id="version-line"><span id="version">Avenic</);
-  // 扩展自己的版本必须可查，但不占底部那一行：悬停时和 CLI 的一起说。
+  // 扩展自己的版本必须可查，但不占底部那一行：悬停时和 CLI 的一起说。两句话都在
+  // 词表里（键在这儿，句子在 i18n/text.ts），这里只钉住它们被用上了。
   assert.match(js, /versionDetails/);
-  assert.match(js, /Avenic CLI not on PATH/);
-  assert.match(js, /VS Code extension \$\{details\.extension\}/);
+  assert.match(js, /T\("cli\.missing"\)/);
+  assert.match(js, /TF\("cli\.extension-version", \{ version: details\.extension \}\)/);
 });
 
 test("render code never assigns user data via innerHTML", async () => {

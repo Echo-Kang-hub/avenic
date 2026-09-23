@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createContext, runInContext } from "node:vm";
+import { TEXT } from "../../src/i18n/text.ts";
 
 // A minimal DOM for executing a webview script outside the editor. It exists so
 // the media tests can run a page's real render path (createElement/textContent/
@@ -208,6 +209,8 @@ export interface RenderOptions {
    */
   seed?: (document: StubDocument) => void;
   filename?: string;
+  /** 编辑器的语言是中文：词表的第二半会浮出来变成可见文本。 */
+  chinese?: boolean;
 }
 
 export interface StubDocument {
@@ -255,6 +258,9 @@ export function renderDataMessage(payload: unknown, source: string, options: Ren
       },
     },
     acquireVsCodeApi: () => ({ postMessage: (message: unknown) => posted.push(message) }),
+    // 宿主在页面里注入的就是这一张表（见 panel.ts 的 {{text}}）：桩照同一份注入，
+    // 页面里的句子才会是句子而不是键名。中文那一半按语言露不露面，默认不露面。
+    AVENIC_TEXT: { text: TEXT, zhVisible: options.chinese === true },
     // 「读了半秒还没回来」那一行由视觉套件拍下来（fixture a-reference-…-reading），
     // 这里只要它别把渲染路径拖成异步：定时器响不响，与本次断言无关。
     setTimeout: () => 0,
