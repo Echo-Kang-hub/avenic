@@ -111,11 +111,14 @@ test("answered steps are handed over collapsed, and the apply step never is", as
 
 // API 那一块在已答区是一行：这一问的答案就是「配置住在哪个文件」，摘要写的就是那个
 // 文件本身（core 给的相对路径），因此面板上那一行与 `avenic status` 的那一格逐字相同。
+// 中心那一问也在这一块里，而且默认答案就是「Set up by hand」—— 不问地址、不问模型、
+// 不问凭据，用户的文件一个字节都不动。
 test("the API block folds into one answered line naming the file it writes", async () => {
   const { seen, draft } = await run([
     { value: ["claude"] },
     { value: "api" },
     { value: "project" },
+    { value: "hand" },                 // Provider：默认就是「Set up by hand」
     { value: "project" },
     { value: "shared" },
     { value: true },
@@ -125,7 +128,8 @@ test("the API block folds into one answered line naming the file it writes", asy
   const claude = answered.find((line) => line.title === "Claude Code")!.summary;
   assert.equal(claude.includes("Config Source .claude/settings.local.json"), true, "说的是承载配置的那个文件，不是「Project」两个字");
   assert.equal(claude.includes("Authentication API (Project)"), true, "方法与作用域是同一句话的两半");
-  assert.equal(claude.includes("Provider"), false, "Avenic 不问 provider、地址、模型或凭据：文件是用户的");
+  assert.equal(claude.includes("Provider by hand"), true, "Provider 这一问在这一块里，答案与文件一致");
+  assert.equal(claude.includes("Base URL"), false, "by hand 不问地址、不问模型、不问凭据：文件是用户的");
   assert.equal(draft.agents.claude.configScope, "project");
 });
 
@@ -251,6 +255,7 @@ test("applying an existing project starts from what the project is", async () =>
     { value: ["codex"] },
     { value: "api" },                       // 保持 api，因此没有 switch 那一问
     { value: "global" },                    // 配置来源（codex 的全局配置）
+    { value: "hand" },                      // Provider：不替换文件里已有的东西
     { value: "global" },                    // 会话
     { value: "isolated" },
     { value: true },
