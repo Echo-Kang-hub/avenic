@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -28,6 +30,7 @@ test("a self-update that leaves the old version on PATH fails loudly", async () 
       latestVersion: "1.4.5",
       // npm exited 0, but the executable PATH resolves is still the old one.
       probeVersion: () => "1.4.4",
+      installedVersion: () => "1.4.4",
       spawn,
     }),
     (error) => {
@@ -38,6 +41,52 @@ test("a self-update that leaves the old version on PATH fails loudly", async () 
     },
   );
   assert.deepEqual(calls.map((call) => call.executable), ["npm"], "the update itself must still have been attempted");
+});
+
+test("a self-update succeeds when npm installed the target even though PATH still resolves the old shim", async () => {
+  const { calls, spawn } = recordingSpawn();
+  const result = await updateAvenic(cliPackageRoot, {
+    currentVersion: "1.4.4",
+    latestVersion: "1.4.5",
+    // A terminal keeps the command lookup it started with until its PATH is
+    // refreshed, but the package npm just installed is already usable from a
+    // fresh terminal.
+    probeVersion: () => "1.4.4",
+    installedVersion: () => "1.4.5",
+    spawn,
+  });
+
+  assert.equal(result.updated, true);
+  assert.equal(result.active, "1.4.5");
+  assert.equal(result.pathVersion, "1.4.4");
+  assert.deepEqual(calls.map((call) => call.executable), ["npm"]);
+});
+
+test("a self-update verifies the package npm installed instead of the stale command lookup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "avenic-global-"));
+  try {
+    await mkdir(path.join(root, "avenic"));
+    await writeFile(path.join(root, "avenic", "package.json"), JSON.stringify({ version: "1.4.5" }));
+    const calls = [];
+    const result = await updateAvenic(cliPackageRoot, {
+      currentVersion: "1.4.4",
+      latestVersion: "1.4.5",
+      probeVersion: () => "1.4.4",
+      spawn(executable, argumentsList) {
+        calls.push({ executable, argumentsList });
+        if (argumentsList[0] === "root") return { status: 0, stdout: `${root}\n` };
+        return { status: 0, stdout: "" };
+      },
+    });
+    assert.equal(result.updated, true);
+    assert.equal(result.active, "1.4.5");
+    assert.deepEqual(calls.map((call) => call.argumentsList), [
+      ["install", "--global", "avenic@latest"],
+      ["root", "--global"],
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("an already current install does not reinstall", async () => {

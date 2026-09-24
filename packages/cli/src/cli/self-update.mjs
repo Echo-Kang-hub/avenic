@@ -22,6 +22,17 @@ function registryVersion(spawn, spec) {
   return typeof value === "string" ? value : null;
 }
 
+async function globalPackageVersion(spawn, packageName) {
+  const result = spawn("npm", ["root", "--global"], { stdio: "pipe", windowsHide: true, encoding: "utf8" });
+  if (result?.status !== 0) return null;
+  try {
+    const metadata = JSON.parse(await readFile(path.join(output(result), packageName, "package.json"), "utf8"));
+    return typeof metadata.version === "string" ? metadata.version : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function avenicPackageSpec(packageRoot) {
   const metadata = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
   return metadata.avenic?.packageSpec ?? "Echo-Kang-hub/avenic#main";
@@ -53,12 +64,14 @@ export async function updateAvenic(packageRoot, options = {}) {
   if (result.status !== 0) {
     throw new Error(`npm install failed with exit code ${result.status ?? 1}`);
   }
-  const active = options.probeVersion ? options.probeVersion() : probeVersion(spawn);
-  if (active !== latest) {
-    throw new Error(`Avenic update verification failed: registry=${latest}, active=${active ?? "unknown"}. Check PATH and npm global prefix.`);
+  const installed = options.installedVersion ? await options.installedVersion() : await globalPackageVersion(spawn, "avenic");
+  const pathVersion = options.probeVersion ? options.probeVersion() : probeVersion(spawn);
+  if (installed !== latest) {
+    throw new Error(`Avenic update verification failed: registry=${latest}, npm-global=${installed ?? "unknown"}, active=${pathVersion ?? "unknown"}. Check npm global prefix and PATH.`);
   }
-  console.log(`Updated Avenic: ${current ?? "unknown"} → ${active}`);
-  return { packageSpec, current, latest, active, updated: true };
+  if (pathVersion !== latest) console.log("Avenic was updated. Open a new terminal to use the updated command.");
+  console.log(`Updated Avenic: ${current ?? "unknown"} → ${installed}`);
+  return { packageSpec, current, latest, active: installed, pathVersion, updated: true };
 }
 
-export { probeVersion, registryVersion };
+export { globalPackageVersion, probeVersion, registryVersion };

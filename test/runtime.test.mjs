@@ -1083,6 +1083,7 @@ test("self update reinstalls the published npm package globally", async () => {
     currentVersion: "1.4.4",
     latestVersion: "1.4.5",
     probeVersion: () => "1.4.5",
+    installedVersion: () => "1.4.5",
     spawn(executable, argumentsList) {
       calls.push({ executable, argumentsList });
       return { status: 0, stdout: "" };
