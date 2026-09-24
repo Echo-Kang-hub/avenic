@@ -572,7 +572,7 @@ export const TEXT = {
   "activity.empty-detail": { en: "What you do in this panel shows up here, newest first.", zh: "你在这个面板里做的事会出现在这里，最新的在最上面。" },
   "activity.view-all": { en: "View All Activity", zh: "查看全部活动" },
 
-  // 读的那一页：一条对话的头、每一轮、工具行、以及 Raw / Diagnostics 两种读法。
+  // 读的那一页：一条对话的头、每一轮、工具行、以及 Conversation / Raw / Diagnostics 三种读法。
   "transcript.empty-title": { en: "Nothing is open yet", zh: "还没有打开任何会话" },
   "transcript.empty-detail": { en: "Pick a session on the left and its conversation is read here.", zh: "在左边点一条会话，它的对话就会在这里读出来。" },
   // 一段对话算不算共享历史，是这个项目的设置说了算，不是这一页猜的。

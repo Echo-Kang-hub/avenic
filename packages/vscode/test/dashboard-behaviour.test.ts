@@ -521,9 +521,9 @@ test("the reader header answers what the conversation is, and Raw/Diagnostics ar
   assert.equal(factValue(reader, "Event count"), "2 events", "事件数来自载荷");
   assert.equal(factValue(reader, "Sync state"), "Synced", "同步状态是宿主给的答案");
 
-  // ⋯ 后面那两项是这一页自己的两种读法：Raw 是这些轮的原样，Diagnostics 是这条会话
-  // 的投影说过什么。两者都不向宿主再要一次——一个点了会发消息的菜单项，等不到回包
-  // 就是死的。
+  // ⋯ 后面那三项是这一页自己的三种读法：Conversation 是对话本身，Raw 是这些轮的原样，
+  // Diagnostics 是这条会话的投影说过什么。三者都不向宿主再要一次——一个点了要等宿主
+  // 回包的菜单项，等不到就是死的。
   fire(iconButton(reader, "Session actions"));
   const posted = rendered.posted.length;
   fire(button(rendered, "Raw"));
@@ -707,6 +707,44 @@ test("读过原始或诊断之后，读者还回得到对话", async () => {
   assert.equal(browser(rendered).querySelectorAll(".raw-view").length, 0, "原始那一列让开了");
 });
 
+// 回来的那一趟不该留下任何后果。提示是挂在那一列里的一个节点：换读法会把那一列整个换掉，
+// 连提示一起（这是对的，它说的是旧那一列的位置）。但「已经给过一条提示」这件事要是跟着
+// 节点留在状态里，下一条就永远发不出来——读者绕一圈回来，下面再来消息，他就再也听不到了。
+test("绕一圈回来的读者，之后的新消息还听得到", async () => {
+  const { source, sections } = await page();
+  const base = await payload({ transcript: TRANSCRIPT });
+  const rendered = renderDataMessage(base, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  const turns = (base.transcript.turns ?? []) as Payload[];
+  const first = browser(rendered).querySelectorAll(".transcript")[0];
+  first.scrollHeight = 1200;
+  first.clientHeight = 400;
+  first.scrollTop = 0; // 读到一半：下面还有他没读的
+
+  // 先让他拿到一枚提示，这样「节点被换掉、状态还指着它」这件事才成立。
+  const grown = [...turns, { id: "e1", kind: "agent", speaker: "Claude", agent: "claude", role: "assistant", at: "2025-09-20T20:31:00Z", text: "One more.", tools: [], model: null }];
+  rendered.send({ type: "data", payload: { ...base, transcript: { ...base.transcript, turns: grown, eventCount: grown.length } } });
+  assert.equal(browser(rendered).querySelectorAll(".new-messages").length, 1, "读到一半的人，下面多了一轮就该说一声");
+
+  // 换一种读法再换回来：他去看了别的，现在回对话继续读。
+  fire(button(rendered, "Raw"));
+  fire(button(rendered, "Conversation"));
+  const back = browser(rendered).querySelectorAll(".transcript")[0];
+  back.scrollHeight = 1200;
+  back.clientHeight = 400;
+  back.scrollTop = 0;
+
+  const more = [...grown, { id: "e2", kind: "agent", speaker: "Claude", agent: "claude", role: "assistant", at: "2025-09-20T20:32:00Z", text: "And another.", tools: [], model: null }];
+  rendered.send({ type: "data", payload: { ...base, transcript: { ...base.transcript, turns: more, eventCount: more.length } } });
+
+  assert.equal(
+    browser(rendered).querySelectorAll(".new-messages").length,
+    1,
+    "上一条提示是上一列的事，不该把这一列的那条也堵掉",
+  );
+});
+
 test("读者本来就在结尾，窗口满了的那次重画不给他那枚提示", async () => {
   const { source, sections } = await page();
   const base = await payload();
@@ -733,6 +771,9 @@ test("读者本来就在结尾，窗口满了的那次重画不给他那枚提�
   rendered.send({ type: "data", payload: { ...base, transcript: { ...TRANSCRIPT, turns: more, eventCount: 101 } } });
 
   const after = browser(rendered).querySelectorAll(".transcript")[0];
+  // 这条用例要的正是「窗口满了的那次重画」这条路：窗口要是不够装，这条推送会走追加那条路，
+  // 而那条路本来就不给结尾的人提示——用例会在没修的那个版本上照样通过，却什么也没钉住。
+  assert.equal(after.querySelectorAll(".turn").length, 100, "窗口满了：重画之后仍是最近的 100 轮");
   assert.equal(after.querySelectorAll(".new-messages").length, 0, "他已经在看最新那一轮，没有「下面」可去");
 });
 

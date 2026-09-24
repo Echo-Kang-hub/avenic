@@ -1274,6 +1274,10 @@
     const body = state.viewEl;
     if (!transcript || !body) return;
     state.view = kind;
+    // 换一种读法就是换掉这一列，搁在里面的那条提示跟着一起走（它说的是旧那一列的位置，
+    // 本来就该走）。但状态里不能还留着它：不然「已经给过一条」这句话会替下一列把话说完，
+    // 读者绕一圈回来之后，下面再来消息也发不出第二条提示了。
+    state.newChip = null;
     if (kind === "conversation") {
       // 回到对话：这一列重新画一遍，原来读到哪儿就没了——这是换一种读法的代价。
       state.turnsWindow = TURN_PAGE;

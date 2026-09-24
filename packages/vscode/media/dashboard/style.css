@@ -1241,7 +1241,7 @@ button {
 
 .session-actions { display: flex; align-items: center; gap: 6px; position: relative; }
 
-/* ⋯ 打开的那两项是这一页自己的读法，所以它们悬在头部上，不把头部撑开。 */
+/* ⋯ 打开的那几项是这一页自己的读法，所以它们悬在头部上，不把头部撑开。 */
 .session-menu {
   position: absolute; top: 100%; right: 0; z-index: 2;
   display: flex; flex-direction: column; gap: 2px;
