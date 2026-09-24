@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { watchProjectState } from "../src/services/state-watch.ts";
+import { watchProjectState, type StateWatch } from "../src/services/state-watch.ts";
 
 // 仪表盘要跟着项目走，而项目的变化发生在别处：另一个终端的 `avenic claude` 退出了，
 // 一次启动结束了，一场对话长了。以前面板只在「自己动过手」和「终端被关掉」时重读，
@@ -64,18 +64,35 @@ test("a stamp replaced by rename still arrives", async () => {
 });
 
 test("a burst of writes is one wake-up, not eight", async () => {
-  const { root, file } = await mkdirReady(await project());
+  const { root, file } = await project();
   const seen = { count: 0 };
-  const watcher = watchProjectState({ projectRoot: root, onChange: () => { seen.count += 1; }, pollMs: 0, debounceMs: 60 });
+  // 时钟是虚拟的：真文件系统上八次写要多久、事件之间隔了多少毫秒，取决于这一刻这台机器
+  // 还在忙什么（一次满载的整库运行里它们曾经摊到一个 60 毫秒的窗口之外，于是这条规矩时
+  // 红时绿）。这条问的是窗口本身——窗口多宽、连击会不会被合并、窗口之外的下一次还算不算
+  // ——所以它把时间也捏在自己手里。真实事件那条路由上面两条真实文件系统的用例守着。
+  const source: { fire: (eventType: string, filename: string | null) => void } = { fire: () => {} };
+  const fake = (_target: string, _options?: { persistent?: boolean }) => ({
+    on: (name: string, listener: (eventType: string, filename: string | null) => void) => { if (name === "change") source.fire = listener; },
+    close: () => {},
+  });
+  mock.timers.enable(["setTimeout"]);
+  let watcher: StateWatch | null = null;
   try {
-    for (const revision of [1, 2, 3, 4, 5, 6, 7, 8]) {
-      await writeFile(file, stamp(revision));
-    }
-    await delay(400);
-    assert.ok(seen.count >= 1, "the change is reported");
-    assert.ok(seen.count <= 2, `eight writes inside one window are one piece of news, saw ${seen.count}`);
+    watcher = watchProjectState({ projectRoot: root, onChange: () => { seen.count += 1; }, pollMs: 0, debounceMs: 200, fsWatch: fake });
+    const name = path.basename(file);
+    for (let i = 0; i < 8; i += 1) source.fire("change", name);
+    assert.equal(seen.count, 0, "窗口还没过去，就不该有任何一声");
+    mock.timers.tick(199);
+    assert.equal(seen.count, 0, "窗口之内仍然一条都没有");
+    mock.timers.tick(2);
+    assert.equal(seen.count, 1, `窗口里的八次变化是一条消息，实际 ${seen.count} 条`);
+    // 连击：每 50 毫秒来一次，每一次都把窗口往后推——二十毫秒的间隔落在窗口里，就该还是一条。
+    for (let i = 0; i < 4; i += 1) { source.fire("change", name); mock.timers.tick(50); }
+    mock.timers.tick(200);
+    assert.equal(seen.count, 2, `窗口里连着来的一串仍是一条，实际 ${seen.count} 条`);
   } finally {
-    watcher.stop();
+    watcher?.stop();
+    mock.timers.reset();
     await rm(root, { recursive: true, force: true });
   }
 });
