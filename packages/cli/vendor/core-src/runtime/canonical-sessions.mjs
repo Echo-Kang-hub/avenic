@@ -57,7 +57,11 @@ async function withAppendLock(directory, id, run) {
   if (!existsSync(path.join(directory, "session.json"))) throw new Error(`Unknown canonical session: ${id}`);
   const lockPath = path.join(directory, APPEND_LOCK);
   const deadline = Date.now() + APPEND_LOCK_WAIT_MS;
-  for (let attempt = 0; ; attempt += 1) {
+  // 只有拿到门的那一支才走到 `run()`：`finally` 无条件删门时，等不到门的那一支会把别人
+  // 正握着的门拆掉，于是两个写者同时进去 —— 门存在的理由正好被拆门这件事抹掉。接手也只
+  // 接手「主人已经不在」的门（时间戳老过阈值）；等到底还没拿到就带错退出（这一笔的去重
+  // 是幂等的，下一遍重来即可），而不是在没有门的情况下照样读整份、改、写回。
+  for (;;) {
     try {
       await mkdir(lockPath);
       break;
@@ -66,7 +70,7 @@ async function withAppendLock(directory, id, run) {
     }
     // 等的每一圈都受同一个期限约束：接手失败、读不动、删不掉，都只会再多等一圈，
     // 不会变成原地打转 —— 一个失去边界的等待会烧掉整个进程。
-    if (attempt > 0 && Date.now() >= deadline) break;
+    if (Date.now() >= deadline) throw new Error(`Canonical session ${id} is being appended to by another process`);
     const stale = await stat(lockPath).then((info) => Date.now() - info.mtimeMs > APPEND_LOCK_STALE_MS, () => false);
     if (stale) await rm(lockPath, { recursive: true, force: true }).catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, APPEND_LOCK_POLL_MS));
@@ -144,11 +148,15 @@ export async function createCanonicalSession(projectRoot, input = {}) {
       warnings: [],
     },
   };
+  // `session.json` 是这场对话「已经在这里」的凭据（每一处存在性判断问的都是它），所以它
+  // 最后才落地：先写下空的事件日志、状态与映射，再把凭据放上去。反过来做的话，一份刚
+  // 发布的记录背后可能还压着上一次的 `events.jsonl`，而正在追加的那一支会先写进事件、
+  // 再被下面这句清空盖掉 —— 一整段历史就这么没了，游标还以为它已经读过。
   await mkdir(path.join(directory, "attachments"), { recursive: true });
-  await writeAtomic(sessionFile, `${JSON.stringify(session, null, 2)}\n`);
   await writeAtomic(path.join(directory, "events.jsonl"), "");
   await writeAtomic(path.join(directory, "state.json"), `${JSON.stringify(session.state, null, 2)}\n`);
   await writeAtomic(path.join(directory, "mappings.json"), `${JSON.stringify({ schemaVersion: 1, canonicalSessionId: id, projections: {} }, null, 2)}\n`);
+  await writeAtomic(sessionFile, `${JSON.stringify(session, null, 2)}\n`);
   // A conversation arrived: the count in the state stamp moves with it.
   await refreshStateStamp(projectRoot);
   return { id, created: true };

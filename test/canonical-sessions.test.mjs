@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -49,6 +49,40 @@ test("canonical store creates a versioned session and filters credential-like me
     assert.equal(stored.session.title, "Interop fixture");
     assert.equal(stored.session.metadata.safe, "kept");
     assert.equal("apiKey" in stored.session.metadata, false);
+  });
+});
+
+// 一次只有一支笔，而「门」这件事的全部保证有三条：还在等门的那一支不能拆别人正握着的
+// 门（拆了就两个写者同时进去，门存在的理由正好被拆门抹掉）、不能在没有门的情况下照样
+// 读整份改并写回（那就是门要防的那次丢事件）、而主人确实不在了（时间戳老过阈值）时接手
+// 也必须真的能接上。三条各测一次。
+test("an append that cannot get the lock refuses instead of writing without it", async () => {
+  await withStore(async (projectRoot) => {
+    const { id } = await createCanonicalSession(projectRoot, { source: "claude" });
+    const lockPath = path.join(projectRoot, ".agents", "sessions", "canonical", id, "append.lock");
+    await mkdir(lockPath, { recursive: true });
+    await assert.rejects(
+      () => appendCanonicalEvents(projectRoot, id, [{ id: "c:1", role: "user", createdAt: "2026-09-14T00:00:00.000Z", content: [{ type: "text", text: "hi" }] }]),
+      /another process/,
+      "等不到门就带错退出，让人重来 —— 而不是在没有门的情况下写",
+    );
+    assert.equal(await stat(lockPath).then(() => true, () => false), true, "别人正握着的门还在");
+    assert.equal((await readCanonicalSession(projectRoot, id)).events.length, 0, "没有门就没有写");
+  });
+});
+
+test("an append takes over a lock whose owner is provably gone", async () => {
+  await withStore(async (projectRoot) => {
+    const { id } = await createCanonicalSession(projectRoot, { source: "claude" });
+    const lockPath = path.join(projectRoot, ".agents", "sessions", "canonical", id, "append.lock");
+    await mkdir(lockPath, { recursive: true });
+    // 主人已经不在了：被杀掉的进程留下的门只差时间戳这一条证据。
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath, old, old);
+    const appended = await appendCanonicalEvents(projectRoot, id, [{ id: "c:1", role: "user", createdAt: "2026-09-14T00:00:00.000Z", content: [{ type: "text", text: "hi" }] }]);
+    assert.deepEqual(appended, { added: 1, duplicate: 0 });
+    assert.equal(await stat(lockPath).then(() => true, () => false), false, "接手之后门自己关上");
+    assert.equal((await readCanonicalSession(projectRoot, id)).events.length, 1);
   });
 });
 
