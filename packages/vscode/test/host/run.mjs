@@ -689,6 +689,18 @@ export function ownershipScan(text, tag) {
   return { points: Number(summary[1]), step: Number(summary[2]), strangers };
 }
 
+// 点击的坐标是「webview 页面里的点 + 这个 iframe 在 workbench 里的偏移」。偏移只要从
+// 错的那一份 iframe 上读，整串点击就整体平移，而页面上的一切读起来仍然正常——一次跑
+// 于是红在「点了没反应」，红的是量尺而不是产品。扩展在侧栏也有 webview（启动器那一栏），
+// 它在文档顺序里排在编辑器面板前面，所以 page 上第一个 `iframe.webview` 并不总是要看的那
+// 一个。选法只有一条根据——被读的那一页自己的视口：承载它的那一份 iframe 尺寸与之相同
+// （矩形是舍入过的，所以按像素级的差比）。一份都对不上就返回 null，调用方带错停下，
+// 而不是拿第一份凑合着点。纯函数，规则由用例钉住。
+export function pickFrame(frames, viewport) {
+  const near = (a, b) => Math.abs(a - b) <= 2;
+  return frames.find((frame) => near(frame.w, viewport.w) && near(frame.h, viewport.h)) ?? null;
+}
+
 // Which labels this harness is allowed to click. Continue / Launch are the panel's
 // way of starting or resuming an agent session, and that is the user's own action —
 // never this run's, isolated profile or not. The check is by label because that is
@@ -1171,8 +1183,20 @@ async function main() {
     await shoot("01-dashboard-open.png");
 
     // The webview sits at an offset inside the workbench page; the page origin is
-    // the window's content origin, which screenX/Y already accounts for.
-    const page = await json(wbc, `(()=>{const r=document.querySelector('iframe.webview').getBoundingClientRect();return {x:r.x,y:r.y};})()`);
+    // the window's content origin, which screenX/Y already accounts for. Which
+    // iframe that offset comes from is decided by the page's own viewport — the
+    // sidebar carries a webview too, and it comes first in the document.
+    const frameOrigin = async () => {
+      const viewport = await json(wvc, "({ w: Math.round(window.innerWidth), h: Math.round(window.innerHeight) })");
+      const frames = await json(wbc, `(()=>[...document.querySelectorAll('iframe.webview')].map((f)=>{const b=f.getBoundingClientRect();
+    return {x:b.x,y:b.y,w:Math.round(b.width),h:Math.round(b.height)};}))()`);
+      const frame = pickFrame(frames, viewport);
+      if (frame === null) {
+        throw new Error(`no iframe.webview on the workbench page is the page being read (viewport ${viewport.w}x${viewport.h}); the page has ${JSON.stringify(frames)}`);
+      }
+      return frame;
+    };
+    const page = await frameOrigin();
     const brand = await json(wvc, `(()=>{const d=${DOC};
   const n=[...d.querySelectorAll('*')].find(x=>!x.children.length&&(x.textContent||'').trim()==='AVENIC');
   if(!n)return null;const r=n.getBoundingClientRect();
@@ -1215,7 +1239,11 @@ async function main() {
     const click = async (label) => {
       // 启动/继续一个 agent 是用户自己的动作：这一步宁可把整次跑打断，也不点下去。
       if (!clickAllowed(label)) throw new Error(`${JSON.stringify(label)} starts an agent session, and launching or resuming one is the user's own action — this harness never clicks it`);
-      const frame = await json(wbc, `(()=>{const r=document.querySelector('iframe.webview').getBoundingClientRect();return {x:r.x,y:r.y};})()`);
+      // 点一个标签之前先点名这个偏移量是从哪一个 iframe 上读的（并核对它就是被读的那一页）：
+      // 侧栏那份 webview 在文档顺序里排在编辑器面板前面，读错一份整串点击就偏一个侧栏宽度。
+      // 只有把「读到的是哪一份」记下来，一次点歪才是可归因的，而不是又一句「点击没反应」。
+      const frame = await frameOrigin();
+      log(`click ${JSON.stringify(label)}: frame origin ${Math.round(frame.x)},${Math.round(frame.y)} (${frame.w}x${frame.h})`);
       const el = await aim(label);
       if (!el) throw new Error(`no clickable element labelled ${JSON.stringify(label)}`);
       if (el.onTarget !== true) {

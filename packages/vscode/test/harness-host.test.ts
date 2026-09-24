@@ -15,6 +15,7 @@ const host = (await import(pathToFileURL(path.join(pkgDir, "test", "host", "run.
   verdict: (run: unknown) => { pass: boolean; reasons: string[] };
   wbWait: (find: () => Promise<unknown>, tries: number, gap: number) => Promise<unknown>;
   clickAllowed: (label: string) => boolean;
+  pickFrame: (frames: { x: number; y: number; w: number; h: number }[], viewport: { w: number; h: number }) => { x: number; y: number; w: number; h: number } | null;
   ownershipScan: (text: string, tag: string) => { points: number; step: number; strangers: { x: number; y: number; pid: number; proc: string; window: string }[] };
   windowEnvironment: () => Record<string, string | undefined>;
   writePsFile: (file: string) => void;
@@ -190,6 +191,25 @@ test("a click that would start an agent is refused, whatever the step list says"
   for (const label of ["Refresh", "Skills", "Sessions", "Overview", "summarize the release notes for 0.5.5"]) {
     assert.equal(host.clickAllowed(label), true, label);
   }
+});
+
+// 点击的坐标是「webview 页面里的点 + 这个 iframe 在 workbench 里的偏移」。偏移只要从
+// 错的那一份 iframe 上读，整串点击就整体平移，而页面上的一切读起来仍然正常——一次跑
+// 于是红在「点了没反应」，红的是量尺而不是产品。扩展在侧栏也有 webview（启动器那一栏），
+// 它在文档顺序里排在编辑器面板前面，所以 page 上第一个 `iframe.webview` 并不总是要看的那
+// 一个：选法只有一个根据——被读的那一页自己的视口尺寸，只有承载它的那一份 iframe 相同。
+test("the frame a click is measured from is the one whose size is the page being read", () => {
+  const viewport = { w: 1083, h: 801 };
+  const sidebar = { x: 53, y: 69, w: 300, h: 801 };
+  const panel = { x: 353, y: 69, w: 1083, h: 801 };
+  assert.deepEqual(host.pickFrame([sidebar, panel], viewport), panel, "侧栏那份先出现，但不是被读的那一页");
+  assert.deepEqual(host.pickFrame([panel], viewport), panel, "只有一份时就是它");
+  assert.deepEqual(host.pickFrame([panel, sidebar], viewport), panel, "顺序不该改变结果");
+  // 舍入到整数的矩形与页面的视口之间允许像素级的差（缩放、小数点）。
+  assert.deepEqual(host.pickFrame([{ x: 353, y: 69, w: 1081, h: 800 }], viewport), { x: 353, y: 69, w: 1081, h: 800 });
+  // 一份都对不上时返回 null —— 调用方必须带错停下，而不是拿第一份凑合着点。
+  assert.equal(host.pickFrame([sidebar], viewport), null);
+  assert.equal(host.pickFrame([], viewport), null);
 });
 
 // 遮挡检查的失效方式不是「说错了」，而是「什么都没说就当干净」——它只读探针的
