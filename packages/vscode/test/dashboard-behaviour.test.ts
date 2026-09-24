@@ -692,6 +692,50 @@ test("窗口满了的那次重画落在读者原来离结尾那么远的地方",
   assert.ok(after.querySelectorAll(".new-messages").length > 0, "下面多了一轮，要说一声");
 });
 
+test("读过原始或诊断之后，读者还回得到对话", async () => {
+  const { source, sections } = await page();
+  const base = await payload({ transcript: TRANSCRIPT });
+  const rendered = renderDataMessage(base, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  fire(button(rendered, "Raw"));
+  assert.equal(browser(rendered).querySelectorAll(".raw-view").length, 1, "读者要的是原始那一种读法");
+
+  // 读法不该收回他挑的那一种，也不该把他关在里面：同一个 ⋯ 菜单里要有一条回来的路。
+  fire(button(rendered, "Conversation"));
+  assert.equal(browser(rendered).querySelectorAll(".transcript").length, 1, "对话那一列回得来");
+  assert.equal(browser(rendered).querySelectorAll(".raw-view").length, 0, "原始那一列让开了");
+});
+
+test("读者本来就在结尾，窗口满了的那次重画不给他那枚提示", async () => {
+  const { source, sections } = await page();
+  const base = await payload();
+  const long = Array.from({ length: 100 }, (_, index) => ({
+    id: `e${index}`,
+    kind: index % 2 === 0 ? "user" : "agent",
+    speaker: index % 2 === 0 ? "You" : "Claude",
+    agent: index % 2 === 0 ? null : "claude",
+    role: index % 2 === 0 ? "user" : "assistant",
+    at: "2025-09-20T20:20:00Z",
+    text: `Turn number ${index}`,
+    tools: [],
+    model: null,
+  }));
+  const rendered = renderDataMessage({ ...base, transcript: { ...TRANSCRIPT, turns: long, eventCount: 100 } }, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  const transcript = browser(rendered).querySelectorAll(".transcript")[0];
+  transcript.scrollHeight = 4000;
+  transcript.clientHeight = 400;
+  transcript.scrollTop = 3600; // 就在结尾：下面没有他还没读的东西
+
+  const more = [...long, { id: "e100", kind: "agent", speaker: "Claude", agent: "claude", role: "assistant", at: "2025-09-20T20:31:00Z", text: "One more.", tools: [], model: null }];
+  rendered.send({ type: "data", payload: { ...base, transcript: { ...TRANSCRIPT, turns: more, eventCount: 101 } } });
+
+  const after = browser(rendered).querySelectorAll(".transcript")[0];
+  assert.equal(after.querySelectorAll(".new-messages").length, 0, "他已经在看最新那一轮，没有「下面」可去");
+});
+
 test("读者挑的读法不会被一次推送收回去", async () => {
   const { source, sections } = await page();
   const base = await payload({ transcript: TRANSCRIPT });

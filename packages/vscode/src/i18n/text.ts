@@ -579,6 +579,7 @@ export const TEXT = {
   "transcript.sub.shared": { en: "Shared history — the same conversation every agent sees.", zh: "共享历史——三个 Agent 看到的是同一段对话。" },
   "transcript.sub.isolated": { en: "This project keeps its sessions isolated.", zh: "这个项目把每个 Agent 的会话彼此隔离。" },
   "transcript.set-active": { en: "Set as Active", zh: "设为当前会话" },
+  "transcript.conversation": { en: "Conversation", zh: "对话" },
   "transcript.raw": { en: "Raw", zh: "原始" },
   "transcript.diagnostics": { en: "Diagnostics", zh: "诊断" },
   "transcript.fact.participants": { en: "Participants", zh: "参与者" },

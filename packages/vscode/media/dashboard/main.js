@@ -41,6 +41,8 @@
     search: "",
     turnsWindow: 100,
     shownCount: 0,
+    // 读者挑的读法属于这一页，不属于某一段对话：换一段会话、换一个分区，它都跟着，
+    // 直到他自己在 ⋯ 里换回去（所以那一条回来的路必须一直在）。
     view: "conversation",
     listEl: null,
     footEl: null,
@@ -1155,12 +1157,15 @@
       }));
     }
 
-    // ⋯ 后面是这一页自己的两种读法：Raw 是这些轮的原样，Diagnostics 是这条会话的
-    // 投影说过什么。两者都在已到的载荷里——一个点了要等宿主回包的菜单项，等不到就是
-    // 死的，而这两个视图永远不会有第二条答案。
+    // ⋯ 后面是这一页自己的三种读法：Conversation 是对话本身，Raw 是这些轮的原样，
+    // Diagnostics 是这条会话的投影说过什么。三者都在已到的载荷里——一个点了要等宿主
+    // 回包的菜单项，等不到就是死的，而这三个视图永远不会有第二条答案。回来的那一条
+    // 必须列在这里：重画不再把读法收回去了（那是读者的选择），所以页面上要是没有这条
+    // 路，点过一次 Raw 的人就再也读不到对话。
     actions.append(menuButton({
       title: T("sessions.actions"),
       items: [
+        { label: T("transcript.conversation"), onClick: () => showView("conversation") },
         { label: T("transcript.raw"), onClick: () => showView("raw") },
         { label: T("transcript.diagnostics"), onClick: () => showView("diagnostics") },
       ],
@@ -1286,7 +1291,8 @@
   /* 画好的这一列落在哪儿。`kept` 是读者原来离结尾有多远：0 就是落在最新那一轮上（第一次
    * 打开一段会话、刚换过读法都是它）。落在开头等于把读的人送回一段他早读过的地方（一条长
    * 会话打开来看到的是第 100 轮之前，而右边那颗「继续」按钮说的是最新那一句），把从半路
-   * 读的人拽到结尾则是把他正读的那一段抽走。这些节点此刻还没进文档，浏览器算不出高度。 */
+   * 读的人拽到结尾则是把他正读的那一段抽走。这一句只在节点已经进了文档之后才写：那正是
+   * 浏览器算得出真实 scrollHeight 的时刻，也正是这一列接下来要画的起点。 */
   function landToNewest(kept = 0) {
     const box = state.scrollEl;
     if (box) box.scrollTop = Math.max(0, box.scrollHeight - kept);
@@ -2069,10 +2075,13 @@
     if (!data) return;
     // 重画之前先量一下读者原来在哪儿：同一段对话的这一列要落回同样的地方（离结尾多远），
     // 换了一段对话就是新打开的，落它的结尾（kept = 0）。
+    // 两个量不是一回事：`kept` 是离结尾有多远，落在结尾的人这个值有一整屏；`away` 是离
+    // 屏幕下沿还有多远，落在结尾的人是 0。落点看前者（重画后同样的内容还占着同样的位置），
+    // 「下面有新消息」那枚提示看后者（下面真的还有他没读的轮次）。
     const before = state.scrollEl;
-    const kept = before !== null && state.openId !== null && state.openId === data.transcript?.id
-      ? Math.max(0, before.scrollHeight - before.scrollTop)
-      : 0;
+    const same = before !== null && state.openId !== null && state.openId === data.transcript?.id;
+    const kept = same ? Math.max(0, before.scrollHeight - before.scrollTop) : 0;
+    const away = same ? Math.max(0, before.scrollHeight - before.scrollTop - before.clientHeight) : 0;
     // 整页重画之后，上一帧留下的那些节点引用一个都不能用了：实时追加要落到这一帧
     // 画出来的盒子上，否则新消息会加到一个已经不在页面上的地方。
     state.listEl = null;
@@ -2132,8 +2141,9 @@
     };
     for (const node of (renderers[state.section] ?? overviewSection)(data)) content.append(node);
     landToNewest(kept);
-    // 重画之前读者不在结尾，而这一次推送确实多出了轮次：给他一条回去的路，而不是替他翻页。
-    if (moreTurns && state.view === "conversation" && state.scrollEl !== null && kept > NEAR_BOTTOM) newMessagesChip(state.scrollEl);
+    // 重画之前读者下面还有没读的轮次，而这一次推送确实多出了轮次：给他一条回去的路，
+    // 而不是替他翻页。
+    if (moreTurns && state.view === "conversation" && state.scrollEl !== null && away > NEAR_BOTTOM) newMessagesChip(state.scrollEl);
   }
 
   // The sections the shell actually offers, read off the template: the host can
