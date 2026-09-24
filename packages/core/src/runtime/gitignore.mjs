@@ -72,7 +72,7 @@ export async function setSessionsGitIgnored(projectRoot, ignored) {
 export async function removeRuntimeGitignore(projectRoot, options = {}) {
   const { content, file } = await readGitignore(projectRoot);
   if (!content) return false;
-  const removable = new Set([".agents/tmp/", "*.avenic-tmp"]);
+  const removable = new Set();
   if (options.sessions) removable.add(SESSIONS_RULE);
   // A rule may only be dropped when the thing it protects is really gone: a
   // credential file left behind by a command that forgot its own rule is one
@@ -80,7 +80,14 @@ export async function removeRuntimeGitignore(projectRoot, options = {}) {
   // (the agent's own sign-in lives there), so its rule goes only with the
   // directory; the API configuration and its ledger are Avenic's, so their
   // rules go when Avenic's files do.
+  //
+  // 这两条原来是无条件删的，而它们护着的东西删的时候并不一定跟着走：`.agents/tmp/`
+  // 只有在「最后一个 agent 也被 purge」那一支才被清掉，`*.avenic-tmp` 更是任何一次原子
+  // 写在崩溃后留下的兄弟文件（它按名字匹配任何一层，没法在不扫全树的前提下逐个点名）。
+  // 所以和上面同样的口径：护着的目录还在，规则就留着。
   const guarded = [
+    [".agents/tmp/", path.join(projectRoot, ".agents", "tmp")],
+    ["*.avenic-tmp", path.join(projectRoot, ".agents")],
     [".agents/local/", path.join(projectRoot, ".agents", "local")],
     [".agents/api/", path.join(projectRoot, ".agents", "api")],
     [".agents/cache/", path.join(projectRoot, ".agents", "cache")],

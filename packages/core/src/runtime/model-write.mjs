@@ -90,17 +90,36 @@ function mergeInto(target, template) {
 }
 
 /**
+ * A JSON document, put back the way the file that held it was written.
+ *
+ * `JSON.stringify` has one shape; a person's file has its own. A write that
+ * adds one key must not rewrite every line around it — the user's diff is the
+ * measure, and a whole-file reflow reads as "Avenic replaced my settings" when
+ * what happened was "Avenic added a block". So the indentation, the line ending
+ * and the presence of the final newline all follow the text that was there.
+ */
+export function serializeJsonLike(before, value) {
+  const indent = before.match(/\n([ \t]+)\S/)?.[1] ?? 2;
+  const eol = before.includes("\r\n") ? "\r\n" : "\n";
+  const body = JSON.stringify(value, null, indent).split("\n").join(eol);
+  return `${body}${before !== "" && !before.endsWith("\n") ? "" : eol}`;
+}
+
+/**
  * Claude's settings, with the template's keys merged in.
  *
  * `changed` is the answer to "would this write anything", and it compares the
  * parsed values rather than the text: a file the user formatted differently
  * holds the same configuration, so a merge that changes no value must leave the
- * bytes — and the formatting — alone.
+ * bytes — and the formatting — alone. When something did change, the text is
+ * the file's own shape with the new keys in it, not Avenic's house style.
  */
 export function mergeClaudeSettings(existingText, template) {
-  const parsed = parseJsonObject(existingText);
+  const before = String(existingText ?? "");
+  const parsed = parseJsonObject(before);
   const merged = mergeInto(structuredClone(parsed), template);
-  return { text: `${JSON.stringify(merged, null, 2)}\n`, changed: JSON.stringify(merged) !== JSON.stringify(parsed), value: merged };
+  const changed = JSON.stringify(merged) !== JSON.stringify(parsed);
+  return { text: changed ? serializeJsonLike(before, merged) : before, changed, value: merged };
 }
 
 /** Root-level `key = value` lines, and the table headers they sit above. */

@@ -230,6 +230,27 @@ test("deinitialization is reversible, and purge keeps the agent's own sign-in un
   });
 });
 
+// opencode 没有「自己的登录文件」这一格：CREDENTIAL_FILE 里只有 claude 与 codex —— 它的
+// 认证和 provider 都是它自己的，Avenic 这边没有文件可指。于是「留下了哪个凭据文件」这个问题
+// 在它身上必须答「没有」：拿着 undefined 去拼路径会在状态已经改完、数据已经清完之后抛出来，
+// 用户拿到一串堆栈，而报告里该说的 Removed / Purged / Kept 一个字都没有 —— 而且它是半途
+// 失败的：deinit 做了一半，剩下那一半没人知道。
+test("deinitializing an agent that keeps no credential file reports none instead of throwing", async () => {
+  await withTempProject(async (projectRoot) => {
+    await initializeAgent(projectRoot, "opencode", { sessionScope: "project" });
+    assert.notEqual(effectiveAgentConfig(await loadRuntime(projectRoot), "opencode"), null, "前提：opencode 确实被 init 记下了");
+    const removed = await deinitializeAgent(projectRoot, "opencode");
+    assert.equal(removed.changed, true);
+    assert.equal(removed.keptCredential, null, "没有属于它的凭据文件，就该报「没有」");
+    assert.equal(removed.remaining, 0);
+    // 同一条路的另一半（带 purge）走的是另一个出口，两个出口对同一件事必须答同一个答案。
+    await initializeAgent(projectRoot, "opencode", { sessionScope: "project" });
+    const purged = await deinitializeAgent(projectRoot, "opencode", { purge: true });
+    assert.equal(purged.keptCredential, null);
+    assert.equal(purged.purged, true);
+  });
+});
+
 // 通知名单与登录文件同规则：里面躺着用户自己贴进去的令牌（OpenClaw 的 hook token、
 // webhook 的 bearer），删掉就是一份他拿不回来、要去别处重新发的凭据。--purge 清的是
 // Avenic 的数据，这一个文件不在其中——一边删它一边报「Data Preserved」两条都错。
@@ -328,6 +349,25 @@ test("gitignore rules are added once", async () => {
     const content = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
     for (const rule of REQUIRED_RULES) {
       assert.equal(content.split(rule).length - 1, 1);
+    }
+  });
+});
+
+// 规则只护着还在的东西：`.agents/tmp/` 与 `*.avenic-tmp` 原来是无条件撤掉的，而它们护着
+// 的东西撤规则的时候并不一定跟着走 —— 一次不带 purge 的 deinit 清的是配置，临时目录还在。
+// 一条规则走了、东西还在，下一次 `git add -A` 就把临时文件收进去了。口径和别的规则一样：
+// 目录还在，规则就留着。
+test("the rules that guard temporary files stay while the temporary files do", async () => {
+  await withTempProject(async (projectRoot) => {
+    await initializeAgent(projectRoot, "codex", { authMethod: "account", accountScope: "global" });
+    const scratch = path.join(projectRoot, ".agents", "tmp", "half-written.avenic-tmp");
+    await mkdir(path.dirname(scratch), { recursive: true });
+    await writeFile(scratch, "in flight\n");
+    await deinitializeAgent(projectRoot, "codex");
+    assert.equal(existsSync(scratch), true, "前提：不带 purge 的 deinit 不动临时目录");
+    const gitignore = await readFile(path.join(projectRoot, ".gitignore"), "utf8");
+    for (const rule of [".agents/tmp/", "*.avenic-tmp"]) {
+      assert.match(gitignore, new RegExp(`^${rule.replace(/[.*]/g, "\\$&")}$`, "m"), `${rule} 护着的目录还在，规则就不能撤`);
     }
   });
 });

@@ -233,6 +233,24 @@ test("a merge that would change nothing says so instead of rewriting the file", 
   assert.equal(again.changed, false, "第二次同样的合并没有改动");
 });
 
+// 用户的 settings.json 是他自己排的版：4 空格、CRLF、末尾有换行。写一次模型只该在里面
+// 多出 Avenic 的那几行 —— 缩进、行尾、末尾那个换行都跟着文件走。按 2 空格 LF 重新序列化
+// 会把整份文件重排一遍：diff 里每一行都在动，读上去不是「加了一个块」，是把用户的文件
+// 换了一份。只比 trim 过的 diff 看不出这件事，所以这里比的是字节。
+test("merging a model configuration keeps the file's own indentation and line endings", () => {
+  const before = '{\r\n    "env": {\r\n        "ANTHROPIC_MODEL": "deepseek-v4-pro"\r\n    }\r\n}\r\n';
+  const template = claudeTemplate("deepseek", { model: "deepseek-flash" });
+  const { text, changed } = mergeClaudeSettings(before, template);
+  assert.equal(changed, true);
+  assert.equal(text.includes("\r\n"), true, "CRLF 的文件不该被换成 LF");
+  assert.match(text, /^    "env": \{\r$/m, "原来的缩进原样还在");
+  assert.doesNotMatch(text, /^ {2}"env"/m, "4 空格的缩进没有被改成 2 空格");
+  assert.equal(text.endsWith("}\r\n"), true, "末尾换行跟着文件走");
+  const settled = mergeClaudeSettings(text, template);
+  assert.equal(settled.changed, false, "第二次同样的合并没有改动");
+  assert.equal(settled.text, text, "没有改动就一个字节都不动");
+});
+
 test("an empty or unreadable file is not a reason to lose what a user wrote", () => {
   // 空文件就是空文档：合并进去得到一份完整配置，而不是一片空白。
   const fromEmpty = mergeClaudeSettings("", claudeTemplate("deepseek", { apiKey: KEY, model: "deepseek-v4-pro" }));

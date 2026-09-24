@@ -438,6 +438,14 @@ function keptReport(projectRoot, file, kept) {
 
 const keptActions = (state, projectRoot, purged) => keptReport(projectRoot, path.join(state.paths.localRoot, KEPT_LOCAL_FILE), purged);
 
+// 有的 agent（OpenCode）的认证与 provider 都是它自己的：Avenic 这边没有「它的登录文件」
+// 这一格。两条返回路径共用这一个答案——先前只有一条记得住这件事，另一条拿 undefined 去
+// 拼路径，在状态已经改完、数据已经清完之后抛出来，用户拿到堆栈而报告一个字都没有。
+const keptCredentialReport = (projectRoot, agentId, homeDirectory, kept) =>
+  CREDENTIAL_FILE[agentId] === undefined
+    ? null
+    : keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), kept);
+
 export async function deinitializeAgent(projectRoot, agentId, options = {}) {
   const agent = getAgent(agentId);
   const state = await loadRuntime(projectRoot);
@@ -461,7 +469,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
       agent,
       changed: purged,
       purged,
-      keptCredential: CREDENTIAL_FILE[agentId] === undefined ? null : keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), Boolean(options.purge)),
+      keptCredential: keptCredentialReport(projectRoot, agentId, homeDirectory, Boolean(options.purge)),
       keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
       remaining: Object.keys(state.runtime.agents ?? {}).length,
     };
@@ -509,7 +517,7 @@ export async function deinitializeAgent(projectRoot, agentId, options = {}) {
     changed: true,
     purged: Boolean(options.purge),
     remaining,
-    keptCredential: keptReport(projectRoot, path.join(homeDirectory, CREDENTIAL_FILE[agentId]), kept),
+    keptCredential: keptCredentialReport(projectRoot, agentId, homeDirectory, kept),
     keptActions: keptActions(state, projectRoot, Boolean(options.purge)),
   };
 }
