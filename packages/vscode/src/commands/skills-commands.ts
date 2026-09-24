@@ -34,8 +34,9 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
   const busy = () => !assertIdle(deps.queue, (key) => void vscode.window.showWarningMessage(sentence(language, key)));
   const warnNoOptions = (key: TextKey = "flow.no-options") => void vscode.window.showWarningMessage(sentence(language, key));
 
-  // 忙的守卫在命令体最前，然后是作用域与项目根（都经 commandTarget，右键行带来的作用域优先）。
-  const target = async (arg?: unknown) => (busy() ? null : commandTarget(arg, deps.resolveRoot));
+  // 忙的守卫在命令体最前，然后是作用域与项目根（都经 commandTarget）。命令体不带参数：
+  // 清单里没有行菜单，包装层 `register` 也不转发参数，所以每个命令都是「问一次作用域」。
+  const target = async () => (busy() ? null : commandTarget(deps.resolveRoot));
 
   register("avenic.skills.installPacks", async () => {
     const { scope, cwd } = (await target()) ?? {};
@@ -81,7 +82,7 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
 
   // 只读命令：直接展示直装来源 → Skill 列表（空时提示），不排队、不 refresh
   register("avenic.skills.directList", async () => {
-    const { scope, cwd } = (await commandTarget(undefined, deps.resolveRoot)) ?? {};
+    const { scope, cwd } = (await commandTarget(deps.resolveRoot)) ?? {};
     if (scope === undefined) return;
     const state = await skills.directSkills(scope, cwd);
     const lines = state.directSources.map((s) => `${s.id} → ${s.skills.join(", ")}`);
@@ -91,11 +92,9 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
 
   // 托管磁盘上未托管的 Skills（旧版/外部工具安装、手工拷贝）：先做 Pack 识别计划（只读覆盖度
   // ≥0.8 视为旧包安装），给用户「识别为 Pack 并补齐」与「仅托管现有 Skill」两条路径；
-  // core 补齐缺失 target 并写入 lock.adopted（或完整 Pack 元数据）。树的"检测到 N 个 Skill
-  // （未托管）"行携带具体 scope 参数；命令面板调用回退为交互选择。零候选 → 警告而非空操作。
-  register("avenic.skills.adopt", async (arg?: unknown) => {
-    // 右键行 → arg 为带 avenicScope 的 TreeItem（provider 挂载）；命令面板调用 → 交互选择
-    const { scope, cwd } = (await target(arg)) ?? {};
+  // core 补齐缺失 target 并写入 lock.adopted（或完整 Pack 元数据）。零候选 → 警告而非空操作。
+  register("avenic.skills.adopt", async () => {
+    const { scope, cwd } = (await target()) ?? {};
     if (scope === undefined) return;
     const names = await skills.detected(scope, cwd);
     if (names.length === 0) { warnNoOptions(); return; }
@@ -126,11 +125,9 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
   });
 
   // 已托管但无 Pack 记录的 Skill（旧版包残留 → lock.adopted 场景）：整批识别为 Pack 接管
-  // （补全缺失 Skill + 写完整 Pack/sources 元数据，先前记录保留）。树的"adopted"行携带
-  // 具体 scope；命令面板调用回退为交互选择。
-  register("avenic.skills.adoptPack", async (arg?: unknown) => {
-    // 右键行 → arg 为带 avenicScope 的 TreeItem（provider 挂载）；命令面板调用 → 交互选择
-    const { scope, cwd } = (await target(arg)) ?? {};
+  // （补全缺失 Skill + 写完整 Pack/sources 元数据，先前记录保留）。
+  register("avenic.skills.adoptPack", async () => {
+    const { scope, cwd } = (await target()) ?? {};
     if (scope === undefined) return;
     const names = await skills.adoptedOnlyNames(scope, cwd);
     if (names.length === 0) { await vscode.window.showInformationMessage(sentence(language, "skills.no-adopted")); return; }
@@ -149,8 +146,7 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
     await vscode.window.showInformationMessage(sentence(language, "skills.took-over-short", { pack: packId, count: result.names.length }));
   });
 
-  // Pack 行键位（Installed Packs 树的 pack 行，viewItem == pack，行带 packId + scope）：
-  // 卸载整包 / 重装整包。命令面板调用回退为交互选择已安装 Pack。
+  // 卸载整包 / 重装整包：目标 Pack 由这里问一次（问的是已安装的那张表）。
   // 共同决策：卸载走 core uninstallPacks（common 永驻跳过；会被其他 Pack 选用的 Skill 不删）；
   // 重装走 core installPacks（与「安装包」同语义：重跑 resolve + copy + 合并锁记录）。
   const pickInstalledPack = async (scope: Scope, cwd: string | undefined, excludeCommon: boolean): Promise<string | null> => {
@@ -160,11 +156,10 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
     return choice?.label ?? null;
   };
 
-  register("avenic.skills.uninstallPack", async (arg?: unknown) => {
-    // 右键行 → arg 为带 avenicScope 的 TreeItem（provider 挂载）；命令面板调用 → 交互选择
-    const { scope, cwd } = (await target(arg)) ?? {};
+  register("avenic.skills.uninstallPack", async () => {
+    const { scope, cwd } = (await target()) ?? {};
     if (scope === undefined) return;
-    const packId = (arg as { avenicPackId?: string } | undefined)?.avenicPackId ?? (await pickInstalledPack(scope, cwd, true));
+    const packId = await pickInstalledPack(scope, cwd, true);
     if (packId === null) return;
     const uninstall = sentence(language, "skills.uninstall");
     const confirmed = await vscode.window.showWarningMessage(sentence(language, "skills.uninstall-confirm", { pack: packId }), { modal: true }, uninstall);
@@ -174,11 +169,10 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, deps: S
     await vscode.window.showInformationMessage(sentence(language, "skills.uninstalled", { pack: packId }) + removal);
   });
 
-  register("avenic.skills.reinstallPack", async (arg?: unknown) => {
-    // 右键行 → arg 为带 avenicScope 的 TreeItem（provider 挂载）；命令面板调用 → 交互选择
-    const { scope, cwd } = (await target(arg)) ?? {};
+  register("avenic.skills.reinstallPack", async () => {
+    const { scope, cwd } = (await target()) ?? {};
     if (scope === undefined) return;
-    const packId = (arg as { avenicPackId?: string } | undefined)?.avenicPackId ?? (await pickInstalledPack(scope, cwd, false));
+    const packId = await pickInstalledPack(scope, cwd, false);
     if (packId === null) return;
     const result = await runMutation(deps.queue, () => withProgress(sentence(language, "skills.reinstall"), async (report) => { report(sentence(language, "skills.reinstalling", { pack: packId })); return skills.installPacks(scope, [packId], cwd); }), () => deps.refresh());
     await vscode.window.showInformationMessage(sentence(language, "skills.reinstalled", { pack: packId, count: result.resolvedPacks?.names.length ?? 0 }));

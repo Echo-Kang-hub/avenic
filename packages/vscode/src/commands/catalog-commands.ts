@@ -95,7 +95,7 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
       if (picked === undefined) return;
       target = picked.id;
     }
-    const { scope, cwd } = (await commandTarget(undefined, deps.resolveRoot)) ?? {};
+    const { scope, cwd } = (await commandTarget(deps.resolveRoot)) ?? {};
     if (scope === undefined) return;
     const language = vscode.env.language;
     const result = await runMutation(deps.queue, () => withProgress(sentence(language, "catalog.installing"), async (report) => { report(sentence(language, "catalog.installing-pack", { pack: target })); return skills.installPacks(scope, [target], cwd); }), () => deps.refresh());

@@ -24,14 +24,17 @@ export async function pickScope(): Promise<Scope | null> {
   return picked?.scope ?? null;
 }
 
-// 一条命令体最前面的那几步（哪个作用域、哪个项目根）合成一次：右键行带来的作用域优先，
-// 否则问一次；项目作用域再取一次项目根。期间任何一步没有答案时都已经提示过，返回 null
-// 让命令体直接结束。
+// 一条命令体最前面的那几步（哪个作用域、哪个项目根）合成一次：问一次作用域，项目作用域
+// 再取一次项目根。期间任何一步没有答案时都已经提示过，返回 null 让命令体直接结束。
+//
+// 这里不收 arg：清单里没有行菜单（`view/item/context`），树行只有一个不带 arguments 的
+// `command`，而 `register` 那层包装也不转发参数——所以「右键行带来作用域」在这个扩展里
+// 没有生产者，读 arg 的那半条分支永远拿不到值。要重新引入它，先得有真的带 arguments 的行，
+// 再把参数一路接到这里来。
 export async function commandTarget(
-  arg: unknown,
   resolveRoot: () => Promise<string | null>,
 ): Promise<{ scope: Scope; cwd: string | undefined } | null> {
-  const scope = (arg as { avenicScope?: Scope } | undefined)?.avenicScope ?? (await pickScope());
+  const scope = await pickScope();
   if (scope === null) return null;
   const cwd = await scopeCwd(scope, resolveRoot);
   return cwd === null ? null : { scope, cwd };
