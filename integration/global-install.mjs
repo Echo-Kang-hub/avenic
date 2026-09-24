@@ -210,10 +210,17 @@ async function verifySkills(environment) {
 
 try {
   assert.ok(npmCli, "npm_execpath is required; run with npm run test:install");
+  // 只换 HOME 挡不住别的：这几个变量各自指向一个真实的家，继承了它们，下面那条
+  // `init --scope global` 与 `codex deinit --purge` 就会写到开发机自己的目录里去。
   const environment = {
     ...process.env,
     HOME: home,
     USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
+    CODEX_HOME: path.join(home, ".codex"),
+    AVENIC_STATE_DIR: path.join(home, ".avenic"),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+    XDG_DATA_HOME: path.join(home, ".local", "share"),
   };
 
   // Mode 1: registry equivalent — the published packages/cli tarball.

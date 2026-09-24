@@ -26,7 +26,7 @@
     "pack:cli": "cd packages/cli && npm pack --dry-run --json",
     "release:pack": "node scripts/pack-release.mjs",
     "release:verify": "node scripts/verify-artifacts.mjs",
-    "release:gate": "npm run release:pack && npm run release:verify && npm run test:vscode && npm run test:visual && npm run test:host && npm run test:host:upgrade && npm run test:host:upgrade:open"
+    "release:gate": "npm run release:pack && npm run release:verify && npm run test:release && npm run test:vscode && npm run test:visual && npm run test:host && npm run test:host:upgrade && npm run test:host:upgrade:open"
   },
   "files": [
     "packages/core/",

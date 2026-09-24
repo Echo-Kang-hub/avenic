@@ -120,7 +120,19 @@ const coreInstall = path.join(root, "core");
 const home = path.join(root, "home");
 for (const directory of [project, home, coreInstall]) await mkdir(directory, { recursive: true });
 
-const environment = { ...process.env, HOME: home, USERPROFILE: home };
+// 每一个「这个项目之外的家」都要点名，而不是只换 HOME 再继承环境：HOME 只挡住默认值，
+// 开发机上一个 CLAUDE_CONFIG_DIR / CODEX_HOME / AVENIC_STATE_DIR（agent 自己的习惯，或
+// 上一次实验留下的）会把这些命令的读写带回真实的家 —— 一次发布验证不该碰它。
+const environment = {
+  ...process.env,
+  HOME: home,
+  USERPROFILE: home,
+  CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
+  CODEX_HOME: path.join(home, ".codex"),
+  AVENIC_STATE_DIR: path.join(home, ".avenic"),
+  XDG_CONFIG_HOME: path.join(home, ".config"),
+  XDG_DATA_HOME: path.join(home, ".local", "share"),
+};
 
 function run(executable, argumentsList, options = {}) {
   return spawnSync(executable, argumentsList, { encoding: "utf8", windowsHide: true, ...options });
