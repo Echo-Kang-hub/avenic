@@ -767,6 +767,8 @@ export interface HookPlan {
   supported: boolean;
   /** Why not, when unsupported: the installed version cannot carry them, or the file holds something Avenic will not merge with. */
   note: string | null;
+  /** Which of the file-level refusals it was — a word the UI can act on, not a sentence to parse. */
+  refusal: "foreign-file" | "unmergeable-key" | null;
   /** A condition the mechanism imposes that no screen can see from here (Codex's trust review). Empty when there is none. */
   caveat: string;
   installed: boolean;
@@ -779,7 +781,7 @@ export function hookPlan(agentId: string, options: { scope: "project" | "global"
  * plan. `installed` is null — with the reason in `error` — when the file exists
  * but cannot be read: that is this agent's answer, not a failure of the call.
  */
-export function hookStatus(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<{ agent: string; scope: "project" | "global"; file: string; installed: boolean | null; supported: boolean; note: string | null; caveat: string; error?: string }>;
+export function hookStatus(agentId: string, options: { scope: "project" | "global"; projectRoot: string; environment?: Record<string, string | undefined>; version?: string | null }): Promise<{ agent: string; scope: "project" | "global"; file: string; installed: boolean | null; supported: boolean; note: string | null; refusal: "foreign-file" | "unmergeable-key" | null; caveat: string; error?: string }>;
 /** Merge Avenic's entry into the file's current state — never the snapshot the plan carried. */
 export function installHooks(plan: HookPlan): Promise<{ changed: boolean; file: string; skipped?: string | null }>;
 /** Remove Avenic's entry, and only Avenic's: a file Avenic did not write is never truncated. */

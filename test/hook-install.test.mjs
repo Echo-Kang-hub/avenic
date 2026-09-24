@@ -587,6 +587,61 @@ test("the installed plugin starts no process for the events the matrix does not 
   }
 });
 
+// `avenic` 不在了 —— 没装、被删了、升级换文件的那一瞬 —— 而 OpenCode 恰好在这时候发来
+// 一条事件：插件起的那个进程已经退出，管道这头写下去拿到的是 EPIPE。流上没人监听的
+// 'error' 在 Node 里是抛出去的异常：它不会停在 report() 里，而是从 OpenCode 的事件分发里
+// 逃出去，而那条事件本身只是「一次通知没送成」。这一条把那个场景真的造出来：假 PATH 上
+// 放一个立刻退出的 `avenic`，载荷大到超过管道缓冲，所以这一次写一定落在已经关掉的管道上。
+test("the installed plugin survives an avenic that is gone by the time the event is written", async () => {
+  const run = await scratch();
+  const bin = path.join(run.root, "bin");
+  const saved = { PATH: process.env.PATH, Path: process.env.Path };
+  const escaped = [];
+  const onUncaught = (error) => escaped.push(error);
+  try {
+    await mkdir(bin, { recursive: true });
+    const shim = process.platform === "win32" ? path.join(bin, "avenic.cmd") : path.join(bin, "avenic");
+    await writeFile(shim, process.platform === "win32"
+      ? `@echo off\r\n"${process.execPath}" -e "process.exit(0)"\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" -e "process.exit(0)"\n`);
+    if (process.platform !== "win32") await chmod(shim, 0o755);
+    process.env.PATH = bin;
+    process.env.Path = bin;
+
+    const plan = await hookPlan("opencode", { scope: "project", projectRoot: run.project, environment: run.environment, version: "1.18.30" });
+    await installHooks(plan);
+    const plugin = await import(`data:text/javascript;base64,${Buffer.from(await readFile(plan.file, "utf8")).toString("base64")}`);
+    const hooks = await plugin.AvenicHooks({ directory: run.project });
+    process.on("uncaughtException", onUncaught);
+    // 1 MB 远远大过一个管道缓冲：子进程已经走了，这一笔写不可能被内核收下。
+    await hooks.event({ event: { type: "message.updated", properties: { sessionID: "s", info: { role: "user" }, pad: "x".repeat(1 << 20) } } });
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.deepEqual(escaped, [], `EPIPE 从事件分发里逃出去了：${escaped.map((error) => error?.message).join("; ")}`);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    if (saved.PATH === undefined) delete process.env.PATH; else process.env.PATH = saved.PATH;
+    if (saved.Path === undefined) delete process.env.Path; else process.env.Path = saved.Path;
+    await run.done();
+  }
+});
+
+// 「卸」在一个本来就没装过的项目上是一次什么也没做的操作，答案必须是「没有改动」：
+// OpenCode 的解除是一整个文件走，而那个文件不在时 `remove` 也算成了改动，于是一次没装过
+// 的卸载报出「已移除」—— 报告里出现了一句没有发生的事。
+test("uninstalling hooks that were never installed reports nothing removed", async () => {
+  const run = await scratch();
+  try {
+    for (const agent of ["opencode", "claude", "codex"]) {
+      const plan = await hookPlan(agent, { scope: "project", projectRoot: run.project, environment: run.environment, version: null });
+      const result = await uninstallHooks(plan);
+      assert.equal(result.changed, false, `${agent}：没装过就不该说卸掉了`);
+      assert.equal(await stat(plan.file).then(() => true, () => false), false, `${agent}：卸载不该凭空造出一个文件`);
+    }
+  } finally {
+    await run.done();
+  }
+});
+
 test("a configuration that exists but cannot be read is refused, not overwritten", async () => {
   const run = await scratch();
   try {

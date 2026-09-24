@@ -35,7 +35,7 @@ import { accountHome } from "./agent-home.mjs";
 import { writeFileAtomic } from "./atomic-file.mjs";
 import { environmentHome } from "./environment.mjs";
 import { hookCapability, hookSupport } from "./hooks.mjs";
-import { parseJsonObject } from "./model-write.mjs";
+import { parseJsonObject, serializeJsonLike } from "./model-write.mjs";
 import { agentHomeRoot } from "./project-paths.mjs";
 
 /** The file OpenCode loads, and the marker that says the file is Avenic's. */
@@ -151,11 +151,8 @@ function claudeEdit(agentId, capability, before, { remove }) {
   // 末尾那个换行都跟着文件走：装一次只多出 Avenic 的那一组，卸载之后回到原来的字节。
   // 一份 4 空格、CRLF 的 settings 被装一次就整篇重排，用户的 diff 里每一行都在动 ——
   // 那不是「加了一个块」，那是把用户的文件换了一份。（Codex 那一半是同一件事，见
-  // model-write 的 mergeCodexConfig。）
-  const indent = before.match(/\n([ \t]+)\S/)?.[1] ?? 2;
-  const eol = before.includes("\r\n") ? "\r\n" : "\n";
-  const text = `${JSON.stringify(merged, null, indent).split("\n").join(eol)}${before !== "" && !before.endsWith("\n") ? "" : "\n"}`;
-  return { text, changed };
+  // model-write 的 mergeCodexConfig；Claude 模型写入那一半是同一份 serializer。）
+  return { text: serializeJsonLike(before, merged), changed };
 }
 
 // ---- Codex: one marked block in a file full of the user's own -----------------
@@ -254,6 +251,9 @@ export function opencodePlugin(agentId) {
     "function report(event) {",
     `  const child = spawn("avenic hook emit --agent ${agentId}", { shell: true, stdio: ["pipe", "ignore", "ignore"], detached: process.platform !== "win32", windowsHide: true });`,
     "  child.on(\"error\", () => {});",
+    "  // 管道那头先退出（avenic 掉了、PATH 上没有它）时，这头拿到的是 EPIPE；流上没人",
+    "  // 监听的 'error' 在 Node 里是抛出去的异常，会从 OpenCode 的事件分发里逃出去。",
+    "  child.stdin.on(\"error\", () => {});",
     "  child.stdin.end(JSON.stringify(event));",
     "  child.unref();",
     "}",
@@ -294,6 +294,7 @@ export async function hookPlan(agentId, { scope, projectRoot, environment = proc
     version: request.version,
     supported: support.supported,
     note: support.note,
+    refusal: support.refusal ?? null,
     caveat: caveatFor(agentId, request.capability, request.scope),
     installed: installedIn(agentId, before),
     before,
@@ -376,6 +377,7 @@ export async function hookStatus(agentId, options = {}) {
     file: request.file,
     supported: request.support.supported,
     note: request.support.note,
+    refusal: null,
     caveat: caveatFor(agentId, request.capability, request.scope),
   };
   try {
@@ -398,11 +400,16 @@ export async function hookStatus(agentId, options = {}) {
  * 答案就是装不了，并且一定要说得出口 —— 一颗按下去什么都不发生的按钮，比装不上更难懂。
  */
 function fileSupport(agentId, capability, support, before) {
-  const refusal = foreignPlugin(agentId, before)
+  // 两种拒绝共用一句英文句子，但它们要人做的下一步不是同一件事：一个是「这个路径上站着
+  // 别人的文件」，另一个是「你自己那个文件里有一格 Avenic 并不动」。调用方（界面）说的
+  // 是本地语言的下一句，所以「是哪一种」必须是机器读得出来的一个词，而不是让界面去猜
+  // 这句话里的英文。
+  const refusal = foreignPlugin(agentId, before) ? "foreign-file" : unmergeableKey(agentId, before) === null ? null : "unmergeable-key";
+  if (refusal === null) return { supported: support.supported, note: support.note, refusal: null };
+  const reason = refusal === "foreign-file"
     ? "a file that is not Avenic's is already at this path"
     : unmergeableKey(agentId, before);
-  if (refusal === null) return { supported: support.supported, note: support.note };
-  return { supported: false, note: `Unsupported by ${capability.displayName}: ${refusal} — move it aside, then try again` };
+  return { supported: false, note: `Unsupported by ${capability.displayName}: ${reason} — move it aside, then try again`, refusal };
 }
 
 /**
@@ -449,7 +456,10 @@ function editFor(agentId, before, { remove }) {
   if (agentId === "claude") return claudeEdit(agentId, capability, before, { remove });
   if (agentId === "codex") return codexEdit(agentId, capability, before, { remove });
   if (foreignPlugin(agentId, before)) return { text: before, changed: false };
-  if (remove) return { text: "", changed: true, remove: true };
+  // 空文件删不出东西来：没有文件的时候「卸」是一次什么也没做的操作，答案就得是「没有
+  // 改动」—— 归 Avenic 的那一份文件里一定有那条标记，而空文件读不出创建者，按这个模块
+  // 自己的规矩（读不出创建者就保留）它不该被删。
+  if (remove) return { text: "", changed: before !== "", remove: true };
   const text = opencodePlugin(agentId);
   return { text, changed: before !== text };
 }
