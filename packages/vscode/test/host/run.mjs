@@ -996,6 +996,11 @@ async function main() {
       }
     }
     if (!webview) throw new Error("dashboard webview never appeared after 3 attempts");
+    // 「读 DOM 的那个 webview」与「收到点击的那个」必须是同一个。不是的话，这一趟
+    // 量到的每一次「点击没反应」都是量错了对象——面板没错，错的是问错了页面。所以
+    // 数一遍：几个，哪几个，读的是哪一个。
+    const homes = (await targets()).filter((t) => t.url.includes(`extensionId=${EXT_ID}`));
+    log(`dashboard webview targets: ${homes.length} (${homes.map((t) => t.id ?? "?").join(", ")}) — reading the one opened first`);
     const wvc = await connect(webview.webSocketDebuggerUrl);
     await sleep(5000); // let the first paint settle
 
@@ -1205,6 +1210,7 @@ async function main() {
   if(!onTarget(at)){const range=d.createRange();range.selectNodeContents(node);
     const text=range.getBoundingClientRect();
     if(text.width>0&&text.height>0){at=centre(text);where="text";}}
+  window.__aimNode=node;window.__hit=null;
   return {x:at.x,y:at.y,target:node.tagName+"."+String(node.className),control:controls.includes(node),where,onTarget:onTarget(at)};})()`);
     const click = async (label) => {
       // 启动/继续一个 agent 是用户自己的动作：这一步宁可把整次跑打断，也不点下去。
@@ -1223,6 +1229,13 @@ async function main() {
       await evalIn(wvc, `(()=>{const d=${DOC};window.__mut=0;window.__data=0;
     if(!window.__dataHook){window.__dataHook=true;
       d.defaultView.addEventListener('message',(e)=>{const m=e.data;if(m&&typeof m==='object'&&m.type==='data')window.__data++;});}
+    // 这一击到底落到了谁身上：页面自己收到的那个 click 事件说得最准。aim 只能证明
+    // 「按下去之前，这一点上是它」；重排、被换掉的节点、另一份文档，都发生在那一瞬
+    // 之后。谁收到了事件，谁才是被点的那一个。
+    if(!window.__hitHook){window.__hitHook=true;
+      d.defaultView.addEventListener('click',(e)=>{const n=window.__aimNode,t=e.target;
+        window.__hit={target:t&&t.tagName?t.tagName+"."+String(t.className):String(t),
+          aimConnected:n?n.isConnected:null,onAim:n?(t===n||n.contains(t)||t.contains(n)):null};},true);}
     new MutationObserver(()=>{window.__mut++}).observe(d.body,{subtree:true,childList:true,characterData:true});
     return true})()`);
       const x = frame.x + el.x, y = frame.y + el.y;
@@ -1238,8 +1251,12 @@ async function main() {
       while (Date.now() < reactionDeadline && !(await reacted())) await sleep(150);
       await sleep(500);
       // 点的是哪一个元素、点的是它的哪一点，跟着这一击一起记下来：下一回这一击没
-      // 反应时，报告里先要看的就是这两样。
-      const hit = { label, x, y, target: el.target, aimed: el.where, mutations: Number(await evalIn(wvc, "window.__mut || 0")), answers: Number(await evalIn(wvc, "window.__data || 0")) };
+      // 反应时，报告里先要看的就是这两样——以及第三样：谁收到了这一击，页面因此站
+      // 到了哪一页。少了它们，「点击没反应」与「页面自己走岔了」长得一模一样。
+      const after = await json(wvc, `(()=>{const d=${DOC};const n=d.querySelector('.nav-item[aria-current="page"]');
+    return {hit:window.__hit, section:n?n.textContent.trim():null};})()`);
+      const hit = { label, x, y, target: el.target, aimed: el.where, reached: after.hit, section: after.section, mutations: Number(await evalIn(wvc, "window.__mut || 0")), answers: Number(await evalIn(wvc, "window.__data || 0")) };
+      log(`click ${JSON.stringify(label)} on ${el.target} at (${Math.round(x)}, ${Math.round(y)}) -> the click reached ${after.hit === null ? "nothing (no click event)" : JSON.stringify(after.hit)}; the page now stands on ${JSON.stringify(after.section)}`);
       // 每一次点击都进这本账，不只是被记进 steps 的那几个：报告里要能一眼看完这一趟
       // 到底点了哪些元素——「有没有点过哪个开始 agent 的按钮」是一眼就能回答的问题。
       clicks.push(hit);
@@ -1277,6 +1294,15 @@ async function main() {
     sessionsActive: d.querySelector('.nav-item[data-section="sessions"][aria-current="page"]') !== null,
     turns: d.querySelectorAll('.transcript .turn').length};})()`);
       row = { found: true, label: rowLabel, sessionsActive: opened.sessionsActive, turns: opened.turns };
+      // 这一步红了要说清它红在哪儿：页面站在哪一页、会话那一半在不在、这一页的字是
+      // 什么。没有这一句，「点击没反应」和「点到了别的行」是同一行红。
+      if (opened.sessionsActive !== true || opened.turns < 1) {
+        const seen = await evalIn(wvc, `(()=>{const d=${DOC};return JSON.stringify({
+  nav:[...d.querySelectorAll('.nav-item')].map(n=>[n.dataset.section||'',n.textContent.trim().replace(/\\s+/g,' '),n.getAttribute('aria-current')]),
+  browser:d.querySelector('.sessions-browser')!==null, transcript:d.querySelector('.transcript')!==null,
+  text:(d.body.innerText||'').replace(/\\s+/g,' ').slice(0,240)})})()`);
+        log(`session click diagnosis: ${seen}`);
+      }
       steps.push({ label: rowLabel, hit, file: "04-click-session.png", changed: prev !== now, mutations: hit.mutations, answers: hit.answers, opened });
       log(`session click -> Sessions current: ${opened.sessionsActive}, transcript turns: ${opened.turns}`);
     } else {
@@ -1509,7 +1535,7 @@ The project header's three parts (title, path, status block) measured in the web
 ## Clicks (injected via CDP, not the OS cursor)
 ${clicks.map((c) => `\`${c.label}\` → ${c.target}`).join(" · ") || "_none_"} — every element any label resolved to. The session row was opened by its *title* (\`viewSession\` → the transcript); no Continue or Launch was clicked, and \`clickAllowed\` refuses such a label outright (starting an agent is the user's action, not this run's).
 
-${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y})${s.hit.target ? ` (${s.hit.target}${s.hit.aimed === "text" ? ", aimed at its text" : ""})` : ""} → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**, data messages the host sent back: **${s.answers ?? "n/a"}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
+${steps.map((s) => `- \`${s.label}\` at workbench (${s.hit.x}, ${s.hit.y})${s.hit.target ? ` (${s.hit.target}${s.hit.aimed === "text" ? ", aimed at its text" : ""})` : ""} → \`${s.file}\`, body text changed: **${s.changed}**${s.expectText === false ? " (not required for this button — it re-reads the same project)" : ""}, DOM mutations caused by the click: **${s.mutations}**, data messages the host sent back: **${s.answers ?? "n/a"}**, the click reached **${s.hit.reached === undefined || s.hit.reached === null ? "nothing (no click event)" : `${s.hit.reached.target}${s.hit.reached.onAim === true ? "" : " (not the element aimed at)"}`}**, the page then stood on **${JSON.stringify(s.hit.section ?? null)}**${s.opened ? `, Sessions marked current: **${s.opened.sessionsActive}**, transcript turns rendered: **${s.opened.turns}**` : ""}`).join("\n") || "_none_"}
 
 ## The launch that ended by itself
 Nothing is clicked between taking the lease and releasing it; the panel is only read.
