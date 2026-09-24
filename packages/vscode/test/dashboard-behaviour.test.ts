@@ -738,6 +738,14 @@ test("绕一圈回来的读者，之后的新消息还听得到", async () => {
   const more = [...grown, { id: "e2", kind: "agent", speaker: "Claude", agent: "claude", role: "assistant", at: "2025-09-20T20:32:00Z", text: "And another.", tools: [], model: null }];
   rendered.send({ type: "data", payload: { ...base, transcript: { ...base.transcript, turns: more, eventCount: more.length } } });
 
+  // 这条用例要的是「走到追加那条路上，提示才谈得上该不该给」。所以先把那件事本身钉住：
+  // 换过一列，节点就是新的（不然下面那句「还是同一列」谁也证明不了），而这次推送没换列
+  // ——列是重画出来的，提示就跟着重画走，跟本条要考的那条路是两回事。
+  const after = browser(rendered).querySelectorAll(".transcript")[0];
+  assert.notEqual(back, first, "换过一列就是换过一列：这一页的节点身份是有意义的");
+  assert.equal(after, back, "新的一轮是接在同一列上的：走的是追加那条路");
+  assert.equal(after.querySelectorAll(".turn").length, more.length, "追加之后，这一列里就是全部的轮");
+
   assert.equal(
     browser(rendered).querySelectorAll(".new-messages").length,
     1,
