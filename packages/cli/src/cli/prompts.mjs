@@ -21,12 +21,12 @@
 // Promise<value | null>（null = Esc/Ctrl+C 取消）。
 
 import readline from "node:readline";
-import { colorEnabled, columns, displayWidth, palette, paletteFor, truncate } from "./brand.mjs";
+import { colorEnabled, columns, displayWidth, isTerminal, palette, paletteFor, truncate } from "./brand.mjs";
 
 // 色板与宽度助手住在品牌层（brand.mjs）：一处实现，所有面共用 —— 全仓库的
 // ANSI 数字只在那一份 paletteFor 里。这里再把它们转出去，让既有的引用
 // （测试、status-cli、transcript-cli）继续从一个门进来。
-export { colorEnabled, columns, displayWidth, palette, paletteFor, truncate } from "./brand.mjs";
+export { colorEnabled, columns, displayWidth, isTerminal, palette, paletteFor, truncate } from "./brand.mjs";
 
 export function isInteractive({ stdin = process.stdin, stdout = process.stdout } = {}) {
   return stdin.isTTY === true && stdout.isTTY === true;
@@ -949,11 +949,25 @@ export function confirm(options = {}) {
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/** 单行进度指示器（安装/克隆/同步等长操作）。update 换文案，stop/fail 落定换 ✓/✖。 */
+/**
+ * 单行进度指示器（安装/克隆/同步等长操作）。update 换文案，stop/fail 落定换 ✓/✖。
+ *
+ * 「重画同一行」是终端才有的事：输出被接走时（管道、CI、`avenic … > file`、编辑器里读
+ * 它的那一方）没有哪一行会被重画，转圈帧与 `\r\x1b[K` 只会成为别人要解析的字节里的一串
+ * 垃圾 —— 每 80 毫秒一串。那种时候不做进度，只在落定那一行上留下一句。
+ */
 export function progress(options = {}) {
   const stdout = options.stdout ?? process.stdout;
   const colors = colorsFor(options, stdout);
   let currentText = options.text ?? "Working…";
+  const live = options.tty ?? isTerminal(stdout);
+  if (!live) {
+    return {
+      update(nextText) { if (typeof nextText === "string" && nextText !== "") currentText = nextText; },
+      stop(doneText) { stdout.write(`${colors.success("✓")}  ${doneText}\n`); },
+      fail(errorText) { stdout.write(`${colors.error("✖")}  ${errorText}\n`); },
+    };
+  }
   let index = 0;
   const paint = () => stdout.write(`\r\x1b[K${colors.brand(SPINNER_FRAMES[index % SPINNER_FRAMES.length])} ${currentText}`);
   const timer = setInterval(() => {

@@ -294,6 +294,22 @@ test("progress paints a frame and settles on stop/fail", () => {
   assert.match(failed.text(), /✖  boom\n$/);
 });
 
+// 输出被接走的时候没有哪一行会被重画：转圈帧与 `\r\x1b[K` 只会成为别人要解析的字节里
+// 的一串垃圾（每 80 毫秒一串，而 `avenic … > file`、CI、编辑器里的那一方都在解析它）。
+// 那种时候不做进度，只在落定那一行上留下一句。
+test("progress writes no control sequences when the output is not a terminal", async () => {
+  const stdout = fakeStdout({ isTTY: false });
+  const spin = progress({ stdout, text: "Installing…" });
+  spin.update("Still installing…");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(stdout.text(), "", "没落定之前，一行都不写");
+  spin.stop("Installed");
+  assert.equal(stdout.text(), "✓  Installed\n", "落定行还在，没有回车、没有转圈帧");
+  const failed = fakeStdout({ isTTY: false });
+  progress({ stdout: failed, text: "Removing…" }).fail("boom");
+  assert.equal(failed.text(), "✖  boom\n");
+});
+
 test("the printed line vocabulary is one line per meaning", () => {
   const stdout = fakeStdout();
   intro(stdout, "Install Skills", { description: "from the SkillsHub" });

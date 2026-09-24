@@ -18,12 +18,17 @@ const ANSI = /\x1b\[[0-9;]*m/g;
 const ANSI_PARTS = /(\x1b\[[0-9;]*m)/;
 const RESET = "\x1b[0m";
 
+/** 这个流是不是终端。光标控制（重画同一行、转圈）只对终端有意义。 */
+export function isTerminal(stream = process.stdout) {
+  return stream?.isTTY === true;
+}
+
 /** 是否给这个流上色：NO_COLOR / FORCE_COLOR 优先，其次看它是不是终端。 */
 export function colorEnabled(stream = process.stdout, environment = process.env) {
   if (environment.FORCE_COLOR === "0") return false;
   if (typeof environment.NO_COLOR === "string" && environment.NO_COLOR !== "") return false; // NO_COLOR 规范：非空即关闭
   if (environment.FORCE_COLOR) return true;
-  return stream?.isTTY === true && environment.TERM !== "dumb";
+  return isTerminal(stream) && environment.TERM !== "dumb";
 }
 
 // 终端能画多少颜色：COLORTERM 是 TrueColor 的事实标准；TERM 里有 256 说明至少
