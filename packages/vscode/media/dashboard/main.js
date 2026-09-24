@@ -44,7 +44,9 @@
     view: "conversation",
     listEl: null,
     footEl: null,
-    transcriptEl: null,
+    // 现在这一页上读者在哪儿读：三种画法各有自己会滚的那一格，这里是当前的那一格，
+    // 重画之后要落回同一个地方，靠的就是重画前先量它。
+    scrollEl: null,
     viewEl: null,
     menuEl: null,
     factNodes: null,
@@ -1182,8 +1184,13 @@
     view.append(head);
 
     state.factNodes = { updated, events, sync };
+    // 读者挑的是哪一种读法（对话 / 原始 / 诊断）：一次重画不该把它收回去，所以这里照
+    // 他挑的那一种画。三种读法画在同一个挂载点里，只有一个会滚的盒子——`state.scrollEl`
+    // 记的就是「现在这一页上，读者在哪儿读」。
     const body = el("div", "session-view-body");
-    body.append(conversationBox(transcript));
+    const shown = state.view === "raw" ? rawView(transcript) : state.view === "diagnostics" ? diagnosticsView(transcript) : conversationBox(transcript);
+    state.scrollEl = shown;
+    body.append(shown);
     state.viewEl = body;
     view.append(body);
     return view;
@@ -1218,7 +1225,6 @@
       paintTurns(box, all);
       box.scrollTop = Math.max(0, box.scrollHeight - kept);
     });
-    state.transcriptEl = box;
     return box;
   }
 
@@ -1263,29 +1269,27 @@
     const body = state.viewEl;
     if (!transcript || !body) return;
     state.view = kind;
-    if (kind === "raw") {
-      state.transcriptEl = null;
-      body.replaceChildren(rawView(transcript));
+    if (kind === "conversation") {
+      // 回到对话：这一列重新画一遍，原来读到哪儿就没了——这是换一种读法的代价。
+      state.turnsWindow = TURN_PAGE;
+      const box = conversationBox(transcript);
+      state.scrollEl = box;
+      body.replaceChildren(box);
+      landToNewest();
       return;
     }
-    if (kind === "diagnostics") {
-      state.transcriptEl = null;
-      body.replaceChildren(diagnosticsView(transcript));
-      return;
-    }
-    // 回到对话：这一列重新画一遍，原来读到哪儿就没了——这是换一种读法的代价。
-    state.turnsWindow = TURN_PAGE;
-    body.replaceChildren(conversationBox(transcript));
-    landToNewest();
+    const box = kind === "raw" ? rawView(transcript) : diagnosticsView(transcript);
+    state.scrollEl = box;
+    body.replaceChildren(box);
   }
 
-  /* 一列刚画好的对话落在它的结尾。位置在重画里本来就丢了，丢的时候落在开头等于把
-   * 读的人送回一段他早读过的地方——一条长会话打开来看到的是第 100 轮之前的那一段，
-   * 而右边那颗「继续」按钮说的是最新的那一句。读的时候才会写这一下：画的时候这些
-   * 节点还没进文档，浏览器算不出高度（真实的 scrollHeight 要挂上去才有）。 */
-  function landToNewest() {
-    const box = state.transcriptEl;
-    if (box) box.scrollTop = box.scrollHeight;
+  /* 画好的这一列落在哪儿。`kept` 是读者原来离结尾有多远：0 就是落在最新那一轮上（第一次
+   * 打开一段会话、刚换过读法都是它）。落在开头等于把读的人送回一段他早读过的地方（一条长
+   * 会话打开来看到的是第 100 轮之前，而右边那颗「继续」按钮说的是最新那一句），把从半路
+   * 读的人拽到结尾则是把他正读的那一段抽走。这些节点此刻还没进文档，浏览器算不出高度。 */
+  function landToNewest(kept = 0) {
+    const box = state.scrollEl;
+    if (box) box.scrollTop = Math.max(0, box.scrollHeight - kept);
   }
 
   function rawView(transcript) {
@@ -1318,35 +1322,42 @@
   }
 
   /* 新消息落在哪儿：读到一半的人不能被拽到底部，也不能什么都不说——屏幕下沿给一条
-   * 回去的路，点了才下去。本来就在底部的人跟着走，那才是「实时」。 */
+   * 回去的路，点了才下去。本来就在底部的人跟着走，那才是「实时」。
+   *
+   * 三种答案，调用者按它决定要不要重画：能接就 "appended"；窗口满了（这一列画不下
+   * 更多轮）是 "grown" —— 重画一次，窗口跟着往前挪一位；其余是 "same"。 */
   function appendNewTurns(previous) {
     const before = previous?.transcript;
     const now = state.data?.transcript;
-    if (state.section !== "sessions" || state.transcriptEl === null || state.view !== "conversation") return false;
-    if (!before || !now || before.id !== now.id) return false;
+    if (state.section !== "sessions" || state.scrollEl === null || state.view !== "conversation") return "same";
+    if (!before || !now || before.id !== now.id) return "same";
     const added = (now.turns ?? []).length - (before.turns ?? []).length;
-    if (added <= 0) return false;
+    if (added <= 0) return "same";
     // 前面那几轮必须是同一批：换了一段对话就整段重画，不能把新的一轮接到别人后面。
-    for (let index = 0; index < before.turns.length; index += 1) if (before.turns[index].id !== now.turns[index].id) return false;
+    for (let index = 0; index < before.turns.length; index += 1) if (before.turns[index].id !== now.turns[index].id) return "same";
     // 窗口已经满了：重画一次，窗口跟着挪一位——多出来的那些本来就该从最上面掉出去。
-    if (state.shownCount + added > state.turnsWindow) return false;
-    const box = state.transcriptEl;
+    if (state.shownCount + added > state.turnsWindow) return "grown";
+    const box = state.scrollEl;
     const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight <= NEAR_BOTTOM;
     for (const turn of now.turns.slice(before.turns.length)) box.append(turnBlock(turn));
     state.shownCount += added;
     if (state.factNodes) paintFacts(state.factNodes, now);
     if (atBottom) box.scrollTop = box.scrollHeight;
-    else if (state.newChip === null && box.querySelectorAll(".new-messages").length === 0) {
-      const chip = el("button", "new-messages", T("transcript.new-messages"));
-      chip.type = "button";
-      chip.addEventListener("click", () => {
-        box.scrollTop = box.scrollHeight;
-        chip.hidden = true;
-      });
-      box.append(chip);
-      state.newChip = chip;
-    }
-    return true;
+    else newMessagesChip(box);
+    return "appended";
+  }
+
+  /* 「下面有新消息」那条回去的路。已经有一条的不再给第二条：两枚一样的提示摞在一起。 */
+  function newMessagesChip(box) {
+    if (state.newChip !== null || box.querySelectorAll(".new-messages").length > 0) return;
+    const chip = el("button", "new-messages", T("transcript.new-messages"));
+    chip.type = "button";
+    chip.addEventListener("click", () => {
+      box.scrollTop = box.scrollHeight;
+      chip.hidden = true;
+    });
+    box.append(chip);
+    state.newChip = chip;
   }
 
   /* -------------------------------------------------- model configuration -- */
@@ -2053,19 +2064,24 @@
     state.reading = false;
   }
 
-  function render() {
+  function render(moreTurns = false) {
     const data = state.data;
     if (!data) return;
+    // 重画之前先量一下读者原来在哪儿：同一段对话的这一列要落回同样的地方（离结尾多远），
+    // 换了一段对话就是新打开的，落它的结尾（kept = 0）。
+    const before = state.scrollEl;
+    const kept = before !== null && state.openId !== null && state.openId === data.transcript?.id
+      ? Math.max(0, before.scrollHeight - before.scrollTop)
+      : 0;
     // 整页重画之后，上一帧留下的那些节点引用一个都不能用了：实时追加要落到这一帧
     // 画出来的盒子上，否则新消息会加到一个已经不在页面上的地方。
     state.listEl = null;
     state.footEl = null;
-    state.transcriptEl = null;
+    state.scrollEl = null;
     state.viewEl = null;
     state.menuEl = null;
     state.factNodes = null;
     state.newChip = null;
-    state.view = "conversation";
     state.turnsWindow = TURN_PAGE;
     state.shownCount = 0;
     if (data.transcript) state.openId = data.transcript.id;
@@ -2115,7 +2131,9 @@
       settings: settingsSection,
     };
     for (const node of (renderers[state.section] ?? overviewSection)(data)) content.append(node);
-    landToNewest();
+    landToNewest(kept);
+    // 重画之前读者不在结尾，而这一次推送确实多出了轮次：给他一条回去的路，而不是替他翻页。
+    if (moreTurns && state.view === "conversation" && state.scrollEl !== null && kept > NEAR_BOTTOM) newMessagesChip(state.scrollEl);
   }
 
   // The sections the shell actually offers, read off the template: the host can
@@ -2157,15 +2175,17 @@
       const previous = state.data;
       state.data = message.payload;
       state.error = null;
-      if (message.section) state.section = message.section;
-      // 一次刷新取回来的名单跟着它自己的供应商留下来：这个载荷之后就不再带着上一次的结果，
-      // 而用户还要在那张表单上照着这份名单挑一个名字（见 centerSection）。
+      // 一份载荷不替读者决定他停在哪一页：翻页是这一页自己的动作（宿主想让它翻页时走的是
+      // 下面那条 navigate）——载荷到得晚一步，它要是在那一步里替人翻页，刚点了别处的人就
+      // 会被拽回去。一次刷新取回来的名单则跟着它自己的供应商留下来：这个载荷之后就不再带
+      // 着上一次的结果，而用户还要照这份名单挑一个名字（见 centerSection）。
       const catalog = message.payload?.centerResult;
       if (catalog?.kind === "catalog" && catalog.state === "fetched") state.centerFetched = { provider: catalog.provider, models: catalog.models ?? [] };
       // 正在读的那一段又长了一轮：接在它后面，而不是把整页重画一遍——重画会把读到的
       // 位置、左边那一列的选择、还有输入框里打到一半的字一起抹掉。
-      if (!appendNewTurns(previous)) render();
-      else if (message.payload?.transcript) state.openId = message.payload.transcript.id;
+      const outcome = appendNewTurns(previous);
+      if (outcome === "appended") { if (message.payload?.transcript) state.openId = message.payload.transcript.id; }
+      else render(outcome === "grown");
     } else if (message.type === "navigate") {
       // The host naming a landing place ("Sessions" opens the panel on the
       // sessions section) is a local move: no answer is owed back.

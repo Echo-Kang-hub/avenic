@@ -26,12 +26,8 @@ export class DashboardPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private disposed = false;
   private section: DashboardSection = "overview";
-  // A landing place the webview has not been told about yet. Only an explicit
-  // request (a command opening the panel on a section, a session being opened)
-  // sets it, and the next payload spends it — a payload never carries the panel's
-  // remembered section back, because that is exactly what used to drag a session
-  // click back to Overview.
-  private landing: DashboardSection | null = null;
+  // 页面有没有说过「我在听着」。说之前 postMessage 是丢的，那时只记住落点、不发。
+  private loaded = false;
   private payloadDetail = false;
   private sessionId: string | null = null;
   // 模型配置中心看的是哪一个 agent，以及上一次向它问了什么（测试／预览／写入／模型
@@ -91,10 +87,7 @@ export class DashboardPanel {
         storagePath: context.globalStorageUri.fsPath,
       },
     );
-    if (section !== undefined) {
-      DashboardPanel.current.section = section;
-      DashboardPanel.current.landing = section;
-    }
+    if (section !== undefined) DashboardPanel.current.land(section);
     void DashboardPanel.current.render().catch(() => { /* 面板已销毁 */ });
     return DashboardPanel.current;
   }
@@ -124,16 +117,13 @@ export class DashboardPanel {
    *  点了一条标题，读到的对话却在一块看不见的地方被推过来。 */
   open(sessionId: string | null): void {
     this.sessionId = sessionId;
-    this.section = "sessions";
-    this.landing = "sessions";
+    this.land("sessions");
     void this.sendData();
   }
 
-  /** 切到某个分区（面板内的导航是本地行为，这只是让宿主也能指定落点）。 */
+  /** 切到某个分区。 */
   navigate(section: DashboardSection): void {
-    this.section = section;
-    this.landing = section;
-    this.post({ type: "navigate", section });
+    this.land(section);
     // 钩子与设置这两页的数据只在它们自己的屏幕上组装，而这一次翻页是宿主起的（页面不会
     // 为此回一句话），所以这里必须自己问一次——否则落到一张空页上。
     if (section === "hooks" || section === "settings") void this.sendData();
@@ -148,8 +138,7 @@ export class DashboardPanel {
     if (agentId !== this.centerAgent) this.centerResult = null;
     this.centerAgent = agentId;
     if (result !== undefined) this.centerResult = result;
-    this.section = "center";
-    this.landing = "center";
+    this.land("center");
     void this.sendData();
   }
 
@@ -170,9 +159,16 @@ export class DashboardPanel {
     if (scope !== this.hooksScope) this.hooksResult = null;
     this.hooksScope = scope;
     if (result !== undefined) this.hooksResult = result;
-    this.section = "hooks";
-    this.landing = "hooks";
+    this.land("hooks");
     void this.sendData();
+  }
+
+  /** 落到某一页：页面说过 ready 就现在告诉它，没说过就先记住——那句话到得太早是丢的，
+   *  等它开口（首帧、重载后的又一句 ready）再补上。载荷从不带落点：它到得晚一步，带着的
+   *  落点会把已经自己翻到别处的读者拽回去。 */
+  private land(section: DashboardSection): void {
+    this.section = section;
+    if (this.loaded) this.post({ type: "navigate", section });
   }
 
   dispose(): void {
@@ -185,6 +181,11 @@ export class DashboardPanel {
   private receive(message: unknown): void {
     if (!isWebviewMessage(message)) return;
     if (message.type === "ready" || message.type === "refresh") {
+      // 页面开口了：把它现在该停的那一页告诉它（首帧，或重载之后的又一句 ready）。
+      if (message.type === "ready") {
+        this.loaded = true;
+        this.post({ type: "navigate", section: this.section });
+      }
       void this.sendData();
       return;
     }
@@ -235,10 +236,8 @@ export class DashboardPanel {
     if (this.disposed) return Promise.resolve();
     this.sending = this.sending.then(async () => {
       if (this.disposed) return;
-      const section = this.landing ?? this.section;
+      const section = this.section;
       const detail = payloadDetailFor(section);
-      const landing = this.landing;
-      this.landing = null;
       try {
         const data = await buildDashboardData(this.deps.root(), process.env, {
           // 底部那一行读的是缓存下来的答案：探测在飞的时候这一帧照画，等它落地后
@@ -259,9 +258,8 @@ export class DashboardPanel {
           language: vscode.env.language,
         });
         this.payloadDetail = detail;
-        // 落点只在它还对的时候随包发出：其余时候这一份数据不替 webview 决定它停在
-        // 哪一页（它自己知道，而且它是那个会翻页的人）。
-        this.post({ type: "data", payload: data, section: landing ?? undefined });
+        // 载荷只说数据，不替页面决定停在哪儿：翻页是那条 navigate 消息的事（见 land）。
+        this.post({ type: "data", payload: data });
       } catch (error) {
         this.post({ type: "error", message: error instanceof Error ? error.message : String(error) });
       }

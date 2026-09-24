@@ -639,6 +639,91 @@ test("a reader at the bottom is followed automatically", async () => {
   assert.equal(transcript.scrollTop, transcript.scrollHeight, "跟着新消息走");
 });
 
+// 一次推送只该改它带来的那一点。读到一半的人被送到底部，等于把他正读的那一段从他
+// 眼皮底下抽走——而他没有要求任何东西动；他挑的读法（原始、诊断）同理，那是他的选择，
+// 不是某一帧的状态。
+test("一次推送不把正在读的人从半路送回结尾", async () => {
+  const { source, sections } = await page();
+  const base = await payload({ transcript: TRANSCRIPT });
+  const rendered = renderDataMessage(base, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  const transcript = browser(rendered).querySelectorAll(".transcript")[0];
+  transcript.scrollHeight = 1200;
+  transcript.clientHeight = 400;
+  transcript.scrollTop = 0;
+
+  // 载荷一模一样：宿主重读了一遍项目，这一段对话一个字都没变。
+  rendered.send({ type: "data", payload: base });
+
+  const after = browser(rendered).querySelectorAll(".transcript")[0];
+  assert.notEqual(after.scrollTop, after.scrollHeight, "没有新消息，就不该把人送到底部");
+  assert.equal(browser(rendered).querySelectorAll(".new-messages").length, 0, "没有新轮次，也没有那枚提示");
+});
+
+test("窗口满了的那次重画落在读者原来离结尾那么远的地方", async () => {
+  const { source, sections } = await page();
+  const base = await payload();
+  const long = Array.from({ length: 100 }, (_, index) => ({
+    id: `e${index}`,
+    kind: index % 2 === 0 ? "user" : "agent",
+    speaker: index % 2 === 0 ? "You" : "Claude",
+    agent: index % 2 === 0 ? null : "claude",
+    role: index % 2 === 0 ? "user" : "assistant",
+    at: "2025-09-20T20:20:00Z",
+    text: `Turn number ${index}`,
+    tools: [],
+    model: null,
+  }));
+  const rendered = renderDataMessage({ ...base, transcript: { ...TRANSCRIPT, turns: long, eventCount: 100 } }, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  const transcript = browser(rendered).querySelectorAll(".transcript")[0];
+  transcript.scrollHeight = 4000;
+  transcript.clientHeight = 400;
+  transcript.scrollTop = 0;
+
+  const more = [...long, { id: "e100", kind: "agent", speaker: "Claude", agent: "claude", role: "assistant", at: "2025-09-20T20:31:00Z", text: "One more.", tools: [], model: null }];
+  rendered.send({ type: "data", payload: { ...base, transcript: { ...TRANSCRIPT, turns: more, eventCount: 101 } } });
+
+  const after = browser(rendered).querySelectorAll(".transcript")[0];
+  assert.equal(after.querySelectorAll(".turn").length, 100, "窗口满了：重画之后仍是最近的 100 轮");
+  assert.notEqual(after.scrollTop, after.scrollHeight, "重画不把人送到底部");
+  assert.ok(after.querySelectorAll(".new-messages").length > 0, "下面多了一轮，要说一声");
+});
+
+test("读者挑的读法不会被一次推送收回去", async () => {
+  const { source, sections } = await page();
+  const base = await payload({ transcript: TRANSCRIPT });
+  const rendered = renderDataMessage(base, source, { seed: sidebar(sections) });
+  openSessions(rendered);
+
+  // ⋯ 菜单里那一项：读法是他挑的，写在页面上。
+  fire(button(rendered, "Raw"));
+  assert.equal(browser(rendered).querySelectorAll(".raw-view").length, 1, "读者要的是原始那一种读法");
+
+  rendered.send({ type: "data", payload: base });
+
+  assert.equal(browser(rendered).querySelectorAll(".raw-view").length, 1, "一次推送不该把它换回对话");
+  assert.equal(browser(rendered).querySelectorAll(".transcript").length, 0, "对话那一列没有偷偷回来");
+});
+
+// 宿主的一次落点与读者自己翻的那一页会撞车：落点排在一份载荷里，而载荷到得比读者的
+// 点击晚。晚到的那一条说的是一件已经过去了的事，谁自己翻的页谁说了算。
+test("一条晚到的落点不把已经自己翻过页的读者拽回去", async () => {
+  const { source, sections } = await page();
+  const base = await payload({ transcript: TRANSCRIPT });
+  const rendered = renderDataMessage(base, source, { seed: sidebar(sections), messages: [{ type: "navigate", section: "skills" }] });
+  assert.deepEqual(activeSections(rendered), ["skills"], "宿主说落到技能页，页面就落到技能页");
+
+  openSection(rendered, "overview");
+  assert.deepEqual(activeSections(rendered), ["overview"], "读者自己翻到了概览");
+
+  rendered.send({ type: "data", payload: base, section: "skills" });
+
+  assert.deepEqual(activeSections(rendered), ["overview"], "晚到的落点不把人拽回去");
+});
+
 test("a long transcript shows the newest hundred turns and loads the rest at the top", async () => {
   const { source, sections } = await page();
   const base = await payload();
