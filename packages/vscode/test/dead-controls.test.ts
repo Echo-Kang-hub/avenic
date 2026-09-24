@@ -10,7 +10,7 @@ import { getAgent, importProjectSessions, listCanonicalSessions, modelConfigTarg
 import { extensionBuildOptions } from "../build-options.mjs";
 import { both, en, rowLabel, sentence, zh, type TextKey } from "../src/i18n/text.ts";
 import { initialize } from "../src/services/agents.ts";
-import { DASHBOARD_OPEN_FAILED } from "../src/views/dashboard-failure.ts";
+import { failureText } from "../src/views/dashboard-failure.ts";
 import { testEnv, withAgentHomes } from "./helpers.ts";
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -390,7 +390,10 @@ async function buildArtifact() {
     `const settle = async () => { for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r)); await new Promise((r) => setTimeout(r, 20)); };`,
     `activate(context);`,
     `await settle();`,
+    // 起点要连日志一起记：只要效果的账不求日志的账，上一行控件（或激活后某一拍）写下
+    // 的那句话就会替这一行作证 —— 一条控件的断言可能因为别人的输出而通过。
     `const before = effects.length;`,
+    `const linesBefore = outputLines.length;`,
     // 树上要一次行。真编辑器渲染活动栏时做的就是这一步——桩宿主里没有别人会做。
     `if (plan.rows === true) {`,
     `  for (const view of treeViews) {`,
@@ -434,7 +437,7 @@ async function buildArtifact() {
     // 报告完就结束。扩展自己的后台活会留下句柄（核心探测 npm 版本用的 15 秒 spawn
     // 超时定时器就是一个），等它们到期等于让每一行都付一次那笔时间的账——而那些活
     // 属于编辑器里的下一次刷新，不属于这一次调用。
-    `process.stdout.write(JSON.stringify({ effects: effects.slice(before), outputLines: outputLines.slice(0), thrown, ms: Date.now() - startedAt }), () => process.exit(0));`,
+    `process.stdout.write(JSON.stringify({ effects: effects.slice(before), outputLines: outputLines.slice(linesBefore), thrown, ms: Date.now() - startedAt }), () => process.exit(0));`,
     "",
   ].join("\n"));
 
@@ -650,7 +653,7 @@ test("the editor's own language reaches the words the host puts on screen", asyn
   assert.equal(answered.thrown, null);
   // 面板是真的建起来了：打不开时用户读到的那句结论只说结论，而它一旦出现，这条测试
   // 问的就成了别的东西——所以先把「没有失败」钉住，再去看那句话说的是哪种语言。
-  const failed = (answered.outputLines ?? []).filter((line) => line.includes(DASHBOARD_OPEN_FAILED));
+  const failed = (answered.outputLines ?? []).filter((line) => line.includes(failureText("en").dashboardOpenFailed));
   assert.deepEqual(failed, [], `面板这一步就不该失败，通道里写着：${failed.join(" / ")}`);
   const reason = answered.effects.map(describe).join(" | ");
   assert.ok(reason.includes(zh("sessions.no-successor")), `中文编辑器里这句理由得是中文（${zh("sessions.no-successor")}），实际说的是：${reason}`);

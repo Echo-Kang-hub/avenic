@@ -224,6 +224,13 @@ export const TEXT = {
   "skills.sync-fetching": { en: "Fetching the registry…", zh: "正在拉取 registry…" },
   // 活动日志那一列是宿主自己说的话（面板原样印出来），跟着语言的正是这些句子。
   "activity.dashboard-opened": { en: "Dashboard opened", zh: "打开了面板" },
+  // 面板打不开（或壳体的某一步失败）时用户读到的那一句，以及它必须给的两个动作。
+  // VS Code 自己的 "No view is registered with id: …" 只描述内部状态：它不说哪一步失败
+  // 了，也不给任何可做的事 —— 这一句是 Avenic 说的，所以它和别的句子一样在词表里。
+  "failure.dashboard-open": { en: "Avenic Dashboard could not be opened.", zh: "打不开 Avenic 仪表盘。" },
+  "failure.startup": { en: "Avenic could not finish starting.", zh: "Avenic 没能启动完成。" },
+  "failure.reload-window": { en: "Reload Window", zh: "重新加载窗口" },
+  "failure.view-logs": { en: "View Logs", zh: "查看日志" },
   "activity.session-started": { en: "{name} session started", zh: "{name} 的会话开始了" },
   "activity.session-continued": { en: "{name} session continued", zh: "{name} 的会话接着往下跑了" },
   "activity.imported": { en: "Imported {count} skill(s) from {repo} · {scope}", zh: "从 {repo} 导入了 {count} 个 Skill · {scope}" },
@@ -360,6 +367,10 @@ export const TEXT = {
   // 人的插件时只能装到别处去 —— 这一句要说出下一步（挪开那个文件），因为页面上正是它
   // 决定装、卸两颗按钮给不给。
   "hooks.path-occupied": { en: "A file Avenic did not write is already at this path. Move it aside, then install again.", zh: "这个路径上已经有一份不是 Avenic 写的文件。把它挪开，再装一次。" },
+  // 另一种「文件挡着」：文件是用户自己的（Claude 的 settings.json），挡路的是里面那一格
+  // 形状 —— `hooks.Stop` 不是一张组表。这里不能让人把整个文件挪开：那个文件里还有他的
+  // 权限和环境变量，Avenic 平时正是并进这个文件里的；要改的是那一格。
+  "hooks.unmergeable-key": { en: "One entry in your own settings is not in a shape Avenic can add to. Fix that entry, then install again.", zh: "你自己的设置里有一格的形状 Avenic 加不进去。把那一格改过来，再装一次。" },
   "hooks.unknown-kind": { en: "Avenic does not know the notification kind {kind}.", zh: "Avenic 不认识这种通知：{kind}。" },
   "hooks.need-url": { en: "A webhook needs a URL.", zh: "Webhook 需要填一个地址。" },
   "hooks.need-gateway": { en: "OpenClaw needs a gateway address.", zh: "OpenClaw 需要填网关地址。" },

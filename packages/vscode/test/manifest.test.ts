@@ -109,7 +109,7 @@ test("the launcher provider is mounted before anything else that can fail, and t
   // 壳体（活动日志、四组命令、旧 id 别名、版本探测）全在挂载之后，且整段受保护。
   assert.ok(mounted < at("startShell(context, launcher", body), "壳体排在挂载之后");
   assert.match(source, /try \{\s*const failureUi = startShell\(/, "壳体整段在 try 里");
-  assert.match(source, /catch \(error\) \{[\s\S]*?reportFailure\(STARTUP_FAILED/, "壳体失败报到用户面前");
+  assert.match(source, /catch \(error\) \{[\s\S]*?reportFailure\(failure\.startupFailed/, "壳体失败报到用户面前");
   // 挂载自己：用唯一常量、受保护、失败返回原因而不是抛。
   assert.match(source, /function mountLauncher[\s\S]*?try \{[\s\S]*?createTreeView\(DASHBOARD_VIEW_ID/, "挂载用常量且受保护");
   assert.match(source, /catch \(error\) \{[\s\S]*?return error;/, "挂载失败返回原因而不是抛");

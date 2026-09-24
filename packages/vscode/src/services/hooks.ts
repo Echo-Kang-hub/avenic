@@ -168,10 +168,12 @@ export async function agentHooks(projectRoot: string, agentId: AgentId, scope: H
     version: installation.version,
     supported: status.supported,
     // core 说「装不了」有两种原因，而它们要人做的下一步不一样：版本不行（这一句按词表
-    // 说），以及那个路径上已经有一份不是 Avenic 的文件 —— 版本没问题，是路被占了。第二种
-    // 只有 OpenCode 有（那一种的文件整个归 Avenic），所以落到这里就是它。
+    // 说），以及文件本身挡着 —— 后者又分两种，core 用 `refusal` 说出是哪一种：这个路径
+    // 上站着别人的文件（OpenCode：那一份整个归 Avenic），还是用户自己的文件里有一格
+    // Avenic 不动（Claude：`hooks.Stop` 不是一张组表）。对后者说「把文件挪开」是让人去
+    // 搬自己的 settings.json —— 那不是这一步该做的事。
     supportNote: supportSentence(capability.displayName, installation.version, support ?? { supported: status.supported, note: status.note }, language)
-      ?? (status.supported ? null : sentence(language, "hooks.path-occupied")),
+      ?? (status.supported ? null : sentence(language, status.refusal === "unmergeable-key" ? "hooks.unmergeable-key" : "hooks.path-occupied")),
     file: status.file,
     installed: status.installed,
     error: status.error ?? null,

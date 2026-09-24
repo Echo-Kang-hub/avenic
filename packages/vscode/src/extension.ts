@@ -11,7 +11,7 @@ import { ActivityLog } from "./ui/activity.ts";
 import { LauncherView } from "./views/launcher-view.ts";
 import { DASHBOARD_VIEW_ID } from "./views/view-ids.ts";
 import { LEGACY_COMMAND_ALIASES } from "./views/legacy.ts";
-import { STARTUP_FAILED, reportDashboardFailure, reportFailure, type FailureUi } from "./views/dashboard-failure.ts";
+import { failureText, reportDashboardFailure, reportFailure, type FailureUi } from "./views/dashboard-failure.ts";
 import { markPerformance } from "./ui/performance.ts";
 import { invalidateSkillsSnapshot } from "./services/skills.ts";
 import { invalidateAgentStatusCache } from "./services/agents.ts";
@@ -27,6 +27,8 @@ const RELOAD_WINDOW_COMMAND = "workbench.action.reloadWindow";
 
 export function activate(context: vscode.ExtensionContext): void {
   const activationStartedAt = performance.now();
+  // 失败时那几句话与两个动作都从词表来：中文宿主里读到的就是中文。
+  const failure = failureText(vscode.env.language);
   // 第一件事就是活动栏图标下那一行。它前面每多一步，那一步抛错时用户看到的就是
   // VS Code 自己的 "No view is registered with id: avenic.launcher"——一句既没有原因
   // 也没有动作的话。挂载失败也不 return：仪表盘面板不依赖这棵树，下面注册的命令才是
@@ -35,12 +37,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const viewError = mountLauncher(context, launcher);
   try {
     const failureUi = startShell(context, launcher, activationStartedAt);
-    if (viewError !== null) void reportDashboardFailure(viewError, failureUi);
+    if (viewError !== null) void reportDashboardFailure(viewError, failureUi, failure);
   } catch (error) {
     // 激活体里任何一步失败都不带走上面那一行。真实原因先落进扩展主机日志——那是这条
     // 路径上最后一处还能留下它的地方。
     console.error("[avenic] activation failed", error);
-    void reportFailure(STARTUP_FAILED, error, fallbackUi(context));
+    void reportFailure(failure.startupFailed, error, fallbackUi(context), failure);
   }
 }
 

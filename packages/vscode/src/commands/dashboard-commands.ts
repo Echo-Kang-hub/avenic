@@ -12,7 +12,7 @@ import { DOCS_URL } from "../product.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { importSkillsFlow, type ImportUi } from "../ui/skill-import.ts";
 import type { ActivityLog } from "../ui/activity.ts";
-import { reportDashboardFailure, type FailureUi } from "../views/dashboard-failure.ts";
+import { failureText, reportDashboardFailure, type FailureUi } from "../views/dashboard-failure.ts";
 import { handleCenterAction } from "./center-commands.ts";
 import { handleHookAction } from "./hooks-commands.ts";
 import { showError } from "./errors.ts";
@@ -50,7 +50,7 @@ export function registerDashboardCommands(deps: DashboardDeps): void {
       panel(section);
       activity.record(sentence(language, "activity.dashboard-opened"));
     } catch (error) {
-      void reportDashboardFailure(error, deps.failure);
+      void reportDashboardFailure(error, deps.failure, failureText(language));
     }
   };
 

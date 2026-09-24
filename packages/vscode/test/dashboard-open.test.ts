@@ -4,10 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  DASHBOARD_OPEN_FAILED,
-  RELOAD_WINDOW,
-  STARTUP_FAILED,
-  VIEW_LOGS,
+  failureText,
   reportDashboardFailure,
   reportFailure,
   type FailureUi,
@@ -16,13 +13,21 @@ import { LEGACY_COMMAND_ALIASES } from "../src/views/legacy.ts";
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-// 每一条打开仪表盘的路径最终都落到这一句上。它是用户唯一读到的说明，所以措辞与两个
-// 动作都是产品决定，不是实现细节：VS Code 自己的 "No view is registered with id: …"
+// 每一条打开仪表盘的路径最终都落到这一句上，而它是从词表里取的：同一个键在中英文宿主里
+// 给两句各自语言的话，动作名也一样（按钮上的字不是实现细节，用户要按的就是它）。句子本身
+// 的措辞是产品决定，不是实现细节 —— VS Code 自己的 "No view is registered with id: …"
 // 只描述内部状态，用户拿它没有任何可做的。
-test("the dashboard fallback sentence and its two actions are the released wording", () => {
+const TEXT = failureText("en");
+const { reload: RELOAD_WINDOW, viewLogs: VIEW_LOGS, startupFailed: STARTUP_FAILED, dashboardOpenFailed: DASHBOARD_OPEN_FAILED } = TEXT;
+
+test("the dashboard fallback sentence and its two actions come from the resource table, in both languages", () => {
   assert.equal(DASHBOARD_OPEN_FAILED, "Avenic Dashboard could not be opened.");
   assert.equal(RELOAD_WINDOW, "Reload Window");
   assert.equal(VIEW_LOGS, "View Logs");
+  const zh = failureText("zh-cn");
+  assert.equal(zh.dashboardOpenFailed, "打不开 Avenic 仪表盘。");
+  assert.equal(zh.reload, "重新加载窗口");
+  assert.notEqual(zh.viewLogs, VIEW_LOGS, "中文宿主里读到的不是那句英文");
 });
 
 interface Captured {
@@ -51,7 +56,7 @@ function blank(): Captured {
 test("a dashboard that cannot be opened says so in Avenic's words and offers the two actions", async () => {
   const raw = "No view is registered with id: avenic.launcher";
   const captured = blank();
-  await reportDashboardFailure(new Error(raw), surface(captured, RELOAD_WINDOW));
+  await reportDashboardFailure(new Error(raw), surface(captured, RELOAD_WINDOW), TEXT);
 
   assert.deepEqual(captured.shown, [{ message: DASHBOARD_OPEN_FAILED, actions: [RELOAD_WINDOW, VIEW_LOGS] }]);
   assert.equal(captured.shown[0]!.message.includes(raw), false, "内部那句话不得出现在用户读的那一行里");
@@ -62,11 +67,11 @@ test("a dashboard that cannot be opened says so in Avenic's words and offers the
 
 test("View Logs opens the channel; dismissing the notification does nothing else", async () => {
   const logs = blank();
-  await reportFailure(STARTUP_FAILED, new Error("boom"), surface(logs, VIEW_LOGS));
+  await reportFailure(STARTUP_FAILED, new Error("boom"), surface(logs, VIEW_LOGS), TEXT);
   assert.deepEqual({ reloads: logs.reloads, logs: logs.logs, recorded: logs.logged.length }, { reloads: 0, logs: 1, recorded: 1 });
 
   const dismissed = blank();
-  await reportFailure(STARTUP_FAILED, new Error("boom"), surface(dismissed, undefined));
+  await reportFailure(STARTUP_FAILED, new Error("boom"), surface(dismissed, undefined), TEXT);
   assert.deepEqual({ reloads: dismissed.reloads, logs: dismissed.logs, recorded: dismissed.logged.length }, { reloads: 0, logs: 0, recorded: 1 });
 });
 
@@ -78,7 +83,7 @@ test("a surface without a channel offers only the reload action", async () => {
     record: (line) => captured.logged.push(line),
     notify: async (message, ...actions) => { captured.shown.push({ message, actions }); return undefined; },
     reload: () => { captured.reloads += 1; },
-  });
+  }, TEXT);
   assert.deepEqual(captured.shown, [{ message: STARTUP_FAILED, actions: [RELOAD_WINDOW] }]);
   assert.equal(captured.reloads, 0);
 });
@@ -88,7 +93,7 @@ test("a notification that cannot be shown does not become a second failure", asy
   await reportFailure(STARTUP_FAILED, new Error("boom"), {
     notify: async () => { throw new Error("no window to draw in"); },
     reload: () => { throw new Error("must not run"); },
-  });
+  }, TEXT);
 });
 
 // 0.5.5 之前的发行版贡献过、现在没有实现的入口。别名只收「意图还在、只是改了名字」

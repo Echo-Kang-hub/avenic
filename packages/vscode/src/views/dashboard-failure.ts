@@ -8,11 +8,29 @@
 //
 // 这个模块不 import vscode：句子与动作的接线由调用方注入，测试才可能脱离宿主验证
 // 用户到底读到了什么。（宿主侧的接线见 extension.ts 的 failureUi。）
+//
+// 它也不写死那几个英文词：和扩展里别的每一句一样，它们从资源层的词表里来（P23 就说了
+// 这一条），由调用方按自己的语言取好传进来。写死在这里的英文句，中文宿主里读到的就是
+// 一句英文 —— 而这一句恰恰是用户最需要读懂的那种。
 
-export const DASHBOARD_OPEN_FAILED = "Avenic Dashboard could not be opened.";
-export const STARTUP_FAILED = "Avenic could not finish starting.";
-export const RELOAD_WINDOW = "Reload Window";
-export const VIEW_LOGS = "View Logs";
+import { sentence } from "../i18n/text.ts";
+
+export interface FailureText {
+  dashboardOpenFailed: string;
+  startupFailed: string;
+  reload: string;
+  viewLogs: string;
+}
+
+/** 宿主语言对应的那一组句子与动作。 */
+export function failureText(language: string): FailureText {
+  return {
+    dashboardOpenFailed: sentence(language, "failure.dashboard-open"),
+    startupFailed: sentence(language, "failure.startup"),
+    reload: sentence(language, "failure.reload-window"),
+    viewLogs: sentence(language, "failure.view-logs"),
+  };
+}
 
 export interface FailureUi {
   /** 原因写进 Avenic 通道（[View Logs] 打开的就是它）。通道自己可能就是失败的那一步，故可省。 */
@@ -27,9 +45,9 @@ function reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function reportFailure(message: string, error: unknown, ui: FailureUi): Promise<void> {
+export async function reportFailure(message: string, error: unknown, ui: FailureUi, text: FailureText): Promise<void> {
   ui.record?.(`${message} ${reasonOf(error)}`);
-  const actions = [RELOAD_WINDOW, ...(ui.show ? [VIEW_LOGS] : [])];
+  const actions = [text.reload, ...(ui.show ? [text.viewLogs] : [])];
   let choice: string | undefined;
   try {
     // 通知画不出来（没有窗口、宿主正在关闭）也是一样的下场：它不能变成第二个异常，
@@ -38,10 +56,10 @@ export async function reportFailure(message: string, error: unknown, ui: Failure
   } catch {
     choice = undefined;
   }
-  if (choice === RELOAD_WINDOW) ui.reload();
-  else if (choice === VIEW_LOGS) ui.show?.();
+  if (choice === text.reload) ui.reload();
+  else if (choice === text.viewLogs) ui.show?.();
 }
 
-export function reportDashboardFailure(error: unknown, ui: FailureUi): Promise<void> {
-  return reportFailure(DASHBOARD_OPEN_FAILED, error, ui);
+export function reportDashboardFailure(error: unknown, ui: FailureUi, text: FailureText): Promise<void> {
+  return reportFailure(text.dashboardOpenFailed, error, ui, text);
 }
