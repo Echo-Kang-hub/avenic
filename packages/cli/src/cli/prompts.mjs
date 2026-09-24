@@ -303,6 +303,38 @@ function filterEntries(entries, query) {
 }
 
 const moreUp = (count, colors) => colors.muted(`│  ↑ ${count} more`);
+// 过滤词的一次按键：退格删掉最后一个字符，可打印字符接在后面（空格是按键，不是字符）。
+// 别的键不改它 —— 返回 null 就是「这一次按下不是给这个缓冲区的」。
+function queryAfter(intent, query) {
+  if (intent === "erase") return query.slice(0, -1);
+  if (intent?.text && intent.text !== " ") return query + intent.text;
+  return null;
+}
+
+// 文本缓冲区的一次按键：同上，但空格是内容（toggle 与可打印字符一样接上去）。
+function valueAfter(intent, value) {
+  if (intent === "erase") return value.slice(0, -1);
+  if (intent === "toggle") return `${value} `;
+  if (typeof intent?.text === "string") return value + intent.text;
+  return null;
+}
+
+// 过滤行：⌕ 后面是当前的过滤词（还没敲的时候是一句灰色提示），右边是「显示了几条/共几条」。
+function searchRow(entries, shown, query, { colors, width }) {
+  const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
+  return truncate(`${colors.muted("│")}  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.muted("type to filter")}${colors.muted(counter)}`, width);
+}
+
+// 一帧里可见的那几行：窗口上下各一条「还有 N 条」，中间是 row(index) 画出来的行。
+function windowRows(count, cursor, height, colors, row) {
+  const { from, to } = windowFor(count, cursor, height);
+  const rows = [];
+  if (from > 0) rows.push(moreUp(from, colors));
+  for (let index = from; index < to; index += 1) rows.push(row(index));
+  if (to < count) rows.push(moreDown(count - to, colors));
+  return rows;
+}
+
 const moreDown = (count, colors) => colors.muted(`│  ↓ ${count} more`);
 
 // ---- 提示 ----
@@ -442,12 +474,7 @@ function singleSelectModel(options, view) {
     heading: () => options.title,
     message: () => (count === 0 ? "Nothing to choose from" : ""),
     rows() {
-      const { from, to } = windowFor(count, cursor, height);
-      const rows = [];
-      if (from > 0) rows.push(moreUp(from, colors));
-      for (let index = from; index < to; index += 1) rows.push(row(index, index === cursor));
-      if (to < count) rows.push(moreDown(count - to, colors));
-      return rows;
+      return windowRows(count, cursor, height, colors, (index) => row(index, index === cursor));
     },
     settleRows: () => entries.map((_, index) => row(index, index === cursor)),
     reduce(intent) {
@@ -496,15 +523,8 @@ function multiSelectModel(options, view) {
     rows() {
       shown = filterEntries(entries, query);
       cursor = Math.min(cursor, shown.length);
-      const { from, to } = windowFor(shown.length, Math.min(cursor, Math.max(0, shown.length - 1)), height);
-      const rows = [];
-      if (from > 0) rows.push(moreUp(from, colors));
-      for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
-      if (to < shown.length) rows.push(moreDown(shown.length - to, colors));
-      if (searchable) {
-        const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
-        rows.push(truncate(`${colors.muted("│")}  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.muted("type to filter")}${colors.muted(counter)}`, width));
-      }
+      const rows = windowRows(shown.length, Math.min(cursor, Math.max(0, shown.length - 1)), height, colors, (index) => row(shown[index], index === cursor));
+      if (searchable) rows.push(searchRow(entries, shown, query, { colors, width }));
       return rows;
     },
     settleRows: () => entries.filter((entry) => checked.has(entry.value)).map((entry) => row(entry, false)),
@@ -522,17 +542,11 @@ function multiSelectModel(options, view) {
         return true;
       }
       if (searchable) {
-        if (intent === "erase") {
-          query = query.slice(0, -1);
-          cursor = 0;
-          return true;
-        }
-        if (intent?.text && intent.text !== " ") {
-          query += intent.text;
-          cursor = 0;
-          return true;
-        }
-        return false;
+        const next = queryAfter(intent, query);
+        if (next === null) return false;
+        query = next;
+        cursor = 0;
+        return true;
       }
       if (intent === "all" || letter(intent, "a")) {
         for (const entry of entries) checked.add(entry.value);
@@ -639,19 +653,10 @@ function textModel(step, draft, { width, colors }) {
     ],
     reduce(intent) {
       message = "";
-      if (intent === "erase") {
-        value = value.slice(0, -1);
-        return true;
-      }
-      if (intent === "toggle") {
-        value += " ";
-        return true;
-      }
-      if (typeof intent?.text === "string") {
-        value += intent.text;
-        return true;
-      }
-      return false;
+      const next = valueAfter(intent, value);
+      if (next === null) return false;
+      value = next;
+      return true;
     },
     accept() {
       const trimmed = value.trim();
@@ -834,14 +839,10 @@ export function searchableSelect(options = {}) {
     paint() {
       shown = filterEntries(entries, query);
       cursor = Math.min(cursor, Math.max(0, shown.length - 1));
-      const { from, to } = windowFor(shown.length, cursor, height);
       const rows = frameHead({ colors, title, description: options.description, width });
       if (shown.length === 0) rows.push(`${colors.muted("│")}  ${colors.muted("no matches")}`);
-      if (from > 0) rows.push(moreUp(from, colors));
-      for (let index = from; index < to; index += 1) rows.push(row(shown[index], index === cursor));
-      if (to < shown.length) rows.push(moreDown(shown.length - to, colors));
-      const counter = shown.length !== entries.length ? `  (${shown.length}/${entries.length})` : "";
-      rows.push(truncate(`${colors.muted("│")}  ${colors.brand("⌕")} ${query.length > 0 ? query : colors.muted("type to filter")}${colors.muted(counter)}`, width));
+      rows.push(...windowRows(shown.length, cursor, height, colors, (index) => row(shown[index], index === cursor)));
+      rows.push(searchRow(entries, shown, query, { colors, width }));
       rows.push(...frameFoot({ colors, footer, message: "", width }));
       return rows;
     },
@@ -851,17 +852,11 @@ export function searchableSelect(options = {}) {
         cursor = step(cursor, movesUp(intent, false) ? -1 : 1, shown.length);
         return true;
       }
-      if (intent === "erase") {
-        query = query.slice(0, -1);
-        cursor = 0;
-        return true;
-      }
-      if (intent?.text && intent.text !== " ") {
-        query += intent.text;
-        cursor = 0;
-        return true;
-      }
-      return false;
+      const next = queryAfter(intent, query);
+      if (next === null) return false;
+      query = next;
+      cursor = 0;
+      return true;
     },
     accept() {
       if (shown.length === 0) return null; // 没有可选项：回车不是取消，是留在原地
@@ -886,19 +881,10 @@ export function text(options = {}) {
     paint: () => [...frameHead({ colors, title, description: options.description, width }), cursorLine(),
       ...frameFoot({ colors, footer, message: "", width })],
     reduce(intent) {
-      if (intent === "erase") {
-        value = value.slice(0, -1);
-        return true;
-      }
-      if (intent === "toggle") {
-        value += " ";
-        return true;
-      }
-      if (typeof intent?.text === "string") {
-        value += intent.text;
-        return true;
-      }
-      return false;
+      const next = valueAfter(intent, value);
+      if (next === null) return false;
+      value = next;
+      return true;
     },
     accept() {
       const trimmed = value.trim();

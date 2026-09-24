@@ -7,7 +7,7 @@ import { applyCenter, docsLink, fillFromPreset, previewCenter, refreshCenterMode
 import { runMutation, type MutationQueue } from "../ui/mutation-queue.ts";
 import type { ActivityLog } from "../ui/activity.ts";
 import { showError } from "./errors.ts";
-import { withProgress } from "./progress.ts";
+import { progressIfSlow } from "./progress.ts";
 
 // 模型配置中心的落点。这一页问的每一句话都带着整张表单回来（页面握着用户敲进去的字，
 // 宿主只负责合并），所以这里的每一条都只做三件事：把表单交给 services/center，把答案
@@ -29,20 +29,7 @@ export interface CenterUi {
 
 // 本地的合并、预览与写盘在这台机器上是毫秒级，而网络那两件（探测、模型表）按 core 的
 // 规矩最多等 8 秒 —— 为快活闪一下状态栏只会让人以为出了什么事。所以进度条有一道 500
-// 毫秒的宽限：过得去的活自己就是它的证明，过不去的才显示出来。两个都必须做：宽限期里
-// 那一次的异常只有调用方那一份承诺会接住，这一份永远不接。
-const SLOW_MS = 500;
-function progressIfSlow<T>(title: string, work: Promise<T>): Promise<T> {
-  let settled = false;
-  const timer = setTimeout(() => {
-    if (settled) return;
-    void withProgress(title, () => work).then(undefined, () => { /* 结果与异常都在调用方那一份上 */ });
-  }, SLOW_MS);
-  return work.finally(() => {
-    settled = true;
-    clearTimeout(timer);
-  });
-}
+// 毫秒的宽限（`progressIfSlow`，与 hooks 那几条共用同一份）：过得去的活自己就是它的证明。
 
 export async function handleCenterAction(action: CenterAction, ui: CenterUi): Promise<void> {
   try {

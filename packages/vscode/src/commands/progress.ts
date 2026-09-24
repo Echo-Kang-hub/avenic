@@ -13,3 +13,19 @@ export async function withProgress<T>(title: string, fn: (report: (msg: string) 
     fn((message) => progress.report({ message })),
   );
 }
+
+// 本地的活是毫秒级，网络那两件（探测、模型表）按 core 的规矩最多等 8 秒 —— 为快活闪一下
+// 状态栏只会让人以为出了什么事。所以状态栏有一道 500 毫秒的宽限：过得去的活自己就是它的
+// 证明，过不去的才显示出来。宽限期里那一次的异常只有调用方那一份承诺会接住，这一份永远不接。
+const SLOW_MS = 500;
+export function progressIfSlow<T>(title: string, work: Promise<T>): Promise<T> {
+  let settled = false;
+  const timer = setTimeout(() => {
+    if (settled) return;
+    void withProgress(title, () => work).then(undefined, () => { /* 结果与异常都在调用方那一份上 */ });
+  }, SLOW_MS);
+  return work.finally(() => {
+    settled = true;
+    clearTimeout(timer);
+  });
+}

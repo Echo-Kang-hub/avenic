@@ -375,10 +375,7 @@ async function commandAddDirect(argumentsList, options = {}) {
   if (!sourceReference) {
     fail("Usage: avenic skills add <owner/repo> [skill...] [-g]");
   }
-  const unknownOption = argumentsList.find((argument) => argument.startsWith("-"));
-  if (unknownOption) {
-    fail(`Unknown option: ${unknownOption}`);
-  }
+  rejectUnknownOptions(argumentsList);
   // 没点名 Skill + 终端：进 Add 流程（发现 → 多选 → Install to → Scope → 确认）。
   // 点名了就直接装 —— 脚本里 `avenic skills add owner/repo a b` 的语义不变。
   if (skillNames.length === 0 && isInteractive(options.prompts ?? {})) {
@@ -486,10 +483,7 @@ async function commandAdopt(skillArguments, options = {}) {
   if (skillArguments.length === 0) {
     fail("Usage: adopt <skill...> [-g]");
   }
-  const unknownOption = skillArguments.find((argument) => argument.startsWith("-"));
-  if (unknownOption) {
-    fail(`Unknown option: ${unknownOption}`);
-  }
+  rejectUnknownOptions(skillArguments);
   const context = createInstallContext(options.global ?? false, options);
   const result = await adoptSkills(context, skillArguments, { io });
   io.log(`Adopted Skills: ${result.adopted.join(", ")}`);
@@ -649,10 +643,7 @@ async function commandDoctor(catalogRoot, io = console) {
 async function commandUpdate(argumentsList, catalogRoot, io = console) {
   const checkOnly = argumentsList.includes("--check");
   const remainingArguments = argumentsList.filter((argument) => argument !== "--check");
-  const unknownOption = remainingArguments.find((argument) => argument.startsWith("-"));
-  if (unknownOption) {
-    fail(`Unknown option: ${unknownOption}`);
-  }
+  rejectUnknownOptions(remainingArguments);
   if (remainingArguments.length > 1) {
     fail("Usage: update [source] [--check]");
   }
@@ -724,6 +715,14 @@ async function commandUpdate(argumentsList, catalogRoot, io = console) {
   }
 }
 
+// 这一条命令不接受任何选项：出现一个以 - 开头的东西就是打错了字，原样说出来。
+function rejectUnknownOptions(list) {
+  const unknownOption = list.find((argument) => argument.startsWith("-"));
+  if (unknownOption) {
+    fail(`Unknown option: ${unknownOption}`);
+  }
+}
+
 async function commandAdd(argumentsList, catalogRoot, io = console) {
   const { skills: skillsRoot, packs: packsRoot, sourcesFile } = catalogLayout(catalogRoot);
   const packsValue = takeOption(argumentsList, "--pack");
@@ -735,10 +734,7 @@ async function commandAdd(argumentsList, catalogRoot, io = console) {
   if (!sourceReference) {
     fail("Usage: skill-add <source-id|owner/repo> [skill...] [--pack <pack,pack>]");
   }
-  const unknownOption = argumentsList.find((argument) => argument.startsWith("-"));
-  if (unknownOption) {
-    fail(`Unknown option: ${unknownOption}`);
-  }
+  rejectUnknownOptions(argumentsList);
   requestedSkillNames.forEach(assertSafeSkillName);
   const packs = await loadPacks(catalogRoot);
   for (const packId of packIds) {
@@ -912,10 +908,7 @@ async function commandRemove(argumentsList, catalogRoot, io = console) {
   if (!sourceReference || requestedSkillNames.length === 0) {
     fail("Usage: remove <source-id|owner/repo> <skill...> [--pack <pack,pack>]");
   }
-  const unknownOption = argumentsList.find((argument) => argument.startsWith("-"));
-  if (unknownOption) {
-    fail(`Unknown option: ${unknownOption}`);
-  }
+  rejectUnknownOptions(argumentsList);
   const skillNames = [...new Set(requestedSkillNames)];
   skillNames.forEach(assertSafeSkillName);
   const sourceConfig = await loadSources(catalogRoot);

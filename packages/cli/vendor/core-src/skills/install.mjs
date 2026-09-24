@@ -357,6 +357,17 @@ async function removeShareEntries(context, names, io) {
   return removed;
 }
 
+// 卸一个 canonical target 下的一个 Skill：路径必须落在 target 里面，存在才删，删掉算 1。
+async function removeCanonicalSkill(targetConfig, skillName) {
+  const target = path.join(targetConfig.destination, skillName);
+  if (!isInside(targetConfig.destination, target)) {
+    fail(`Uninstall path escaped its target: ${target}`);
+  }
+  if (!existsSync(target)) return 0;
+  await rm(target, { recursive: true, force: true });
+  return 1;
+}
+
 export async function removeAllManagedSkills(context, managed, io = console) {
   const names = [...managed.keys()];
   let total = await removeShareEntries(context, names, io);
@@ -364,14 +375,7 @@ export async function removeAllManagedSkills(context, managed, io = console) {
     let removed = 0;
     for (const skillName of names) {
       assertSafeSkillName(skillName);
-      const target = path.join(targetConfig.destination, skillName);
-      if (!isInside(targetConfig.destination, target)) {
-        fail(`Uninstall path escaped its target: ${target}`);
-      }
-      if (existsSync(target)) {
-        await rm(target, { recursive: true, force: true });
-        removed += 1;
-      }
+      removed += await removeCanonicalSkill(targetConfig, skillName);
     }
     total += removed;
     io.log(`${targetConfig.label}: Removed ${removed}`);
@@ -387,14 +391,7 @@ export async function removeSkillDirectories(context, skillNames, io = console) 
   for (const targetConfig of canonicalTargets(context)) {
     let removed = 0;
     for (const skillName of skillNames) {
-      const target = path.join(targetConfig.destination, skillName);
-      if (!isInside(targetConfig.destination, target)) {
-        fail(`Uninstall path escaped its target: ${target}`);
-      }
-      if (existsSync(target)) {
-        await rm(target, { recursive: true, force: true });
-        removed += 1;
-      }
+      removed += await removeCanonicalSkill(targetConfig, skillName);
     }
     total += removed;
     io.log(`${targetConfig.label}: ${removed > 0 ? `Removed ${removed}` : "Unchanged"}`);

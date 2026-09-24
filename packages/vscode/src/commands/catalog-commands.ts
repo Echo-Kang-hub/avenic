@@ -4,7 +4,7 @@ import * as skills from "../services/skills.ts";
 import { sentence } from "../i18n/text.ts";
 import { MutationQueue, runMutation } from "../ui/mutation-queue.ts";
 import { assertIdle, pickOne } from "../ui/flows.ts";
-import { pickScope, scopeCwd } from "../ui/scope.ts";
+import { commandTarget } from "../ui/scope.ts";
 import { showError } from "./errors.ts";
 import { withProgress } from "./progress.ts";
 
@@ -95,10 +95,8 @@ export function registerCatalogCommands(context: vscode.ExtensionContext, deps: 
       if (picked === undefined) return;
       target = picked.id;
     }
-    const scope = await pickScope();
-    if (scope === null) return;
-    const cwd = await scopeCwd(scope, deps.resolveRoot);
-    if (cwd === null) return;
+    const { scope, cwd } = (await commandTarget(undefined, deps.resolveRoot)) ?? {};
+    if (scope === undefined) return;
     const language = vscode.env.language;
     const result = await runMutation(deps.queue, () => withProgress(sentence(language, "catalog.installing"), async (report) => { report(sentence(language, "catalog.installing-pack", { pack: target })); return skills.installPacks(scope, [target], cwd); }), () => deps.refresh());
     await vscode.window.showInformationMessage(sentence(language, "catalog.installed", { pack: target, packs: result.resolvedPacks.names.join(", ") }));

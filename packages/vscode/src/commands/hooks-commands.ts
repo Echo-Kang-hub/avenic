@@ -8,7 +8,7 @@ import { addHookAction, editHookAction, removeHookAction, type HookActionResult,
 import { runMutation, type MutationQueue } from "../ui/mutation-queue.ts";
 import type { ActivityLog } from "../ui/activity.ts";
 import { showError } from "./errors.ts";
-import { withProgress } from "./progress.ts";
+import { progressIfSlow } from "./progress.ts";
 
 // 钩子与通知那一页的落点。与中心同一套做法：页面只报「哪一档、哪个 agent、哪一条」，
 // 文件与判断都在宿主（services/hooks 与 ui/hooks-wizard），写完由面板把这一档重读一遍。
@@ -30,19 +30,7 @@ export interface HooksUi {
 }
 
 // 装与卸要先问一次 agent 自己的版本（那个探测器会去跑一次 CLI），预览也要，
-// 所以三件都按中心那条 500 毫秒的宽限来：快的活自己就是它的证明，慢的才露出来。
-const SLOW_MS = 500;
-function progressIfSlow<T>(title: string, work: Promise<T>): Promise<T> {
-  let settled = false;
-  const timer = setTimeout(() => {
-    if (settled) return;
-    void withProgress(title, () => work).then(undefined, () => { /* 结果与异常都在调用方那一份上 */ });
-  }, SLOW_MS);
-  return work.finally(() => {
-    settled = true;
-    clearTimeout(timer);
-  });
-}
+// 所以三件都按中心那条 500 毫秒的宽限来（`progressIfSlow`，与中心共用同一份）。
 
 export function scopeLabel(language: string, scope: HookScope): string {
   return sentence(language, scope === "project" ? "hooks.scope-project" : "hooks.scope-global");

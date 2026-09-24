@@ -23,3 +23,16 @@ export async function pickScope(): Promise<Scope | null> {
   ]);
   return picked?.scope ?? null;
 }
+
+// 一条命令体最前面的那几步（哪个作用域、哪个项目根）合成一次：右键行带来的作用域优先，
+// 否则问一次；项目作用域再取一次项目根。期间任何一步没有答案时都已经提示过，返回 null
+// 让命令体直接结束。
+export async function commandTarget(
+  arg: unknown,
+  resolveRoot: () => Promise<string | null>,
+): Promise<{ scope: Scope; cwd: string | undefined } | null> {
+  const scope = (arg as { avenicScope?: Scope } | undefined)?.avenicScope ?? (await pickScope());
+  if (scope === null) return null;
+  const cwd = await scopeCwd(scope, resolveRoot);
+  return cwd === null ? null : { scope, cwd };
+}
