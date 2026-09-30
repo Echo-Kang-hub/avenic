@@ -287,6 +287,32 @@ async function mergeCapturedEvents(projectRoot, canonicalSessionId, captured) {
   return appendCanonicalEvents(projectRoot, canonicalSessionId, captured.events);
 }
 
+// A portable session file is one of three things, and the two that are not a
+// conversation must not make the project forget the history they name. A Git
+// LFS pointer is what a clone without git-lfs leaves where a conversation used
+// to be, because `.gitattributes` routes session JSONL through LFS. And an old
+// transcript may predate Claude writing its session id into every record.
+const LFS_POINTER = "version https://git-lfs.github.com/spec/v1";
+// A capture copies one conversation per root-level file, named after its
+// native session id, so a UUID-shaped name is identity a clone can rely on.
+// Anything else a name might say would be a guess, and no id here is guessed.
+const UUID_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// The identity a portable file proves when its own records do not say it: the
+// canonical mapping the clone inherited — the project's own record of which
+// native conversation a canonical session holds — and, failing that, the file
+// name the capture contract made identity.
+async function recoverNativeSessionId(projectRoot, agentId, relative) {
+  const stem = path.basename(relative, path.extname(relative));
+  if (!UUID_NAME.test(stem)) return null;
+  try {
+    const record = await readCanonicalSessionRecord(projectRoot, `${agentId}-${stem}`);
+    const named = record.mappings?.projections?.[agentId]?.nativeSessionId;
+    if (typeof named === "string" && named) return named;
+  } catch {}
+  return stem;
+}
+
 // One import path for CLI and VS Code: native -> portable cache -> canonical.
 // A portable file that has not moved since its last successful import is not
 // read at all; only genuine native deltas cost a parse.
@@ -328,65 +354,120 @@ export async function importProjectSessions(projectRoot, agentId, options = {}) 
       if (bookmark.pending === true) pending.push({ relative, canonicalId: bookmark.canonicalId, at: stamp?.mtimeMs ?? 0 });
       continue;
     }
+    if (bookmark?.unrecoverable === true && sameStamp(bookmark.failedStamp, stamp)) {
+      // This exact file was already reported as unrecoverable. A file whose
+      // bytes have not moved has nothing new to say, and a launch must not
+      // re-print the same warning on every run.
+      failed += 1;
+      continue;
+    }
+    let content;
     let native;
-    try { native = adapter.toCanonical(await readFile(absolute, "utf8")); }
-    catch (error) {
+    try {
+      content = await readFile(absolute, "utf8");
+      native = adapter.toCanonical(content);
+    } catch (error) {
       failed += 1;
       diagnostics.push({ agentId, file: relative, kind: "unreadable-session", message: error.message });
       continue;
     }
-    if (!native?.nativeSessionId || native.nativeSessionId === "unknown") {
+    // Identity, in the order the sources can be trusted: what the records
+    // themselves repeat, what a previous run recorded for this file, and then
+    // the two records a clone carries that the file cannot spell out — the
+    // mapping that already names its conversation, and the file's own name.
+    let nativeSessionId = typeof native?.nativeSessionId === "string" && native.nativeSessionId !== "unknown"
+      ? native.nativeSessionId
+      : null;
+    if (!nativeSessionId && typeof bookmark?.nativeSessionId === "string") nativeSessionId = bookmark.nativeSessionId || null;
+    if (!nativeSessionId) nativeSessionId = await recoverNativeSessionId(projectRoot, agentId, relative);
+    if (!nativeSessionId) {
+      // Nothing here says which conversation this is. Report it once, and stay
+      // silent about this exact file until its bytes change: a corrupt file
+      // must not re-warn on every launch, and must not stop the others.
       failed += 1;
-      diagnostics.push({ agentId, file: relative, kind: "unidentified-session" });
+      diagnostics.push({ agentId, file: relative, kind: "unrecoverable-session" });
+      files[relative] = { ...bookmark, failedStamp: stamp, unrecoverable: true };
       continue;
     }
+    // When the records carry no id of their own, the events are derived again
+    // under the recovered one: event identity is what makes a repeated import
+    // idempotent, and it must not be built on a placeholder like "unknown".
+    if (native.nativeSessionId !== nativeSessionId) native = adapter.toCanonical(content, { nativeSessionId });
     discovered += 1;
-    // Where this conversation already lives, if it lives anywhere: a capture
-    // must append to the canonical session a shared launch projected it into,
-    // never fork a second conversation holding the same turns.
-    const canonicalId = await canonicalSessionFor(projectRoot, agentId, native.nativeSessionId, cursors);
-    // What this conversation is called: the name its own store gave it, the
-    // first thing the user said, or — for a session that holds nothing yet —
-    // the short id a later capture will replace. A session is created with it,
-    // and a session an earlier import named after its native id is given it
-    // here; anything else keeps the title it has.
-    const title = sessionTitleFor({ agentId, nativeSessionId: native.nativeSessionId, nativeTitle: native.title, events: native.events });
-    const created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title });
-    const appended = await appendCanonicalEvents(projectRoot, canonicalId, native.events);
-    // A conversation created a line ago already carries this title, so only a
-    // session that was here before this import can have one to replace.
-    if (!created.created) await upgradeCanonicalSessionTitle(projectRoot, canonicalId, title, {
-      agentId,
-      nativeSessionId: native.nativeSessionId,
-      // What this conversation would be called if its own store had no name to
-      // give: the first thing the user said. A stored title equal to it was
-      // written by an earlier capture, not chosen by anyone, and may be
-      // replaced by the name the conversation has now gained.
-      derivedTitle: sessionTitleFor({ agentId, nativeSessionId: native.nativeSessionId, nativeTitle: null, events: native.events }),
-    });
-    await syncNativeMapping(projectRoot, canonicalId, {
-      agentId,
-      nativeSessionId: native.nativeSessionId,
-      nativeRevision: native.revision ?? null,
-      // The cursor moves only as far as this capture actually contributed. A
-      // re-read of a rollout adds nothing, and writing the rollout's own last
-      // event id would walk a target that had already seen the whole history
-      // backwards — which is what made a reconciled switch re-project
-      // everything the target already had.
-      ...(appended.added > 0 ? { lastCanonicalEventId: native.events.at(-1)?.id ?? null } : {}),
-    });
-    if (options.setActive !== false) {
-      await setActiveCanonicalSession(projectRoot, canonicalId);
-      selected += 1;
+    // The conversation's bytes are not in this checkout — the project left
+    // them to Git LFS and the clone did not fetch them. The identity is still
+    // recorded so the file is never re-read as a broken transcript, and the
+    // reason is said once; the import itself belongs to the run that has the
+    // bytes (a `git lfs pull` moves the stamp, which re-opens this file).
+    if (content.startsWith(LFS_POINTER)) {
+      files[relative] = { ...bookmark, importedStamp: stamp, canonicalId: `${agentId}-${nativeSessionId}`, nativeSessionId, imported: true, placeholder: true };
+      diagnostics.push({ agentId, file: relative, kind: "placeholder-session" });
+      unchanged += 1;
+      continue;
+    }
+    let canonicalId;
+    let created;
+    let appended;
+    try {
+      // Where this conversation already lives, if it lives anywhere: a capture
+      // must append to the canonical session a shared launch projected it into,
+      // never fork a second conversation holding the same turns.
+      canonicalId = await canonicalSessionFor(projectRoot, agentId, nativeSessionId, cursors);
+      // What this conversation is called: the name its own store gave it, the
+      // first thing the user said, or — for a session that holds nothing yet —
+      // the short id a later capture will replace. A session is created with it,
+      // and a session an earlier import named after its native id is given it
+      // here; anything else keeps the title it has.
+      const title = sessionTitleFor({ agentId, nativeSessionId, nativeTitle: native.title, events: native.events });
+      created = await createCanonicalSession(projectRoot, { id: canonicalId, source: agentId, title });
+      appended = await appendCanonicalEvents(projectRoot, canonicalId, native.events);
+      // A conversation created a line ago already carries this title, so only a
+      // session that was here before this import can have one to replace.
+      if (!created.created) await upgradeCanonicalSessionTitle(projectRoot, canonicalId, title, {
+        agentId,
+        nativeSessionId,
+        // What this conversation would be called if its own store had no name to
+        // give: the first thing the user said. A stored title equal to it was
+        // written by an earlier capture, not chosen by anyone, and may be
+        // replaced by the name the conversation has now gained.
+        derivedTitle: sessionTitleFor({ agentId, nativeSessionId, nativeTitle: null, events: native.events }),
+      });
+      await syncNativeMapping(projectRoot, canonicalId, {
+        agentId,
+        nativeSessionId,
+        nativeRevision: native.revision ?? null,
+        // The cursor moves only as far as this capture actually contributed. A
+        // re-read of a rollout adds nothing, and writing the rollout's own last
+        // event id would walk a target that had already seen the whole history
+        // backwards — which is what made a reconciled switch re-project
+        // everything the target already had.
+        ...(appended.added > 0 ? { lastCanonicalEventId: native.events.at(-1)?.id ?? null } : {}),
+      });
+      if (options.setActive !== false) {
+        await setActiveCanonicalSession(projectRoot, canonicalId);
+        selected += 1;
+      }
+    } catch (error) {
+      // A canonical store that cannot be read or appended costs its own
+      // conversation and nothing else: the native and portable copies are
+      // untouched, and every other session in the pass still imports.
+      failed += 1;
+      diagnostics.push({ agentId, file: relative, kind: "unreadable-session", message: error.message });
+      continue;
     }
     if (native.diagnostics?.length) diagnostics.push(...native.diagnostics.map((item) => ({ ...item, file: relative })));
     files[relative] = {
       ...bookmark,
       importedStamp: await stampOf(absolute),
       canonicalId,
-      nativeSessionId: native.nativeSessionId,
+      nativeSessionId,
       imported: true,
       pending: options.setActive === false,
+      // The file is a tracked conversation now; the earlier notes about it —
+      // a pointer waiting on git-lfs, an identity that used to be unknown —
+      // are not part of the bookmark that says so.
+      placeholder: undefined,
+      unrecoverable: undefined,
     };
     if (created.created || appended.added > 0) imported += 1; else unchanged += 1;
   }

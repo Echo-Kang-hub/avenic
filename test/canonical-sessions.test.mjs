@@ -278,7 +278,7 @@ test("project native import reports malformed native history instead of silently
     const result = await importProjectSessions(projectRoot, "claude", { environment: { CLAUDE_CONFIG_DIR: claudeHome } });
     assert.equal(result.discovered, 0);
     assert.equal(result.failed, 1);
-    assert.match(formatSessionDiagnostics(result.diagnostics).warnings.at(-1), /could not be read|no session id/i);
+    assert.match(formatSessionDiagnostics(result.diagnostics).warnings.at(-1), /could not be restored: no recoverable session identity/i);
   });
 });
 

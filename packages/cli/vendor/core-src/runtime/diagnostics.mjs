@@ -18,15 +18,29 @@ const KINDS = {
     text: ({ agentId, file, message }) =>
       `${label(agentId, file)}: could not be read${message ? ` (${message})` : ""}. Native history was left untouched.`,
   },
-  "unidentified-session": {
+  "placeholder-session": {
+    level: "note",
+    text: ({ agentId, file }) =>
+      `${label(agentId, file)}: the conversation is in the project's Git LFS store, not in this checkout; install git-lfs and run "git lfs pull" to restore it.`,
+  },
+  "unrecoverable-session": {
     level: "warning",
-    text: ({ agentId, file }) => `${label(agentId, file)}: has no session id, so it cannot be tracked as shared history.`,
+    text: ({ agentId, file }) => `${fullLabel(agentId, file)} could not be restored: no recoverable session identity.`,
   },
   "missing-root": { level: "note", text: ({ message }) => message },
 };
 
 function label(agentId, file) {
   return `${agentId ?? "session"}${file ? ` ${file}` : ""}`;
+}
+
+// The one diagnostic written as a sentence about a person's history rather
+// than an internal id, because the person is who reads it. The names are the
+// short ones people say, not the display names a picker shows.
+const AGENT_NAMES = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
+
+function fullLabel(agentId, file) {
+  return `${AGENT_NAMES[agentId] ?? agentId ?? "Session"} session${file ? ` ${file}` : ""}`;
 }
 
 function describe(diagnostic) {
