@@ -190,6 +190,11 @@ async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, transform,
   let conflicts = 0;
   let updated = 0;
   let unchanged = 0;
+  // What the destination holds after this file: "written" and "equal" both
+  // mean it now holds exactly the source's bytes, "kept" means the destination
+  // was left as it was — longer than the source — and still holds bytes no
+  // capture has seen.
+  const report = (relative, outcome) => options.onFile?.(relative, outcome);
   for (const relative of relativeFiles) {
     const source = path.join(sourceRoot, relative);
     const destination = path.join(destinationRoot, relative);
@@ -202,20 +207,32 @@ async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, transform,
       await mkdir(path.dirname(destination), { recursive: true });
       await writeFile(destination, sourceContent);
       added += 1;
+      report(relative, "written");
       continue;
     }
     const destinationContent = await readFile(destination);
-    if (sourceContent.equals(destinationContent) || isPrefix(sourceContent, destinationContent)) {
+    if (sourceContent.equals(destinationContent)) {
       unchanged += 1;
+      report(relative, "equal");
+      continue;
+    }
+    if (isPrefix(sourceContent, destinationContent)) {
+      // The destination already holds everything the source has and more.
+      // Leaving it alone is the point of this branch, and the caller must not
+      // read it as "the destination is the source's copy".
+      unchanged += 1;
+      report(relative, "kept");
       continue;
     }
     if (relative.endsWith(".jsonl") && isPrefix(destinationContent, sourceContent)) {
       await writeFile(destination, sourceContent);
       updated += 1;
+      report(relative, "written");
       continue;
     }
     if (options.onConflict === "keep-destination") {
       conflicts += 1;
+      report(relative, "kept");
       continue;
     }
     if (options.onConflict === "keep-source") {
@@ -223,6 +240,7 @@ async function mergeFiles(sourceRoot, relativeFiles, destinationRoot, transform,
       // content and the caller reports the conflict.
       await writeFile(destination, sourceContent);
       conflicts += 1;
+      report(relative, "written");
       continue;
     }
     throw new Error(`Session conflict: ${relative}. Keep one version, then retry.`);
@@ -335,12 +353,26 @@ export async function restoreInto(portable, files, native, transform, options = 
     }
     pending.push(relative);
   }
-  const result = await mergeFiles(portable, pending, native, transform, { onConflict: "keep-source" });
+  const written = new Set();
+  const result = await mergeFiles(portable, pending, native, transform, {
+    onConflict: "keep-source",
+    onFile: (relative, outcome) => { if (outcome !== "kept") written.add(relative); },
+  });
   if (stamps) {
     const mergedSources = await stampsOf(portable, pending);
     const mergedTargets = await stampsOf(native, pending);
+    // What this restore just wrote is what the exit capture would read back
+    // and find unchanged. Recording that in the same bookmark the capture
+    // keeps is what lets a launch of a cloned project skip a restored catalog
+    // it never touched, instead of copying every file out and back in again —
+    // while a file the destination was left longer than stays unrecorded, so
+    // the capture still reads the bytes only native storage has.
+    const captured = options.cursors ? agentCursors(options.cursors, options.agentId) : null;
     for (const relative of pending) {
       next[relative] = { source: mergedSources[relative], target: mergedTargets[relative] };
+      if (captured && written.has(relative)) {
+        captured[relative] = { ...captured[relative], native: mergedTargets[relative], portable: mergedSources[relative] };
+      }
     }
     // 整表替换：删掉的会话不该把它的条目永远留在游标里。
     for (const key of Object.keys(stamps)) delete stamps[key];
