@@ -8,6 +8,6 @@
 // 「文档」指着它就是把一条关于产品的路标指向开发机的目录；这里给的是仓库自己的地址，
 // 同一个测试拿 package.json 的 repository 对住它。
 
-export const CORE_VERSION = "1.6.6";
+export const CORE_VERSION = "1.6.7";
 
 export const DOCS_URL = "https://github.com/Echo-Kang-hub/avenic";

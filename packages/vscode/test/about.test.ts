@@ -15,7 +15,7 @@ import { TEXT } from "../src/i18n/text.ts";
 // 算出来的，而不是页面递过来的。
 
 const pkgDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const MANIFEST = { id: "EchoKang.avenic-agent-manager", name: "avenic-agent-manager", displayName: "Avenic Agent Manager", version: "0.6.1" };
+const MANIFEST = { id: "EchoKang.avenic-agent-manager", name: "avenic-agent-manager", displayName: "Avenic Agent Manager", version: "0.6.2" };
 const CLI = "1.8.4";
 const STORAGE = path.join(os.tmpdir(), "avenic-storage");
 
@@ -40,7 +40,7 @@ test("the page answers what this install is and where its files are, each fact f
     const facts = await aboutFacts(root, options());
     assert.deepEqual(facts.rows.map((entry) => entry.key), ["extension", "editor", "cli", "core", "project", "config", "hooks", "logs", "storage"], "还没配置过的项目：没有历史那一行");
 
-    assert.equal(row(facts, "extension").value, "Avenic Agent Manager 0.6.1", "扩展自己的名字与版本来自清单");
+    assert.equal(row(facts, "extension").value, `${MANIFEST.displayName} ${MANIFEST.version}`, "扩展自己的名字与版本来自清单");
     assert.equal(row(facts, "editor").value, "Visual Studio Code 1.100.0");
     assert.equal(row(facts, "cli").value, CLI, "CLI 那一行说的是这台机器上真正在用的那份（已经探过），这里不探第二次");
     assert.equal(row(facts, "core").value, CORE_VERSION);
