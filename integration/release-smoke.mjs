@@ -322,19 +322,32 @@ async function verifyHub(environment) {
 }
 
 // self-update is verified against a stub npm and a stub `avenic` on PATH, so
-// the three outcomes are all reachable without reinstalling anything real:
-// already current, updated, and updated-but-PATH-still-points-at-the-old-one.
+// every outcome is reachable without reinstalling anything real: already
+// current; installed and visible where npm says global packages live; installed
+// there while this terminal's PATH still resolves the old command (a new
+// terminal away, so guidance rather than failure); and npm exiting 0 while the
+// global package never changed (that one must fail loudly).
 async function verifySelfUpdate(environment) {
   const spec = cliMetadata.avenic.packageSpec;
   const scripts = path.join(root, "self-update");
+  // Where this stub npm says global packages live. The CLI verifies the update
+  // there, so the stub's install has to really write to it the way npm would.
+  const globalRoot = path.join(scripts, "npm-global");
 
-  const stubNpm = async (directory, { latest, installedVersion = null }) => {
-    await writeExecutable(directory, "npm", `import { appendFileSync, writeFileSync } from "node:fs";
+  const stubNpm = async (directory, { latest, installs = null, globalVersion = installs }) => {
+    const active = installs === null ? "" : `writeFileSync(${JSON.stringify(path.join(scripts, "active-version"))}, ${JSON.stringify(`${installs}\n`)});`;
+    const globals = globalVersion === null ? "" : [
+      `mkdirSync(${JSON.stringify(path.join(globalRoot, "avenic"))}, { recursive: true });`,
+      `writeFileSync(${JSON.stringify(path.join(globalRoot, "avenic", "package.json"))}, JSON.stringify({ name: "avenic", version: ${JSON.stringify(globalVersion)} }));`,
+    ].join("\n  ");
+    await writeExecutable(directory, "npm", `import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(path.join(scripts, "npm.log"))}, \`\${args.join(" ")}\\n\`);
 if (args[0] === "view") { process.stdout.write(${JSON.stringify(`${JSON.stringify(latest)}\n`)}); process.exit(0); }
+if (args[0] === "root") { process.stdout.write(${JSON.stringify(`${globalRoot}\n`)}); process.exit(0); }
 if (args[0] === "install") {
-  ${installedVersion === null ? "" : `writeFileSync(${JSON.stringify(path.join(scripts, "active-version"))}, ${JSON.stringify(installedVersion)});`}
+  ${active}
+  ${globals}
   process.exit(0);
 }
 process.exit(0);
@@ -369,24 +382,36 @@ process.exit(0);
   const calls = (await readFile(path.join(scripts, "npm.log"), "utf8")).trim().split("\n");
   assert.deepEqual(calls, [`view ${spec} version --json`], "an up-to-date Avenic must not reinstall itself");
 
-  // 2. A newer version exists: install, then confirm PATH runs the new one.
+  // 2. A newer version exists: install, and verify against the version at
+  //    npm's own global root — not the command this PATH happens to resolve.
   const updateNpm = path.join(scripts, "npm-update");
   const stub = path.join(scripts, "avenic-stub");
   await writeFile(path.join(scripts, "active-version"), `${cliMetadata.version}\n`);
-  await stubNpm(updateNpm, { latest: "9.9.9", installedVersion: "9.9.9\n" });
+  await stubNpm(updateNpm, { latest: "9.9.9", installs: "9.9.9" });
   await stubAvenic(stub, null);
   const updated = avenic(["self-update"], withPath(stub, updateNpm));
   assert.match(updated.stdout, new RegExp(`Current: ${cliMetadata.version}`));
   assert.match(updated.stdout, /Latest: {2}9\.9\.9/);
   assert.match(updated.stdout, /Updated Avenic: [\d.]+ → 9\.9\.9/);
+  assert.doesNotMatch(updated.stdout, /Open a new terminal/, "PATH already runs the command npm installed");
 
-  // 3. npm claims success but PATH still runs the old version: fail loudly
-  //    rather than telling the user they are updated.
+  // 3. The install landed at npm's global root, but this terminal still
+  //    resolves the old command — which is a new terminal away, not a failure;
+  //    the person must be told how to use the update.
   const stale = path.join(scripts, "avenic-stale");
   await stubAvenic(stale, cliMetadata.version);
-  const failed = avenic(["self-update"], withPath(stale, updateNpm), { allowFailure: true });
-  assert.notEqual(failed.status, 0, "a self-update that did not take effect must not exit 0");
+  const stalePath = avenic(["self-update"], withPath(stale, updateNpm));
+  assert.match(stalePath.stdout, /Open a new terminal/);
+  assert.match(stalePath.stdout, /Updated Avenic: [\d.]+ → 9\.9\.9/);
+
+  // 4. npm exits 0 but the global package is still the old version: nothing
+  //    updated, so "Updated Avenic" would be a lie — fail loudly instead.
+  const lyingNpm = path.join(scripts, "npm-lying");
+  await stubNpm(lyingNpm, { latest: "9.9.9", globalVersion: cliMetadata.version });
+  const failed = avenic(["self-update"], withPath(stale, lyingNpm), { allowFailure: true });
+  assert.notEqual(failed.status, 0, "an install npm never made must not be reported as an update");
   assert.match(`${failed.stdout}${failed.stderr}`, /update verification failed/);
+  assert.match(`${failed.stdout}${failed.stderr}`, new RegExp(`npm-global=${cliMetadata.version.replace(/\./g, "\\.")}`));
 }
 
 try {
